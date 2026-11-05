@@ -8,3 +8,4 @@ share/*
 tests/lab/fakeapi/*.pem
 tests/lab/fakeportal/*.pem
 tests/lab/last-run.txt
+hosts.conf

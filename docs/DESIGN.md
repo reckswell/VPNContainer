@@ -132,6 +132,28 @@ with `GTVPN_AUTH=password`.
   compression and connection multiplexing, so there is one Duo prompt per
   host for 8 hours.
 
+## SSH hosts (`hosts.conf`)
+
+One file in standard OpenSSH syntax lists your GT servers, and both sides
+read it:
+
+- **Container:** `gtvpn hosts` (and `gtvpn up`) checks it with `ssh -G`
+  and copies it to `runtime/in`. `gtvpn-hosts` then installs a root-owned
+  0644 copy as `/etc/gtvpn/user-hosts.conf`, included from
+  `ssh_config.d/40-gtvpn-user.conf`. A plain include of the mounted file
+  would not work: ssh refuses config files that others can write, and a
+  Windows-drive checkout shows every file as 0777. A file with errors is
+  refused (validated as `dev`, so a `Match exec` never runs as root), and
+  the previous copy stays. The GT defaults (X11, compression,
+  multiplexing) come after your settings, so yours win. They apply to every
+  plain alias in the file and, through `Match host`, to any target whose
+  real name is under `gatech.edu` or in GT's address ranges.
+- **Host / VS Code:** each plain alias becomes `gt-<alias>` with only its
+  resolved HostName, User and Port plus `ProxyJump gtvpn`. Other options
+  are not copied, so container-only settings such as ControlMaster never
+  reach Windows OpenSSH, which lacks them. On WSL the Windows copy
+  (`%USERPROFILE%\.ssh\gtvpn\config`) is rewritten too.
+
 ## VS Code
 
 - **Primary: Remote-SSH to `gtvpn`** (`127.0.0.1:2222`, key-only, host key

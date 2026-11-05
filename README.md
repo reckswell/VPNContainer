@@ -63,11 +63,28 @@ git clone https://github.com/reckswell/VPNContainer ~/VPNContainer && cd ~/VPNCo
 
 ## 2. Configure
 
-Edit `.env` (created by `setup`). The settings that matter:
+**Your GT servers** go in `hosts.conf` (created by `setup`), in the same
+format as a normal `~/.ssh/config`. Add as many as you like:
+
+```
+Host cadence
+    HostName <your-ece-server>.ece.gatech.edu
+    User gburdell3
+
+Host pace
+    HostName login-ice.pace.gatech.edu
+```
+
+Then run `./gtvpn hosts`. Each host now works as `ssh cadence` inside the
+container, with X11, compression and one Duo prompt per 8 hours already on,
+and shows up in VS Code's Remote-SSH list as `gt-cadence`. Run `gtvpn hosts`
+again after every edit. A file with mistakes is refused, and the previous
+hosts stay in place.
+
+**Everything else** is in `.env`. The settings that matter:
 
 ```bash
-GTVPN_GT_USER=gburdell3
-GTVPN_SSH_HOSTS="cadence=<your-ece-server>.ece.gatech.edu pace=login-ice.pace.gatech.edu"
+GTVPN_GT_USER=gburdell3          # used for GT hosts that don't set User
 GTVPN_PROBE_TARGETS="<your-ece-server>.ece.gatech.edu:22"   # used by the leak tests
 GTVPN_CPUS=2
 GTVPN_MEMORY=2g
@@ -97,9 +114,11 @@ tunnel is created inside the container.
   `./gtvpn code`. You get a VS Code window whose terminal is inside the
   container, and `ssh cadence` with X11 just works there. This works the
   same way on Windows.
-- **Open a folder on a GT server directly:** connect to `gt-cadence`
-  (generated from `GTVPN_SSH_HOSTS`). It hops through the container's
-  tunnel automatically.
+- **Open a folder on a GT server directly:** connect to `gt-cadence`, or
+  `gt-<name>` for any host in `hosts.conf`. It hops through the container's
+  tunnel automatically. Use this to edit files on the server. To start
+  Cadence, use a `gtvpn` window and run `ssh cadence` in its terminal,
+  because that is the path with X11.
 - Add [vscode/settings-snippet.jsonc](vscode/settings-snippet.jsonc) to
   your user settings. The container cannot reach VS Code's download servers
   (by design), so VS Code downloads its server on your computer and copies
@@ -163,6 +182,7 @@ What is checked (details in [docs/DESIGN.md](docs/DESIGN.md#verification-recursi
 | No windows on Windows | `ls /mnt/wslg/.X11-unix` in Ubuntu should show `X0`. If not: `wsl --update`, then `wsl --shutdown`. Then `gtvpn down && gtvpn up` and `gtvpn x11test` |
 | `ssh gtvpn` says "Could not resolve hostname" in Git Bash | Git Bash's own ssh can't read the Windows config. Use PowerShell or VS Code, which use Windows' OpenSSH |
 | VS Code hangs installing the server | Add `"remote.SSH.localServerDownload": "always"` |
+| A host is missing from VS Code's list | Run `gtvpn hosts`, then reopen the Remote-SSH list. Only plain names on `Host` lines become entries (`Host *.example` is a pattern, not a host) |
 | A dev tool can't download something | Add its exact hostname to `GTVPN_DIRECT_ALLOW`, then `./gtvpn down && ./gtvpn up` |
 | `git@github.com` (port 22) fails | Use HTTPS remotes; the direct path is HTTPS-only |
 | Virtuoso is sluggish | Expected for X11 over a VPN. Compression is on; for heavy layout work use GT's remote desktop through the container |
@@ -172,6 +192,7 @@ What is checked (details in [docs/DESIGN.md](docs/DESIGN.md#verification-recursi
 ```
 gtvpn                         host CLI (Linux / WSL)
 compose.yaml, .env.example    container definition and settings
+hosts.conf.example            template for hosts.conf, your GT servers (ssh config syntax)
 image/                        Dockerfile + in-container scripts
   rootfs/usr/local/sbin/      gtvpn-firewall (kill-switch), gtvpn-connect, gtvpn-egress, ...
   rootfs/usr/local/bin/       gtvpn-verify (container-side checks)

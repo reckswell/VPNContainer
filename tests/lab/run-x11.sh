@@ -10,7 +10,7 @@ DC() { docker compose -p gtvpn-lab "${FILES[@]}" "$@"; }
 FAILED=0; ok(){ printf '\033[32mPASS\033[0m %s\n' "$*"; }; bad(){ printf '\033[31mFAIL\033[0m %s\n' "$*"; FAILED=1; }
 check(){ local d=$1; shift; if "$@"; then ok "$d"; else bad "$d"; fi; }
 D=:77; XA=$(mktemp)
-cleanup(){ [[ ${KEEP:-0} == 1 ]] && return; DC down -v --remove-orphans >/dev/null 2>&1; kill "$XPID" 2>/dev/null; rm -f "$XA" runtime/in/xauth; }
+cleanup(){ [[ ${KEEP:-0} == 1 ]] && return; DC down -v --remove-orphans >/dev/null 2>&1; kill "$XPID" 2>/dev/null; rm -f "$XA" runtime/in/xauth runtime/in/hosts.conf; }
 trap cleanup EXIT
 
 docker build -q --network "$BNET" --build-arg BASE_IMAGE="$BASE" -t lab/ocserv tests/lab/ocserv >/dev/null || exit 1
@@ -47,6 +47,11 @@ if dev "ssh -o BatchMode=yes -o ForwardX11Trusted=no -o ControlPath=none cadence
   echo "INFO untrusted forwarding (ssh -X) also works on this X server"
 else echo "INFO untrusted forwarding (ssh -X) does not work on this X server; use the default trusted mode"; fi
 check "ssh connection multiplexing is active (one Duo prompt per host)" dev "ssh -O check cadence 2>&1 | grep -qi running"
+# hosts.conf (standard ssh config): an alias with only HostName/User still
+# gets the GT defaults, so Virtuoso-style X11 works over a fresh connection.
+printf 'Host labx\n    HostName 10.66.0.1\n    User gtuser\n' > runtime/in/hosts.conf
+check "hosts.conf alias reaches the GT server and X11 works on a fresh connection" \
+  bash -c "docker exec gtvpn gtvpn-hosts >/dev/null && docker exec -u dev gtvpn bash -lc \"ssh -o BatchMode=yes -o ControlPath=none labx 'xdpyinfo >/dev/null'\""
 docker exec gtvpn pkill -9 openconnect; sleep 2
 check "after tunnel death the GT server is unreachable" bash -c "! docker exec -u dev gtvpn bash -lc 'ssh -o BatchMode=yes -o ControlPath=none -o ConnectTimeout=4 cadence true' 2>/dev/null"
 exit $FAILED

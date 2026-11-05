@@ -63,9 +63,11 @@ grep -q gtvpn.sh /etc/bash.bashrc || echo '[ -r /etc/profile.d/gtvpn.sh ] && . /
     printf '    ControlMaster auto\n    ControlPath ~/.ssh/cm-%%C\n    ControlPersist 8h\n    ServerAliveInterval 30\n'
   done
   if [[ -n ${GTVPN_GT_USER:-} && ${GTVPN_GT_USER} =~ ^[A-Za-z0-9._-]+$ ]]; then
-    printf 'Host *.gatech.edu\n    User %s\n' "$GTVPN_GT_USER"
+    printf 'Match host *.gatech.edu,10.*,128.61.*,130.207.*,143.215.*\n    User %s\n' "$GTVPN_GT_USER"
   fi
 } > /etc/ssh/ssh_config.d/60-gtvpn-hosts.conf
+# Your hosts.conf (standard ssh config), if the host provided one.
+/usr/local/sbin/gtvpn-hosts >/dev/null || log "WARNING: hosts.conf was not installed (see: gtvpn hosts)"
 install -d -m 700 -o dev -g dev /home/dev/.ssh
 install -d -o dev -g dev /home/dev/projects
 

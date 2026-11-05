@@ -116,14 +116,84 @@ ssh_setup() {
   fi
 }
 
-write_ssh_config() { ssh_config_text "$SSH_DIR/id_ed25519" "$SSH_DIR/known_hosts" "$SSH_DIR/cm-%C" > "$SSH_DIR/config"; chmod 600 "$SSH_DIR/config"; }
+write_ssh_config() {
+  ssh_config_text "$SSH_DIR/id_ed25519" "$SSH_DIR/known_hosts" "$SSH_DIR/cm-%C" > "$SSH_DIR/config"; chmod 600 "$SSH_DIR/config"
+  write_win_ssh_config
+}
+# On WSL, also refresh the copy Windows' ssh (and VS Code on Windows) reads,
+# if Setup-GtVpn.ps1 created it. Windows OpenSSH has no ControlMaster.
+write_win_ssh_config() {
+  is_wsl || return 0
+  local prof dir win
+  prof=$(cd /mnt/c 2>/dev/null && cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r') || return 0
+  [[ $prof =~ ^[A-Za-z]:\\ ]] || return 0
+  dir=$(wslpath -u "$prof" 2>/dev/null)/.ssh/gtvpn
+  [[ -f $dir/config ]] || return 0
+  win=${prof//\\//}/.ssh/gtvpn
+  ssh_config_text "$win/id_ed25519" "$win/known_hosts" none > "$dir/config"
+}
+
+# ---- hosts.conf: your GT servers, in standard OpenSSH config syntax --------
+GT_MATCH='*.gatech.edu,10.*,128.61.*,130.207.*,143.215.*'
+hosts_ensure() {
+  [[ -f hosts.conf ]] && return 0
+  cp hosts.conf.example hosts.conf && say "created hosts.conf (list your GT servers there)"
+}
+# The plain aliases (no wildcards or negations) on its Host lines.
+hosts_aliases() {
+  [[ -f hosts.conf ]] || return 0
+  tr -d '\r' < hosts.conf | awk 'tolower($1)=="host"{for(i=2;i<=NF;i++) print $i}' \
+    | grep -E '^[A-Za-z0-9._-]+$' | awk '!seen[$0]++' || true
+}
+# "hostname user port" for an alias, as ssh inside the container sees it
+# (user/port are empty when not set and default).
+hosts_resolve() { # alias
+  local f u; f=$(mktemp); tr -d '\r' < hosts.conf > "$f"
+  u=$(envget GTVPN_GT_USER)
+  [[ $u =~ ^[A-Za-z0-9._-]+$ ]] && printf '\nMatch host %s\n    User %s\n' "$GT_MATCH" "$u" >> "$f"
+  printf '\nHost *\n    User gtvpn-unset\n' >> "$f"
+  ssh -G -F "$f" "$1" 2>/dev/null | awk '$1=="hostname"{h=$2} $1=="user"{u=$2} $1=="port"{p=$2}
+    END{ if (u=="gtvpn-unset") u="-"; if (p=="22") p="-"; if (h!="") print h, u, p }'
+  rm -f "$f"
+}
+# Check hosts.conf and hand a copy to the container (runtime/in).
+hosts_sync() {
+  hosts_ensure || return 1
+  command -v ssh >/dev/null || { warn "no ssh client here; hosts.conf entries won't show in VS Code (sudo apt install openssh-client)"; }
+  local f err; f=$(mktemp); tr -d '\r' < hosts.conf > "$f"
+  if command -v ssh >/dev/null && ! err=$(ssh -G -F "$f" gtvpn-config-check 2>&1 >/dev/null); then
+    rm -f "$f"; warn "hosts.conf has errors: ${err//$f/hosts.conf}"; return 1
+  fi
+  local u; u=$(envget GTVPN_GT_USER)
+  mkdir -p runtime/in
+  {
+    cat "$f"
+    # Default GT username for the container, after your settings (yours win).
+    [[ $u =~ ^[A-Za-z0-9._-]+$ ]] && printf '\n# Added by gtvpn from GTVPN_GT_USER in .env\nMatch host %s\n    User %s\n' "$GT_MATCH" "$u"
+  } > runtime/in/hosts.conf
+  rm -f "$f"
+  chmod 644 runtime/in/hosts.conf 2>/dev/null || true
+}
+cmd_hosts() {
+  hosts_sync || die "fix hosts.conf and run ./gtvpn hosts again (nothing was changed)"
+  write_ssh_config
+  if running; then engine exec -u root "$NAME" gtvpn-hosts >/dev/null || die "the container refused hosts.conf (see above)"; fi
+  local a h u p n=0
+  while read -r a; do
+    read -r h u p < <(hosts_resolve "$a") || continue
+    [[ $u == - ]] && u=""; [[ $p == - ]] && p=""
+    printf '  %-12s -> %s%s%s   (container: ssh %s   VS Code: gt-%s)\n' "$a" "${u:+$u@}" "$h" "${p:+:$p}" "$a" "$a"
+    n=$((n+1))
+  done < <(hosts_aliases)
+  if (( n )); then say "$n host(s) from hosts.conf are ready"; else say "hosts.conf has no hosts yet; add yours and run ./gtvpn hosts again"; fi
+}
 
 ssh_config_text() { # identity known_hosts controlpath|none
   local id=$1 kh=$2 cm=$3 port user hosts pair alias fq
   port=$(envget GTVPN_SSH_PORT); port=${port:-2222}
   user=$(envget GTVPN_GT_USER); hosts=$(envget GTVPN_SSH_HOSTS)
   {
-    echo "# Managed by gtvpn ($HERE). Regenerate with: ./gtvpn setup"
+    echo "# Managed by gtvpn ($HERE). Do not edit: list your hosts in hosts.conf, then run: gtvpn hosts"
     echo "Host gtvpn"
     echo "    HostName 127.0.0.1"
     echo "    Port $port"
@@ -135,9 +205,31 @@ ssh_config_text() { # identity known_hosts controlpath|none
     echo "    ForwardAgent no"
     echo "    ForwardX11 no"
     echo "    ServerAliveInterval 30"
+    local seen=" " h u p
+    if command -v ssh >/dev/null; then
+      while read -r alias; do
+        read -r h u p < <(hosts_resolve "$alias") || continue
+        [[ $h =~ ^[A-Za-z0-9._-]+$ && $u =~ ^([A-Za-z0-9._-]+|-)$ && $p =~ ^([0-9]+|-)$ ]] || continue
+        seen+="$alias "
+        echo
+        echo "# '$alias' from hosts.conf, reached THROUGH the container's tunnel"
+        echo "Host gt-$alias"
+        echo "    HostName $h"
+        [[ $u != - ]] && echo "    User $u"
+        [[ $p != - ]] && echo "    Port $p"
+        echo "    ProxyJump gtvpn"
+        if [[ $cm != none ]]; then
+          echo "    ControlMaster auto"
+          echo "    ControlPath $cm"
+          echo "    ControlPersist 8h"
+        fi
+        echo "    ServerAliveInterval 30"
+      done < <(hosts_aliases)
+    fi
     for pair in $hosts; do
       alias=${pair%%=*}; fq=${pair#*=}
       [[ -n $alias && -n $fq && $alias != "$pair" ]] || continue
+      [[ $seen == *" $alias "* ]] && continue
       echo
       echo "# GT host '$alias' reached THROUGH the container's tunnel"
       echo "Host gt-$alias"
@@ -202,6 +294,7 @@ cmd_setup() {
   envset HOST_UID "$(id -u)"; envset HOST_GID "$(id -g)"
   [[ $(id -u) != 0 ]] || die "run gtvpn as your normal user, not root"
   x11_detect
+  hosts_sync || true
   ssh_setup
   install_url_handler
   is_wsl || vscode_attach_config
@@ -211,6 +304,7 @@ cmd_setup() {
 
 cmd_up() {
   [[ -f .env ]] || cmd_setup
+  hosts_sync || warn "starting without your hosts.conf changes; fix it, then run: ./gtvpn hosts"
   x11_detect; x11_cookie; write_ssh_config
   local b=--build; [[ " $* " == *" --no-build "* ]] && b=""
   compose up -d $b "$@"
@@ -303,6 +397,7 @@ ${c_b}gtvpn${c_0} - Georgia Tech GlobalProtect in an isolated container
   verify           full leak/reachability checks, container AND host side
   watch [secs]     re-run all checks forever, alert on any failure
   shell            bash in the container as 'dev'
+  hosts            apply hosts.conf (your GT servers) to the container and VS Code
   ssh <alias|host> ssh to a GT host from inside the container (X11 on)
   code [path]      open VS Code in the container (Remote-SSH)
   claude [args]    run Claude Code inside the container
@@ -336,6 +431,7 @@ case $cmd in
   x11test) need_running; engine exec -u dev "$NAME" bash -lc 'echo "DISPLAY=$DISPLAY"; timeout 20 xeyes || { echo "X11 test failed"; exit 1; }' ;;
   logs) engine logs --tail 100 "$NAME"; engine exec -u root "$NAME" sh -c 'tail -n 50 /var/log/gtvpn/gpclient.log 2>/dev/null' || true ;;
   callback) cmd_callback "$@" ;;
+  hosts) cmd_hosts ;;
   ssh-config) ssh_config_text "${1:-$SSH_DIR/id_ed25519}" "${2:-$SSH_DIR/known_hosts}" "${3:-$SSH_DIR/cm-%C}" ;;
   hostkey) pin_hostkey >/dev/null 2>&1 || true; cut -d' ' -f1,2 runtime/out/ssh_host_ed25519_key.pub ;;
   authorize) # add a public key (stdin) that may log in to the container, e.g. from Windows

@@ -1,0 +1,26 @@
+# Your Georgia Tech servers, in standard OpenSSH config syntax (the same
+# format as ~/.ssh/config; see `man ssh_config`).
+#
+# Every "Host <name>" you add here:
+#   - works inside the container as      ssh <name>
+#     (X11 for Cadence/Vivado, compression and one Duo prompt per 8 hours
+#     are on by default; set an option here to override it)
+#   - appears in VS Code's Remote-SSH host list as   gt-<name>
+#     (VS Code connects to that server through the container's tunnel)
+#
+# After editing, run:   gtvpn hosts
+#
+# HostName, User and Port carry over to VS Code. Keep other options to the
+# ones you need inside the container. If you leave out User, GTVPN_GT_USER
+# from .env is used for GT hosts.
+
+# Host cadence
+#     HostName ece-xxxx.ece.gatech.edu
+#     User gburdell3
+#
+# Host pace
+#     HostName login-ice.pace.gatech.edu
+#
+# Host lab-fpga
+#     HostName 10.10.20.30
+#     Port 2222
