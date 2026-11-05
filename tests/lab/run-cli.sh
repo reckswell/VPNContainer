@@ -35,11 +35,12 @@ check "gtvpn verify (pre: container + host)" ./gtvpn verify
 
 # Root inside the container writes into runtime/out, which dev can also
 # write. A planted symlink must not redirect root's write.
-docker exec -u dev gtvpn sh -c 'rm -f /run/gtvpn/out/verify.txt; ln -s /etc/gtvpn/sshd_config /run/gtvpn/out/verify.txt'
+rm -f runtime/out/verify.txt
+docker exec -u dev gtvpn sh -c 'ln -s /etc/gtvpn/sshd_config /run/gtvpn/out/verify.txt'
 SUM=$(docker exec gtvpn sha256sum /etc/gtvpn/sshd_config)
 ./gtvpn verify >/dev/null 2>&1
 check "a symlink planted in runtime/out does not redirect root's writes" \
-  bash -c "[[ \"\$(docker exec gtvpn sha256sum /etc/gtvpn/sshd_config)\" == '$SUM' ]] && [[ -f runtime/out/verify.txt && ! -L runtime/out/verify.txt ]]"
+  bash -c "[[ -n '$SUM' && \"\$(docker exec gtvpn sha256sum /etc/gtvpn/sshd_config)\" == '$SUM' ]] && [[ -f runtime/out/verify.txt && ! -L runtime/out/verify.txt ]]"
 
 # The host opens only safe sign-in addresses that the container publishes.
 opens() { # login.url content -> exit 0 if the host would open it

@@ -160,7 +160,7 @@ What is checked (details in [docs/DESIGN.md](docs/DESIGN.md#verification-recursi
 | `unsafe legacy renegotiation` | `GTVPN_FIX_OPENSSL=1` |
 | Portal asks for a password instead of SSO | `GTVPN_AUTH=password`, `GTVPN_USER=<gt user>`; type `push` at the second prompt for Duo |
 | No windows on Ubuntu | Run `./gtvpn up` from a desktop terminal (it needs `$DISPLAY`); `sudo apt install xauth` |
-| No windows on Windows | `wsl --update`, then `wsl --shutdown`; check `ls /mnt/wslg/.X11-unix` |
+| No windows on Windows | `ls /mnt/wslg/.X11-unix` in Ubuntu should show `X0`. If not: `wsl --update`, then `wsl --shutdown`. Then `gtvpn down && gtvpn up` and `gtvpn x11test` |
 | VS Code hangs installing the server | Add `"remote.SSH.localServerDownload": "always"` |
 | A dev tool can't download something | Add its exact hostname to `GTVPN_DIRECT_ALLOW`, then `./gtvpn down && ./gtvpn up` |
 | `git@github.com` (port 22) fails | Use HTTPS remotes; the direct path is HTTPS-only |

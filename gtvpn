@@ -60,12 +60,10 @@ open_url() { # url-or-file
 x11_detect() {
   local disp sockdir
   if is_wsl; then
+    # WSLg's X server. Docker Desktop (WSL integration) and Docker Engine
+    # inside WSL both bind this distro path straight to the WSLg socket.
     disp=:0
-    if engine info --format '{{.OperatingSystem}}' 2>/dev/null | grep -qi 'docker desktop'; then
-      sockdir=/run/desktop/mnt/host/wslg/.X11-unix     # Docker Desktop's view of WSLg
-    else
-      sockdir=/mnt/wslg/.X11-unix                      # Docker Engine inside WSL
-    fi
+    sockdir=/mnt/wslg/.X11-unix
   else
     disp=${DISPLAY:-:0}
     case $disp in
@@ -223,6 +221,10 @@ cmd_up() {
   done
   engine logs "$NAME" 2>&1 | grep -q 'ready\.' || { engine logs --tail 40 "$NAME" >&2; die "container did not become ready"; }
   pin_hostkey
+  # A bind of a missing folder gives the container an empty one, silently.
+  local d; d=$(envget GTVPN_DISPLAY); d=${d#:}
+  engine exec -u dev "$NAME" test -S "/tmp/.X11-unix/X${d:-0}" 2>/dev/null \
+    || warn "the container cannot see the X11 socket $(envget GTVPN_X11_DIR)/X${d:-0}; GUI apps (Cadence) will not open. See README: Troubleshooting."
   say "container is up and sealed (no tunnel yet). Next: ./gtvpn connect"
 }
 

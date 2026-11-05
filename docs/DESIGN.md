@@ -123,9 +123,11 @@ with `GTVPN_AUTH=password`.
   ssh's X11 forwarding fails with `Invalid MIT-MAGIC-COOKIE-1`, which the lab
   caught.
 - **Windows:** WSLg is a built-in X server. The container mounts
-  `/mnt/wslg/.X11-unix` (Docker Engine in WSL) or
-  `/run/desktop/mnt/host/wslg/.X11-unix` (Docker Desktop). No VcXsrv/X410
-  install, no cookie.
+  `/mnt/wslg/.X11-unix` from the WSL distro, with Docker Engine in WSL and
+  with Docker Desktop alike (tested on Docker Desktop 4.98: its
+  `/run/desktop/mnt/host/wslg` path is an empty folder in the daemon's
+  view). No VcXsrv/X410 install, no cookie. `gtvpn up` warns if the
+  container cannot see the socket.
 - Inside the container, `ssh <alias>` uses `ForwardX11Trusted yes`,
   compression and connection multiplexing, so there is one Duo prompt per
   host for 8 hours.
