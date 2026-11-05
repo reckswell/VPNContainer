@@ -7,6 +7,9 @@ services:
       GTVPN_CONTROL_ALLOW_CIDRS: "172.30.66.10/32 172.30.66.20/32 172.30.66.30/32"
       GTVPN_AUTH_ARGS: "--ignore-tls-errors"
       GTVPN_AUTH: saml
+      # This fake is a portal: sign in there, not at a gateway (the GT
+      # default in .env.example).
+      GTVPN_SKIP_PORTAL: 0
   fakeportal:
     image: python:3.12-alpine
     container_name: gtvpn-lab-fakeportal

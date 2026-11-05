@@ -8,12 +8,15 @@
 # again, and repeating a refused sign-in only adds failed logins, which can
 # lock a GT account.
 #
-# Usage: openconnect --authenticate ... 2> >(gtvpn-prompts)
+# Usage: openconnect --authenticate ... 2> >(gtvpn-prompts [--gateway-only])
+#   --gateway-only: the sign-in is at a gateway directly (no portal), so
+#   its prompts are the first ones and any refusal ends it.
 use strict; use warnings;
 
 my ($Y, $R, $N) = ("\e[1;33m", "\e[1;31m", "\e[0m");
 my $PW  = "\e[1;36m[PASSWORD]$N";
 my $DUO = "\e[1;35m[DUO CODE]$N";
+my $direct = grep { $_ eq '--gateway-only' } @ARGV;
 my ($gw, $stopped, $held) = (0, 0, '');
 
 sub note { print STDERR "$_[1]\[gtvpn] $_[0]$N\n" }
@@ -29,7 +32,7 @@ sub piece {
     $s = $gw ? "$PW gateway sign-in: your GT password again (hidden as you type): "
              : "$PW your GT password (hidden as you type): ";
   } elsif ($t =~ /^Challenge:\s*$/) {
-    $s = $gw ? "$DUO the gateway wants its own Duo code: wait for a NEW 6-digit code in Duo Mobile, not your password (hidden): "
+    $s = $gw ? "$DUO the gateway's own Duo code: wait until Duo Mobile shows a NEW code, not the one you just used (hidden): "
              : "$DUO the 6-digit code shown in Duo Mobile right now, not your password (hidden as you type): ";
   } elsif ($t =~ /^GATEWAY: (\[.*\]):\s*$/) {
     $s = "Gateway: type one name exactly as listed $1: ";
@@ -38,15 +41,18 @@ sub piece {
 
   # The gateway step starts at the gateway choice, or at the first request
   # to a gateway (/ssl-vpn/; the portal is /global-protect/).
-  if (!$gw && ($t =~ /^Please select GlobalProtect gateway/ || $t =~ m{^POST https://[^/\s]+/ssl-vpn/})) {
+  if (!$direct && !$gw && ($t =~ /^Please select GlobalProtect gateway/ || $t =~ m{^POST https://[^/\s]+/ssl-vpn/})) {
     $gw = 1;
     note("Portal sign-in accepted (GT password and Duo code). Now the gateway.", $Y);
-    note("The gateway normally reuses that sign-in and asks for nothing more.", $Y);
+    note("If the gateway asks too: your GT password again, then a NEW Duo code", $Y);
+    note("(wait until Duo Mobile shows a different one; a used code is refused).", $Y);
   } elsif ($t =~ /^Unexpected 512 result from server/) {
-    if ($gw) {
-      note("The gateway refused the sign-in, so gtvpn is stopping here instead of", $R);
-      note("asking again (repeated failed logins can lock a GT account). Nothing", $R);
-      note("was connected. Run 'gtvpn logs' to see this transcript.", $R);
+    if ($gw || $direct) {
+      note($direct ? "GT refused the sign-in (a mistyped password, or a Duo code that was already used"
+                   : "The gateway refused the sign-in (for example a Duo code that was already used", $R);
+      note("or had expired). gtvpn stops here instead of asking again, because repeated", $R);
+      note("failed logins can lock a GT account. Nothing was connected; run 'gtvpn connect'", $R);
+      note("to try again ('gtvpn logs' shows this transcript).", $R);
       $stopped = 1;
       # The only OpenConnect in this container right now is this sign-in:
       # gtvpn-connect refuses to run while a tunnel is up.

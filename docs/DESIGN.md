@@ -109,10 +109,10 @@ Nothing was run, patched or connected. What GT does:
   gateway: at the portal it read the challenge as a config with no gateways
   ("No gateways found", then "gateway does not exist"). Signing in at the
   gateway directly (`--as-gateway`) was refused after 25 s with no reason
-  given. So password sign-ins now use **OpenConnect** (Ubuntu's 9.12), the
-  reference open-source GlobalProtect client, which handles the portal
-  challenge and then logs in to the gateway with the portal's cookie, the
-  same sequence as the official app.
+  given (most likely the Duo push it had been told to send, which never
+  arrives on this account). So password sign-ins now use **OpenConnect**
+  (Ubuntu's 9.12), the reference open-source GlobalProtect client, which
+  handles Duo challenges at the portal and at a gateway.
 - **Sign-in is username + password at the portal, then Duo** as a second
   prompt ("Choose a secondary factor from ('push', 'phone') or enter
   passcode"). At GT the answer is the 6-digit passcode shown in Duo Mobile
@@ -125,9 +125,14 @@ Nothing was run, patched or connected. What GT does:
   answered HTTP 512 (invalid credentials) both to the portal's sign-in and
   to the GT password typed again. A published OpenConnect sign-in at GT
   (June 2025) used OpenConnect's own Linux identity and the DC gateway: the
-  gateway took the portal's sign-in with no further prompt. So the defaults
-  are now OpenConnect's own identity (empty `GTVPN_OS` and
-  `GTVPN_CLIENT_VERSION`) and `GTVPN_GATEWAY_NAME="DC Gateway"`.
+  gateway took the portal's sign-in with no further prompt. With
+  OpenConnect's own Linux identity (empty `GTVPN_OS` and
+  `GTVPN_CLIENT_VERSION`, now the default) the portal handed over no pass
+  for the gateway, and the DC gateway ran its own full sign-in: it accepted
+  the GT password, sent its own Duo challenge, and refused the Duo code
+  that was typed 11 s after the portal's (Duo accepts each code once). So
+  gtvpn now signs in at the gateway directly (`GTVPN_SKIP_PORTAL=1`,
+  `GTVPN_GATEWAY=dc-ext-gw.vpn.gatech.edu`): one password, one Duo code.
 - **Protocol:** portal `/global-protect/prelogin.esp` → `getconfig.esp`;
   gateway `/ssl-vpn/prelogin.esp` → `login.esp` → `getconfig.esp`, then the
   tunnel: IPsec ESP over UDP 4501 (aes-256-gcm/sha1), with a TLS fallback
@@ -151,9 +156,11 @@ Nothing was run, patched or connected. What GT does:
 **Password + Duo (GT):** `gtvpn connect` runs `gtvpn-connect` in your
 terminal, which uses OpenConnect in two steps:
 
-1. `openconnect --protocol=gp --authenticate` signs in interactively:
-   username, password, then the Duo challenge (the Duo passcode), then the
-   gateway (pick it, or preset `GTVPN_GATEWAY_NAME`, e.g. `DC Gateway`). It
+1. `openconnect --protocol=gp --usergroup=gateway --authenticate
+   dc-ext-gw.vpn.gatech.edu` signs in interactively: username, password,
+   then the Duo challenge (the Duo passcode). (With `GTVPN_SKIP_PORTAL=0`
+   it signs in at the portal first, picks the gateway by
+   `GTVPN_GATEWAY_NAME`, and the gateway asks for both again.) It
    prints only the session details (cookie, gateway URL, certificate pin)
    on stdout, which the script reads; the cookie never appears on a command
    line or in a file. Its prompts (stderr) pass through `gtvpn-prompts`,

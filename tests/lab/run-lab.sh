@@ -44,10 +44,17 @@ chmod 644 tests/lab/fakeapi/*.pem
 # SSH key for the "host" side
 docker run --rm -v "$KEYDIR:/k" --entrypoint ssh-keygen gtvpn:local -q -t ed25519 -N '' -f /k/id >/dev/null
 mkdir -p runtime/in runtime/out; cp "$KEYDIR/id.pub" runtime/in/authorized_keys
+# Certificate for the fake GlobalProtect gateway, and its pin
+export LAB_FAKEGW_CERTS=$KEYDIR/fakegw; mkdir -p "$LAB_FAKEGW_CERTS"
+docker run --rm -v "$LAB_FAKEGW_CERTS:/c" --entrypoint sh gtvpn:local -c \
+  'openssl req -x509 -newkey rsa:2048 -nodes -keyout /c/key.pem -out /c/cert.pem -days 2 -subj /CN=fakegw 2>/dev/null
+   chmod 644 /c/key.pem
+   openssl x509 -in /c/cert.pem -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256 -binary | base64 >/c/pin'
+FAKEGW_PIN=pin-sha256:$(cat "$LAB_FAKEGW_CERTS/pin")
 
 start_lab() { # mode
   DC down -v --remove-orphans >/dev/null 2>&1
-  LAB_MODE=$1 DC up -d ocserv fakeapi >/dev/null 2>&1
+  LAB_MODE=$1 DC up -d ocserv fakeapi fakegw >/dev/null 2>&1
   for _ in $(seq 20); do docker logs gtvpn-lab-ocserv 2>&1 | grep -q '^LABPIN' && break; sleep 0.5; done
   export LAB_PIN; LAB_PIN=$(docker logs gtvpn-lab-ocserv 2>&1 | awk '/^LABPIN/{print $2}')
   LAB_MODE=$1 DC up -d gtvpn >/dev/null 2>&1
@@ -69,6 +76,28 @@ for MODE in split full; do
   check "[$MODE] host cannot reach GT-internal 10.66.0.1:2200 before connect" host_cannot_reach 10.66.0.1 2200
 
   if [[ $MODE == split ]]; then
+    # Gateway-only sign-in (GTVPN_SKIP_PORTAL=1), as at GT: password, then a
+    # Duo challenge. A refused Duo code must end it without a second try.
+    # Answers come at a person's pace: typed ahead all at once, OpenConnect
+    # could read the next line before gtvpn-prompts has stopped it.
+    gwonly() { # duo-code
+      docker exec -i -u root -e GTVPN_AUTH=password -e GTVPN_CLIENT=openconnect -e GTVPN_SKIP_PORTAL=1 \
+        -e GTVPN_GATEWAY=fakegw -e "GTVPN_OC_AUTH_ARGS=--servercert $FAKEGW_PIN" \
+        gtvpn gtvpn-connect < <(printf 'gtuser\n'; sleep 1; printf 'student\n'; sleep 1; printf '%s\n' "$1"; sleep 3; printf 'student\n') 2>&1 | sed 's/\x1b\[[0-9;]*m//g' \
+        | tee -a /tmp/gtvpn-lab-gwonly.log
+    }
+    : >/tmp/gtvpn-lab-gwonly.log
+    GW=$(gwonly 999999)
+    docker logs gtvpn-lab-fakegw >>/tmp/gtvpn-lab-gwonly.log 2>&1
+    check "[gateway-only] labels the GT password and the Duo code" \
+      bash -c 'grep -q "\[PASSWORD\] your GT password" <<<"$1" && grep -q "\[DUO CODE\] the 6-digit code" <<<"$1"' _ "$GW"
+    check "[gateway-only] a refused Duo code ends the sign-in, with no second try" \
+      bash -c 'grep -q "GT refused the sign-in" <<<"$1" && grep -q "sign-in failed" <<<"$1" && [[ $(docker logs gtvpn-lab-fakegw 2>&1 | grep -c "REQ /ssl-vpn/login.esp") == 2 ]]' _ "$GW"
+    check "[gateway-only] no OpenConnect is left running after a refusal" bash -c "! docker exec gtvpn pgrep -x openconnect"
+    GW=$(gwonly 123456)
+    check "[gateway-only] a good Duo code signs in and hands the session to the tunnel step" \
+      bash -c 'grep -q "signed in; starting tunnel to fakegw" <<<"$1"' _ "$GW"
+    docker exec -u root gtvpn gtvpn-disconnect >/dev/null 2>&1
     # The real sign-in path (gtvpn-connect, OpenConnect: authenticate, then
     # the background tunnel from the cookie), against ocserv's protocol.
     check "[$MODE] tunnel comes up via gtvpn-connect (OpenConnect password path)" bash -c \

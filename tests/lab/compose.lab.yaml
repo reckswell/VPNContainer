@@ -6,7 +6,7 @@ services:
     build: !reset null
     environment:
       GTVPN_PORTAL: ocserv
-      GTVPN_CONTROL_ALLOW_CIDRS: "172.30.66.10/32 172.30.66.20/32"
+      GTVPN_CONTROL_ALLOW_CIDRS: "172.30.66.10/32 172.30.66.20/32 172.30.66.40/32"
       GTVPN_DIRECT_ALLOW: "api.fake-anthropic.test"
       GTVPN_SKIP_CONTROL: 0
       GTVPN_PROBE_TARGETS: "internal.gt.test:2200 10.66.0.1:2200"
@@ -36,6 +36,16 @@ services:
       gtvpn_net:
         ipv4_address: 172.30.66.20
         aliases: [api.fake-anthropic.test]
+  fakegw:
+    # A GlobalProtect gateway's sign-in only (password, then a Duo-style
+    # challenge), for the gateway-only sign-in test.
+    image: python:3.12-alpine
+    container_name: gtvpn-lab-fakegw
+    command: ["python", "-u", "/srv/srv.py", "/certs/cert.pem", "/certs/key.pem", "443"]
+    volumes: ["./tests/lab/fakegw:/srv:ro", "${LAB_FAKEGW_CERTS:-./tests/lab/fakegw}:/certs:ro"]
+    networks:
+      gtvpn_net:
+        ipv4_address: 172.30.66.40
 networks:
   gtvpn_net:
     ipam:

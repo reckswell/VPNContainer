@@ -110,10 +110,13 @@ prompt is labeled with what to type:
 3. **`[DUO CODE]`** the 6-digit passcode shown in Duo Mobile at that moment.
    It is not your password, and nothing is pushed to your phone.
 
-The gateway then reuses that sign-in, so you are not asked again. If a
-gateway does refuse it, `connect` stops instead of asking a second time,
-because repeated failed logins can lock a GT account. This is the same
-sign-in the official GlobalProtect app uses at GT.
+Then the tunnel starts. `connect` signs in at a GT gateway directly
+(`GTVPN_SKIP_PORTAL=1`, `GTVPN_GATEWAY=dc-ext-gw.vpn.gatech.edu`), because
+going through the vpn.gatech.edu portal first makes the gateway ask for
+your password and a new Duo code a second time. If GT refuses the sign-in,
+`connect` stops instead of asking again, because repeated failed logins can
+lock a GT account. Each Duo code works once: to retry, wait until Duo Mobile
+shows a new one.
 Everything, including the sign-in, happens inside the container. (For VPN
 portals that use browser SSO instead, `connect` opens the login page in your
 browser and a *globalprotectcallback* link hands the result back.)
@@ -194,8 +197,9 @@ What is checked (details in [docs/DESIGN.md](docs/DESIGN.md#verification-recursi
 | Portal rejects the client | Check `GTVPN_OS` / `GTVPN_CLIENT_VERSION` (empty: the client's own Linux identity; the official app is `Windows` / `6.2.8-243`) |
 | `unsafe legacy renegotiation` | `GTVPN_FIX_OPENSSL=1` |
 | "gateway does not exist" or "No gateways found" | That is gpclient misreading GT's Duo challenge. Use the default `GTVPN_CLIENT=auto` (OpenConnect for password sign-in), then `gtvpn up` |
-| Connect asks which gateway to use | Type `DC Gateway`, or set `GTVPN_GATEWAY_NAME` in `.env` |
-| "The gateway refused the sign-in" | Your password and Duo code were fine (the portal accepted them); that gateway did not take the portal's sign-in. Don't retry the same gateway with your password. Check `GTVPN_GATEWAY_NAME="DC Gateway"` in `.env`, then `gtvpn down && gtvpn up` |
+| Connect asks which gateway to use | That is the portal sign-in (`GTVPN_SKIP_PORTAL=0`). Type `DC Gateway`, or set `GTVPN_GATEWAY_NAME` in `.env` |
+| Connect asks for your password and a Duo code twice | That is the portal sign-in: the gateway runs its own. Set `GTVPN_SKIP_PORTAL=1` and `GTVPN_GATEWAY=dc-ext-gw.vpn.gatech.edu` in `.env`, then `gtvpn down && gtvpn up`. If you keep it, use a new Duo code the second time |
+| "GT refused the sign-in" or "The gateway refused the sign-in" | Usually a Duo code that was already used (each works once) or expired, or a mistyped password. Run `gtvpn connect` again with a new code from Duo Mobile. Don't retry many times in a row: GT can lock your account |
 | The connect window closed before you could read the error | `gtvpn logs` shows the last sign-in transcript (passwords are never in it) |
 | No windows on Ubuntu | Run `./gtvpn up` from a desktop terminal (it needs `$DISPLAY`); `sudo apt install xauth` |
 | No windows on Windows | `ls /mnt/wslg/.X11-unix` in Ubuntu should show `X0`. If not: `wsl --update`, then `wsl --shutdown`. Then `gtvpn down && gtvpn up` and `gtvpn x11test` |

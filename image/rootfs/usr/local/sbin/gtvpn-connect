@@ -54,13 +54,15 @@ fi
 gp_global=()
 [[ ${GTVPN_FIX_OPENSSL:-0} == 1 ]] && gp_global+=(--fix-openssl)
 common=(-i "$TUN" --disable-ipv6)
-# GTVPN_SKIP_PORTAL=1: sign in at the gateway itself (--as-gateway). GT's
-# portal answers the password with a Duo challenge that gpclient 3.2.0 only
-# understands at a gateway: at the portal it reads it as a config with no
-# gateways ("No gateways found", then "gateway does not exist").
+# GTVPN_SKIP_PORTAL=1: sign in at the gateway itself (GTVPN_GATEWAY). GT's
+# gateways run their own password + Duo sign-in even after the portal, so
+# this asks for one password and one Duo code instead of two of each. (Also
+# gpclient 3.2.0 understands GT's Duo challenge only at a gateway: at the
+# portal it reads it as "No gateways found", then "gateway does not exist".)
 SERVER=$PORTAL
 if [[ ${GTVPN_SKIP_PORTAL:-0} == 1 ]]; then
-  [[ -n ${GTVPN_GATEWAY:-} ]] || die "GTVPN_SKIP_PORTAL=1 needs GTVPN_GATEWAY (e.g. ni-ext-gw.vpn.gatech.edu)"
+  [[ -n ${GTVPN_GATEWAY:-} ]] || die "GTVPN_SKIP_PORTAL=1 needs GTVPN_GATEWAY (e.g. dc-ext-gw.vpn.gatech.edu)"
+  [[ $GTVPN_GATEWAY =~ ^[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$ ]] || die "GTVPN_GATEWAY must be a host name, e.g. dc-ext-gw.vpn.gatech.edu"
   SERVER=$GTVPN_GATEWAY; common+=(--as-gateway)
 elif [[ -n ${GTVPN_GATEWAY:-} ]]; then common+=(-g "$GTVPN_GATEWAY")
 else common+=(--auto-gateway)
@@ -101,9 +103,11 @@ CLIENT=${GTVPN_CLIENT:-auto}
 [[ $CLIENT == openconnect && $AUTH != password ]] && die "GTVPN_CLIENT=openconnect supports password sign-in only (GTVPN_AUTH=password)"
 
 if [[ $AUTH == password && $CLIENT == openconnect ]]; then
-  # 1) Sign in interactively (portal: password, then the Duo challenge, then
-  #    the gateway with the portal's cookie). --authenticate prints only the
-  #    session details on stdout; prompts go to the terminal.
+  # 1) Sign in interactively. Through the portal: password, then the Duo
+  #    challenge, then the gateway, which at GT runs its own password + Duo
+  #    sign-in again. GTVPN_SKIP_PORTAL=1 signs in at the gateway only: one
+  #    password and one Duo code. --authenticate prints only the session
+  #    details on stdout; prompts go to the terminal.
   # 2) Start the tunnel in the background from that cookie (no prompts).
   case ${GTVPN_OS:-Linux} in Windows) ocos=win ;; Mac) ocos=mac-intel ;; *) ocos=linux-64 ;; esac
   oc=(--protocol="${GTVPN_OC_PROTOCOL:-gp}" --os="$ocos")
@@ -111,21 +115,30 @@ if [[ $AUTH == password && $CLIENT == openconnect ]]; then
   [[ ${GTVPN_HIP:-0} == 1 ]] && oc+=(--csd-wrapper /usr/libexec/openconnect/hipreport.sh)
   # shellcheck disable=SC2206
   [[ -n ${GTVPN_OC_ARGS:-} ]] && oc+=($GTVPN_OC_ARGS)
-  ocauth=()
+  ocauth=() prompts=()
   [[ -n ${GTVPN_USER:-} ]] && ocauth+=(-u "$GTVPN_USER")
-  # The gateway by its portal label, e.g. "DC Gateway" (else you are asked).
-  [[ -n ${GTVPN_GATEWAY_NAME:-} ]] && ocauth+=(--authgroup "$GTVPN_GATEWAY_NAME")
+  if [[ $SERVER != "$PORTAL" ]]; then
+    ocauth+=(--usergroup=gateway); prompts+=(--gateway-only)
+  else
+    # The gateway by its portal label, e.g. "DC Gateway" (else you are asked).
+    [[ -n ${GTVPN_GATEWAY_NAME:-} ]] && ocauth+=(--authgroup "$GTVPN_GATEWAY_NAME")
+  fi
   # shellcheck disable=SC2206
   [[ -n ${GTVPN_OC_AUTH_ARGS:-} ]] && ocauth+=($GTVPN_OC_AUTH_ARGS)
-  say "sign-in, in this order (the password and the Duo code are hidden as you type):"
+  say "signing in at $SERVER, in this order (the password and the Duo code are hidden as you type):"
   [[ -z ${GTVPN_USER:-} ]] && printf '   %s\n' "GT username"
   printf '   %b\n' "\033[1;36m[PASSWORD]\033[0m your GT password" \
-    "\033[1;35m[DUO CODE]\033[0m the 6-digit passcode shown in Duo Mobile at that moment (not your password)" \
-    "then the gateway reuses that sign-in; you should not be asked for anything else"
+    "\033[1;35m[DUO CODE]\033[0m the 6-digit code shown in Duo Mobile at that moment (not your password)"
+  if [[ $SERVER == "$PORTAL" ]]; then
+    printf '   %b\n' "then the gateway may ask for both again: \033[1;36m[PASSWORD]\033[0m your GT password," \
+      "and \033[1;35m[DUO CODE]\033[0m a NEW code (wait until Duo Mobile shows a different one)"
+  else
+    printf '   %s\n' "then the tunnel starts"
+  fi
   # gtvpn-prompts relabels each prompt and ends the sign-in if the gateway
   # refuses it. Its stdout stays on this capture so $(...) waits for it.
-  info=$(as_vpn openconnect "${oc[@]}" "${ocauth[@]}" --timestamp --authenticate "$PORTAL" \
-           2> >(/usr/local/sbin/gtvpn-prompts)) || die "sign-in failed (see above)"
+  info=$(as_vpn openconnect "${oc[@]}" "${ocauth[@]}" --timestamp --authenticate "$SERVER" \
+           2> >(/usr/local/sbin/gtvpn-prompts "${prompts[@]}")) || die "sign-in failed (see above)"
   declare -A sess=()
   while IFS= read -r line; do
     [[ $line =~ ^(COOKIE|HOST|CONNECT_URL|FINGERPRINT|RESOLVE)=\'(.*)\'$ ]] || continue
