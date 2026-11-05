@@ -27,7 +27,13 @@ RUN set -eu; mkdir -p /out/bin /out/lib /out/libexec; \
 FROM ${BASE_IMAGE}
 
 ARG DEBIAN_FRONTEND=noninteractive
-RUN set -eu; apt-get update; \
+# Some networks (proxies, antivirus web filters) corrupt apt downloads
+# ("Hash Sum mismatch"): no pipelining, no proxy caches, retry, and redo a
+# failed index update from scratch a few times.
+RUN set -eu; printf '%s\n' 'Acquire::Retries "5";' 'Acquire::http::Pipeline-Depth "0";' \
+      'Acquire::http::No-Cache "true";' 'Acquire::BrokenProxy "true";' > /etc/apt/apt.conf.d/80gtvpn-net; \
+    for i in 1 2 3 4; do apt-get update && break; [ "$i" = 4 ] && exit 1; \
+      echo "apt-get update failed (try $i), retrying"; rm -rf /var/lib/apt/lists/*; sleep 5; done; \
     apt-get install -y --no-install-recommends \
       ca-certificates iproute2 iptables \
       openssh-server openssh-client \
