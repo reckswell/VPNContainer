@@ -184,7 +184,8 @@ What is checked (details in [docs/DESIGN.md](docs/DESIGN.md#verification-recursi
 | Tunnel up but GT hosts refuse you | Set `GTVPN_HIP=1` (some portals require a HIP report), then reconnect |
 | Portal rejects the client | Check `GTVPN_OS` / `GTVPN_CLIENT_VERSION` (defaults: Windows, 6.2.8-243) |
 | `unsafe legacy renegotiation` | `GTVPN_FIX_OPENSSL=1` |
-| "gateway does not exist" or "No gateways found" | GT gives Linux clients no gateways. Keep `GTVPN_OS` empty (= Windows) or set `GTVPN_OS=Windows`, or pin `GTVPN_GATEWAY=ni-ext-gw.vpn.gatech.edu`, then `gtvpn up` |
+| "gateway does not exist" or "No gateways found" | That is gpclient misreading GT's Duo challenge. Use the default `GTVPN_CLIENT=auto` (OpenConnect for password sign-in), then `gtvpn up` |
+| Connect asks which gateway to use | Type `NI Gateway` (or `DC Gateway`), or set `GTVPN_GATEWAY_NAME` in `.env` |
 | The connect window closed before you could read the error | `gtvpn logs` shows the last sign-in transcript (passwords are never in it) |
 | No windows on Ubuntu | Run `./gtvpn up` from a desktop terminal (it needs `$DISPLAY`); `sudo apt install xauth` |
 | No windows on Windows | `ls /mnt/wslg/.X11-unix` in Ubuntu should show `X0`. If not: `wsl --update`, then `wsl --shutdown`. Then `gtvpn down && gtvpn up` and `gtvpn x11test` |

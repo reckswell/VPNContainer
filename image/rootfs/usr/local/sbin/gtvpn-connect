@@ -53,7 +53,17 @@ fi
 gp_global=()
 [[ ${GTVPN_FIX_OPENSSL:-0} == 1 ]] && gp_global+=(--fix-openssl)
 common=(-i "$TUN" --disable-ipv6)
-[[ -n ${GTVPN_GATEWAY:-} ]] && common+=(-g "$GTVPN_GATEWAY") || common+=(--auto-gateway)
+# GTVPN_SKIP_PORTAL=1: sign in at the gateway itself (--as-gateway). GT's
+# portal answers the password with a Duo challenge that gpclient 3.2.0 only
+# understands at a gateway: at the portal it reads it as a config with no
+# gateways ("No gateways found", then "gateway does not exist").
+SERVER=$PORTAL
+if [[ ${GTVPN_SKIP_PORTAL:-0} == 1 ]]; then
+  [[ -n ${GTVPN_GATEWAY:-} ]] || die "GTVPN_SKIP_PORTAL=1 needs GTVPN_GATEWAY (e.g. ni-ext-gw.vpn.gatech.edu)"
+  SERVER=$GTVPN_GATEWAY; common+=(--as-gateway)
+elif [[ -n ${GTVPN_GATEWAY:-} ]]; then common+=(-g "$GTVPN_GATEWAY")
+else common+=(--auto-gateway)
+fi
 [[ ${GTVPN_HIP:-0} == 1 ]] && common+=(--hip)
 [[ -n ${GTVPN_OS:-} ]] && common+=(--os "$GTVPN_OS")
 [[ -n ${GTVPN_CLIENT_VERSION:-} ]] && common+=(--client-version "$GTVPN_CLIENT_VERSION")
@@ -82,9 +92,52 @@ rm -f "$OUT"/login.url "$OUT"/login.html "$CB"
 # gpclient --background refuses a log file other users can read or write.
 rm -f "$LOG"; install -m 0600 /dev/null "$LOG"
 
-if [[ $AUTH == password ]]; then
+# Which client does password sign-ins: OpenConnect by default. GT's portal
+# answers the password with a Duo challenge, which OpenConnect handles at the
+# portal (like the official app); gpclient 3.2.0 does not.
+CLIENT=${GTVPN_CLIENT:-auto}
+[[ $CLIENT == auto ]] && { [[ $AUTH == password ]] && CLIENT=openconnect || CLIENT=gpclient; }
+[[ $CLIENT == openconnect && $AUTH != password ]] && die "GTVPN_CLIENT=openconnect supports password sign-in only (GTVPN_AUTH=password)"
+
+if [[ $AUTH == password && $CLIENT == openconnect ]]; then
+  # 1) Sign in interactively (portal: password, then the Duo challenge, then
+  #    the gateway with the portal's cookie). --authenticate prints only the
+  #    session details on stdout; prompts go to the terminal.
+  # 2) Start the tunnel in the background from that cookie (no prompts).
+  case ${GTVPN_OS:-Linux} in Windows) ocos=win ;; Mac) ocos=mac-intel ;; *) ocos=linux-64 ;; esac
+  oc=(--protocol="${GTVPN_OC_PROTOCOL:-gp}" --os="$ocos")
+  [[ -n ${GTVPN_CLIENT_VERSION:-} ]] && oc+=(--version-string "$GTVPN_CLIENT_VERSION")
+  [[ ${GTVPN_HIP:-0} == 1 ]] && oc+=(--csd-wrapper /usr/libexec/openconnect/hipreport.sh)
+  # shellcheck disable=SC2206
+  [[ -n ${GTVPN_OC_ARGS:-} ]] && oc+=($GTVPN_OC_ARGS)
+  ocauth=()
+  [[ -n ${GTVPN_USER:-} ]] && ocauth+=(-u "$GTVPN_USER")
+  # The gateway by its portal label, e.g. "NI Gateway" (else you are asked).
+  [[ -n ${GTVPN_GATEWAY_NAME:-} ]] && ocauth+=(--authgroup "$GTVPN_GATEWAY_NAME")
+  # shellcheck disable=SC2206
+  [[ -n ${GTVPN_OC_AUTH_ARGS:-} ]] && ocauth+=($GTVPN_OC_AUTH_ARGS)
+  say "password sign-in: your GT password, then at the Duo prompt type 'push' (or a passcode)"
+  info=$(as_vpn openconnect "${oc[@]}" "${ocauth[@]}" --authenticate "$PORTAL") || die "sign-in failed (see above)"
+  declare -A sess=()
+  while IFS= read -r line; do
+    [[ $line =~ ^(COOKIE|HOST|CONNECT_URL|FINGERPRINT|RESOLVE)=\'(.*)\'$ ]] || continue
+    v=${BASH_REMATCH[2]}; sess[${BASH_REMATCH[1]}]=${v//\'\\\'\'/\'}
+  done <<<"$info"
+  unset info
+  [[ -n ${sess[COOKIE]:-} && -n ${sess[CONNECT_URL]:-} && -n ${sess[FINGERPRINT]:-} ]] || die "sign-in did not return a session"
+  [[ ${sess[CONNECT_URL]} =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?(/[^[:space:]]*)?$ ]] || die "unexpected gateway address from the portal"
+  say "signed in; starting tunnel to ${sess[CONNECT_URL]#https://}"
+  ocrun=(--cookie-on-stdin --servercert "${sess[FINGERPRINT]}" -i "$TUN"
+         --script /usr/libexec/gpclient/vpnc-script --disable-ipv6
+         --background --pid-file /run/gtvpn/openconnect.pid)
+  [[ -n ${sess[RESOLVE]:-} ]] && ocrun+=(--resolve "${sess[RESOLVE]}")
+  # New session: no controlling terminal, so closing the window cannot hang it up.
+  printf '%s\n' "${sess[COOKIE]}" | as_vpn setsid --wait openconnect "${oc[@]}" "${ocrun[@]}" "${sess[CONNECT_URL]}" >>"$LOG" 2>&1 \
+    || { tail -30 "$LOG" >&2; die "tunnel did not start (log: $LOG)"; }
+  unset 'sess[COOKIE]'
+elif [[ $AUTH == password ]]; then
   say "password sign-in (for Duo, enter e.g. 'push' at the second prompt)"
-  as_vpn gpclient "${gp_global[@]}" connect "$PORTAL" ${GTVPN_USER:+-u "$GTVPN_USER"} "${common[@]}" \
+  as_vpn gpclient "${gp_global[@]}" connect "$SERVER" ${GTVPN_USER:+-u "$GTVPN_USER"} "${common[@]}" \
     --background --log-file "$LOG"
 else
   work=$(mktemp -d /run/gtvpn/auth.XXXXXX); chmod 700 "$work"
@@ -96,7 +149,8 @@ else
   }
   trap cleanup EXIT
   mkfifo "$work/in"
-  as_vpn gpauth "$PORTAL" --browser manual --browser-listen 127.0.0.1 "${auth_args[@]}" \
+  gw_auth=(); [[ $SERVER != "$PORTAL" ]] && gw_auth=(--gateway)
+  as_vpn gpauth "$SERVER" "${gw_auth[@]}" --browser manual --browser-listen 127.0.0.1 "${auth_args[@]}" \
     <"$work/in" >"$work/auth.json" 2>"$work/auth.log" &
   gpid=$!
   exec 3>"$work/in"
@@ -161,7 +215,7 @@ else
   gpid=""
   grep -q '"success"' "$work/auth.json" || die "sign-in was not accepted: $(head -c 300 "$work/auth.json")"
   say "signed in; starting tunnel"
-  as_vpn gpclient "${gp_global[@]}" connect "$PORTAL" --cookie-on-stdin "${common[@]}" \
+  as_vpn gpclient "${gp_global[@]}" connect "$SERVER" --cookie-on-stdin "${common[@]}" \
     --background --log-file "$LOG" <"$work/auth.json"
 fi
 

@@ -68,7 +68,21 @@ for MODE in split full; do
     bash -c 'docker logs gtvpn 2>&1 | grep -q "pre-connect leak self-test passed"'
   check "[$MODE] host cannot reach GT-internal 10.66.0.1:2200 before connect" host_cannot_reach 10.66.0.1 2200
 
-  check "[$MODE] tunnel comes up" cx lab-connect
+  if [[ $MODE == split ]]; then
+    # The real sign-in path (gtvpn-connect, OpenConnect: authenticate, then
+    # the background tunnel from the cookie), against ocserv's protocol.
+    check "[$MODE] tunnel comes up via gtvpn-connect (OpenConnect password path)" bash -c \
+      "docker exec -i -u root -e GTVPN_AUTH=password -e GTVPN_CLIENT=openconnect -e GTVPN_PORTAL=ocserv \
+         -e GTVPN_OC_PROTOCOL=anyconnect -e GTVPN_OC_ARGS=--no-dtls \
+         -e 'GTVPN_OC_AUTH_ARGS=-u gtuser --passwd-on-stdin --servercert $LAB_PIN' \
+         gtvpn gtvpn-connect <<<student >/tmp/gtvpn-lab-connect.log 2>&1 || { cat /tmp/gtvpn-lab-connect.log; false; }"
+    check "[$MODE] the session cookie is not on any command line" bash -c \
+      "! docker exec gtvpn sh -c 'for f in /proc/[0-9]*/cmdline; do tr \"\\\\000\" \" \" <\$f; echo; done' 2>/dev/null | grep -qi 'webvpn=\\|authcookie='"
+    check "[$MODE] OpenConnect runs as root:gpvpn with no terminal (closing the window cannot stop it)" bash -c \
+      "[[ \$(docker exec gtvpn ps -o user=,group=,tty= -C openconnect | head -1 | tr -s ' ') == 'root gpvpn ?' ]]"
+  else
+    check "[$MODE] tunnel comes up" cx lab-connect
+  fi
   check "[$MODE] container verification suite (full) passes" cx gtvpn-verify --full --quiet
   check "[$MODE] dev reaches GT-internal 10.66.0.1:2200 via tunnel" asdev nc -z -n -w 3 10.66.0.1 2200
   check "[$MODE] dev resolves internal.gt.test via tunnel DNS" asdev getent ahostsv4 internal.gt.test

@@ -33,6 +33,7 @@ RUN set -eu; apt-get update; \
       openssh-server openssh-client \
       xauth x11-apps x11-utils \
       curl dnsutils netcat-openbsd iputils-ping tinyproxy \
+      openconnect \
       bash-completion less nano git rsync tmux procps; \
     rm -rf /var/lib/apt/lists/* /etc/ssh/ssh_host_*; \
     # Ubuntu 24.04 defaults to the nft backend; pin it explicitly.

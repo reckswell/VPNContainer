@@ -10,7 +10,13 @@ if pgrep -x gpclient >/dev/null; then
   sleep 1
   pkill -KILL -x gpclient 2>/dev/null || true
 fi
-pkill -KILL -x openconnect 2>/dev/null || true   # test lab client
+if pgrep -x openconnect >/dev/null; then
+  # SIGTERM: OpenConnect logs the session off and restores routes/DNS.
+  pkill -TERM -x openconnect 2>/dev/null || true
+  for _ in 1 2 3 4 5 6; do pgrep -x openconnect >/dev/null || break; sleep 0.5; done
+  pkill -KILL -x openconnect 2>/dev/null || true
+fi
+rm -f /run/gtvpn/openconnect.pid
 ip link del "$TUN" 2>/dev/null || true
 rm -f /var/run/gpclient.lock
 # If the client died without cleaning up (kill -9, crash), put the

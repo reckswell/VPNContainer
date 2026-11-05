@@ -137,6 +137,9 @@ ln -sf /etc/hostname runtime/out/login.html
 check "host refuses a symlinked login.html" refuses 'file:login.html'
 rm -f runtime/out/login.url runtime/out/login.html
 
+check "connect refuses GTVPN_SKIP_PORTAL=1 without a gateway" bash -c \
+  "docker exec -u root -e GTVPN_SKIP_PORTAL=1 -e GTVPN_GATEWAY= gtvpn gtvpn-connect 2>&1 | grep -q 'needs GTVPN_GATEWAY'"
+
 # connect: needs a TTY; the browser part is simulated by the URL handler call
 script -qefc "./gtvpn connect" "$LOG" >/dev/null 2>&1 &
 CPID=$!

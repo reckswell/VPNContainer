@@ -103,10 +103,18 @@ Nothing was run, patched or connected. What GT does:
   lists the real gateways, both priority 1: `ni-ext-gw.vpn.gatech.edu` and
   `dc-ext-gw.vpn.gatech.edu`. Its `/ssl-vpn/prelogin.esp` answers "gateway
   does not exist". The official app picks the faster gateway.
-- **Linux clients get no gateways.** For `clientos=Linux` the portal config
-  holds no gateway list, which is why the client's default (Linux) failed.
-  gtvpn therefore reports itself as the official Windows app
-  (`GTVPN_OS=Windows`, `GTVPN_CLIENT_VERSION=6.2.8-243`, the defaults).
+- **The portal answers the password with a Duo challenge.** The official
+  app logs "Handle Challenge request" one second after the password. The
+  first client we used (gpclient 3.2.0) handles challenges only at a
+  gateway: at the portal it read the challenge as a config with no gateways
+  ("No gateways found", then "gateway does not exist"). Signing in at the
+  gateway directly (`--as-gateway`) was refused after 25 s with no reason
+  given. So password sign-ins now use **OpenConnect** (Ubuntu's 9.12), the
+  reference open-source GlobalProtect client, which handles the portal
+  challenge and then logs in to the gateway with the portal's cookie, the
+  same sequence as the official app. gtvpn also reports itself as the
+  official Windows app (`GTVPN_OS=Windows`, `GTVPN_CLIENT_VERSION=6.2.8-243`,
+  the defaults), as the app does.
 - **Sign-in is username + password at the portal, then Duo** as a second
   prompt ("Choose a secondary factor from ('push', 'phone') or enter
   passcode"). No SSO (`use-sso=no`, no SAML in prelogin). The gateway then
@@ -116,26 +124,40 @@ Nothing was run, patched or connected. What GT does:
   gateway `/ssl-vpn/prelogin.esp` → `login.esp` → `getconfig.esp`, then the
   tunnel: IPsec ESP over UDP 4501 (aes-256-gcm/sha1), with a TLS fallback
   (`/ssl-tunnel-connect.sslvpn`). Full tunnel, GT DNS
-  (130.207.244.251/.244), 3 h idle and session timeouts. gpclient
-  (libopenconnect) speaks exactly this; the kill-switch lets only its
-  `gpvpn` identity out, to TCP 443 and UDP 4501.
+  (130.207.244.251/.244), 3 h idle and session timeouts. OpenConnect (and
+  gpclient, which embeds libopenconnect) speaks exactly this; the
+  kill-switch lets only the `gpvpn` identity out, to TCP 443 and UDP 4501.
 - **Tunnel interface:** on Windows a Palo Alto NDIS miniport ("PANGP Virtual
   Ethernet Adapter"); here a plain `tun0`, inside the container only.
 - **HIP:** the gateway asks for a Host Information Profile report
   (`hip-report-needed=yes`), hourly. The official app collects it with the
   OPSWAT SDK: host info, anti-malware, firewall, disk encryption, patches,
   backup, DLP. GT's gateway answered every check with success, no
-  quarantine and no remediation. gpclient's built-in `--hip` report
-  describes an invented Windows PC (antivirus products that are not
-  there), so gtvpn does not send it by default (`GTVPN_HIP=0`).
+  quarantine and no remediation. The open-source clients' HIP reports
+  (gpclient `--hip`, OpenConnect's `hipreport.sh`) describe an invented
+  Windows PC (antivirus products that are not there), so gtvpn does not
+  send one by default (`GTVPN_HIP=0`).
 
 ### Sign-in
 
 **Password + Duo (GT):** `gtvpn connect` runs `gtvpn-connect` in your
-terminal. gpclient asks for your GT username and password, then the Duo
-factor: type `push` and approve it on your phone. Prompts do not echo, and
-the terminal transcript (`/var/log/gtvpn/connect.log`, root-only, kept so
-an error survives a closed window) therefore never contains them.
+terminal, which uses OpenConnect in two steps:
+
+1. `openconnect --protocol=gp --authenticate` signs in interactively:
+   username, password, then the Duo challenge (type `push`, or a passcode),
+   then the gateway (pick it, or preset `GTVPN_GATEWAY_NAME`, e.g.
+   `NI Gateway`). It prints only the session details (cookie, gateway URL,
+   certificate pin) on stdout, which the script reads; the cookie never
+   appears on a command line or in a file.
+2. `openconnect --cookie-on-stdin --background` starts the tunnel from that
+   cookie, as root with primary group `gpvpn` (the identity the kill-switch
+   lets out), in its own session with no terminal, so closing the window
+   cannot stop it. Its log is `/var/log/gtvpn/gpclient.log` (root-only).
+
+The password prompt does not echo, so the terminal transcript
+(`/var/log/gtvpn/connect.log`, root-only, kept so an error survives a
+closed window) never contains it. `GTVPN_CLIENT=gpclient` switches back to
+gpclient for password portals that it handles.
 
 **SSO portals (SAML):** `gpauth --browser manual` normally prints a URL on
 a random local port and waits for a pasted `globalprotectcallback:` link.
