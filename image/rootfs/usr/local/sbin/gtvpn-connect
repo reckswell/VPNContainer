@@ -12,8 +12,9 @@
 #   4. gpclient uses the resulting cookie to connect. The tunnel lives only
 #      in this container's network namespace.
 #
-# Password flow, which is what Georgia Tech uses: gpclient prompts for
-# user/password and the Duo second factor (type "push") in this terminal.
+# Password flow, which is what Georgia Tech uses: OpenConnect prompts in this
+# terminal for your GT password, then the Duo passcode (the 6-digit code shown
+# in Duo Mobile). gtvpn-prompts labels each prompt [PASSWORD] or [DUO CODE].
 set -euo pipefail
 [[ $(id -u) == 0 ]] || { echo "run as root: docker exec -it -u root gtvpn gtvpn-connect" >&2; exit 1; }
 
@@ -112,12 +113,19 @@ if [[ $AUTH == password && $CLIENT == openconnect ]]; then
   [[ -n ${GTVPN_OC_ARGS:-} ]] && oc+=($GTVPN_OC_ARGS)
   ocauth=()
   [[ -n ${GTVPN_USER:-} ]] && ocauth+=(-u "$GTVPN_USER")
-  # The gateway by its portal label, e.g. "NI Gateway" (else you are asked).
+  # The gateway by its portal label, e.g. "DC Gateway" (else you are asked).
   [[ -n ${GTVPN_GATEWAY_NAME:-} ]] && ocauth+=(--authgroup "$GTVPN_GATEWAY_NAME")
   # shellcheck disable=SC2206
   [[ -n ${GTVPN_OC_AUTH_ARGS:-} ]] && ocauth+=($GTVPN_OC_AUTH_ARGS)
-  say "password sign-in: your GT password, then at the Duo prompt type 'push' (or a passcode)"
-  info=$(as_vpn openconnect "${oc[@]}" "${ocauth[@]}" --authenticate "$PORTAL") || die "sign-in failed (see above)"
+  say "sign-in, in this order (the password and the Duo code are hidden as you type):"
+  [[ -z ${GTVPN_USER:-} ]] && printf '   %s\n' "GT username"
+  printf '   %b\n' "\033[1;36m[PASSWORD]\033[0m your GT password" \
+    "\033[1;35m[DUO CODE]\033[0m the 6-digit passcode shown in Duo Mobile at that moment (not your password)" \
+    "then the gateway reuses that sign-in; you should not be asked for anything else"
+  # gtvpn-prompts relabels each prompt and ends the sign-in if the gateway
+  # refuses it. Its stdout stays on this capture so $(...) waits for it.
+  info=$(as_vpn openconnect "${oc[@]}" "${ocauth[@]}" --timestamp --authenticate "$PORTAL" \
+           2> >(/usr/local/sbin/gtvpn-prompts)) || die "sign-in failed (see above)"
   declare -A sess=()
   while IFS= read -r line; do
     [[ $line =~ ^(COOKIE|HOST|CONNECT_URL|FINGERPRINT|RESOLVE)=\'(.*)\'$ ]] || continue
@@ -136,7 +144,7 @@ if [[ $AUTH == password && $CLIENT == openconnect ]]; then
     || { tail -30 "$LOG" >&2; die "tunnel did not start (log: $LOG)"; }
   unset 'sess[COOKIE]'
 elif [[ $AUTH == password ]]; then
-  say "password sign-in (for Duo, enter e.g. 'push' at the second prompt)"
+  say "password sign-in: your GT password, then at the second prompt the 6-digit Duo passcode (not your password)"
   as_vpn gpclient "${gp_global[@]}" connect "$SERVER" ${GTVPN_USER:+-u "$GTVPN_USER"} "${common[@]}" \
     --background --log-file "$LOG"
 else

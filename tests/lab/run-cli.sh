@@ -137,6 +137,20 @@ ln -sf /etc/hostname runtime/out/login.html
 check "host refuses a symlinked login.html" refuses 'file:login.html'
 rm -f runtime/out/login.url runtime/out/login.html
 
+# Sign-in prompt labels (gtvpn-prompts), fed what OpenConnect writes to stderr.
+P=$(printf "Enter login credentials\nUsername: Password: Choose a secondary factor from ('push', 'phone') or enter passcode:\nChallenge: " \
+    | docker exec -i -u root gtvpn gtvpn-prompts 2>&1)
+check "sign-in labels the GT username prompt" grep -q 'GT username: ' <<<"$P"
+check "sign-in labels the password prompt [PASSWORD]" grep -q '\[PASSWORD\].*your GT password' <<<"$P"
+check "sign-in labels the Duo prompt [DUO CODE], not a password" grep -q '\[DUO CODE\].*Duo Mobile.*not your password' <<<"$P"
+check "no prompt keeps OpenConnect's bare label" bash -c '! grep -Eq "(^|: )(Password|Challenge): " <<<"$1"' _ "$(sed 's/\x1b\[[0-9;]*m//g' <<<"$P")"
+P=$(printf 'Please select GlobalProtect gateway.\n[2026-01-01 00:00:00] Got HTTP response: HTTP/1.1 512 status code 512\n[2026-01-01 00:00:00] Unexpected 512 result from server\nEnter login credentials\nPassword: ' \
+    | docker exec -i -u root gtvpn gtvpn-prompts 2>&1)
+check "a gateway refusal stops the sign-in" grep -q 'gateway refused the sign-in' <<<"$P"
+check "after a gateway refusal no second password prompt is shown" bash -c '! grep -q "PASSWORD\|Password:" <<<"$1"' _ "$P"
+P=$(printf 'Unexpected 512 result from server\nPassword: ' | docker exec -i -u root gtvpn gtvpn-prompts 2>&1)
+check "a portal refusal explains it and asks once more" bash -c 'grep -q "GT refused that" <<<"$1" && grep -q "\[PASSWORD\]" <<<"$1"' _ "$P"
+
 check "connect refuses GTVPN_SKIP_PORTAL=1 without a gateway" bash -c \
   "docker exec -u root -e GTVPN_SKIP_PORTAL=1 -e GTVPN_GATEWAY= gtvpn gtvpn-connect 2>&1 | grep -q 'needs GTVPN_GATEWAY'"
 

@@ -58,7 +58,7 @@ to the container's own namespace *inside* that VM.
                                                       │                                                               │
   VS Code ──docker exec (Dev Containers, as dev) ────►│ VS Code server, terminals                                     │
   ssh ──► 127.0.0.1:2222 ────────────────────────────►│ sshd (key-only, user dev, -L/-W forwarding only)              │
-  terminal: GT password + Duo "push" ────────────────►│ gtvpn-connect ─► gpclient ─► gateway ─► tun0 ════════════════╪══► GT
+  terminal: GT password + Duo code ──────────────────►│ gtvpn-connect ─► openconnect ─► gateway ─► tun0 ═════════════╪══► GT
   (SSO portals: browser ◄─ login.url, callback link ─►│  gpauth (SAML), gtvpn-callback)                               │  (all GT traffic)
   X server (Xwayland / WSLg) ◄── /tmp/.X11-unix ──────│ ssh -Y to GT host  ◄═══ X11 over the tunnel ═══ Virtuoso      │
                                                       │                                                               │
@@ -112,14 +112,22 @@ Nothing was run, patched or connected. What GT does:
   given. So password sign-ins now use **OpenConnect** (Ubuntu's 9.12), the
   reference open-source GlobalProtect client, which handles the portal
   challenge and then logs in to the gateway with the portal's cookie, the
-  same sequence as the official app. gtvpn also reports itself as the
-  official Windows app (`GTVPN_OS=Windows`, `GTVPN_CLIENT_VERSION=6.2.8-243`,
-  the defaults), as the app does.
+  same sequence as the official app.
 - **Sign-in is username + password at the portal, then Duo** as a second
   prompt ("Choose a secondary factor from ('push', 'phone') or enter
-  passcode"). No SSO (`use-sso=no`, no SAML in prelogin). The gateway then
-  accepts the portal's cookie ("Using portal's user credential to login to
-  gateway"), so there is one Duo prompt per connect.
+  passcode"). At GT the answer is the 6-digit passcode shown in Duo Mobile
+  (no push). No SSO (`use-sso=no`, no SAML in prelogin). For the official
+  app the gateway then accepts the portal's sign-in ("Using portal's user
+  credential to login to gateway"), so there is one Duo prompt per connect.
+- **What the gateways did with OpenConnect.** Reporting itself as the
+  official Windows app (`GTVPN_OS=Windows`, `GTVPN_CLIENT_VERSION=6.2.8-243`),
+  OpenConnect passed the portal and Duo every time, but the NI gateway
+  answered HTTP 512 (invalid credentials) both to the portal's sign-in and
+  to the GT password typed again. A published OpenConnect sign-in at GT
+  (June 2025) used OpenConnect's own Linux identity and the DC gateway: the
+  gateway took the portal's sign-in with no further prompt. So the defaults
+  are now OpenConnect's own identity (empty `GTVPN_OS` and
+  `GTVPN_CLIENT_VERSION`) and `GTVPN_GATEWAY_NAME="DC Gateway"`.
 - **Protocol:** portal `/global-protect/prelogin.esp` → `getconfig.esp`;
   gateway `/ssl-vpn/prelogin.esp` → `login.esp` → `getconfig.esp`, then the
   tunnel: IPsec ESP over UDP 4501 (aes-256-gcm/sha1), with a TLS fallback
@@ -144,11 +152,15 @@ Nothing was run, patched or connected. What GT does:
 terminal, which uses OpenConnect in two steps:
 
 1. `openconnect --protocol=gp --authenticate` signs in interactively:
-   username, password, then the Duo challenge (type `push`, or a passcode),
-   then the gateway (pick it, or preset `GTVPN_GATEWAY_NAME`, e.g.
-   `NI Gateway`). It prints only the session details (cookie, gateway URL,
-   certificate pin) on stdout, which the script reads; the cookie never
-   appears on a command line or in a file.
+   username, password, then the Duo challenge (the Duo passcode), then the
+   gateway (pick it, or preset `GTVPN_GATEWAY_NAME`, e.g. `DC Gateway`). It
+   prints only the session details (cookie, gateway URL, certificate pin)
+   on stdout, which the script reads; the cookie never appears on a command
+   line or in a file. Its prompts (stderr) pass through `gtvpn-prompts`,
+   which labels each one `[PASSWORD]` or `[DUO CODE]` with what to type, and
+   ends the sign-in if the gateway refuses it rather than letting
+   OpenConnect ask again: repeated failed logins can lock a GT account.
+   `--timestamp` puts the time on each step in the transcript.
 2. `openconnect --cookie-on-stdin --background` starts the tunnel from that
    cookie, as root with primary group `gpvpn` (the identity the kill-switch
    lets out), in its own session with no terminal, so closing the window

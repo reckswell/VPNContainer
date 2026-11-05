@@ -434,7 +434,7 @@ ${c_b}gtvpn${c_0} - Georgia Tech GlobalProtect in an isolated container
 
   setup            one-time: .env, SSH key + config, X11, sign-in link handler
   up               build/start the container (sealed, no tunnel yet)
-  connect          sign in (GT password + Duo "push") and start the tunnel
+  connect          sign in (GT password, then Duo passcode) and start the tunnel
   disconnect       stop the tunnel (container stays sealed)
   status           tunnel, routes, DNS, kill-switch state
   verify           full leak/reachability checks, container AND host side

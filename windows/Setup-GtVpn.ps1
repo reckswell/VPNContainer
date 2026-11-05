@@ -162,6 +162,6 @@ try {
 } catch { Warn "Could not start the container yet ($_). Run 'gtvpn up' later, then re-run this script to pin the host key." }
 
 Say "Done. Next:"
-Write-Host "   gtvpn connect          # GT username + password, then push for Duo; the tunnel starts"
+Write-Host "   gtvpn connect          # GT username, GT password, then the Duo passcode; the tunnel starts"
 Write-Host "   gtvpn code             # VS Code inside the container (Dev Containers)"
 Write-Host "   In that terminal: ssh <alias>  then run virtuoso (windows appear via WSLg)"

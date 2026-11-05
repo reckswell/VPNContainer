@@ -95,16 +95,25 @@ GTVPN_MEMORY=2g
 
 ```bash
 ./gtvpn up          # start the container (sealed: no network yet)
-./gtvpn connect     # GT username, password, then "push" for Duo; tunnel comes up; checks run
+./gtvpn connect     # GT username, GT password, then the Duo passcode; tunnel comes up; checks run
 ./gtvpn ssh cadence # or: ./gtvpn shell, then `ssh cadence`
 virtuoso &          # (on the GT host) windows open on your desktop
 ./gtvpn disconnect  # tunnel down; container stays sealed
 ./gtvpn down        # stop everything (your container home is kept)
 ```
 
-**Sign-in:** `connect` asks, in your terminal, for your GT username and
-password, then for the Duo factor: type `push` and approve it on your
-phone. This is the same sign-in the official GlobalProtect app uses at GT.
+**Sign-in:** `connect` asks, in your terminal, for three things, and each
+prompt is labeled with what to type:
+
+1. **GT username** (skipped if `GTVPN_USER` is set in `.env`).
+2. **`[PASSWORD]`** your GT password.
+3. **`[DUO CODE]`** the 6-digit passcode shown in Duo Mobile at that moment.
+   It is not your password, and nothing is pushed to your phone.
+
+The gateway then reuses that sign-in, so you are not asked again. If a
+gateway does refuse it, `connect` stops instead of asking a second time,
+because repeated failed logins can lock a GT account. This is the same
+sign-in the official GlobalProtect app uses at GT.
 Everything, including the sign-in, happens inside the container. (For VPN
 portals that use browser SSO instead, `connect` opens the login page in your
 browser and a *globalprotectcallback* link hands the result back.)
@@ -182,10 +191,11 @@ What is checked (details in [docs/DESIGN.md](docs/DESIGN.md#verification-recursi
 |---|---|
 | Inside the container, `ssh` to a GT host says "Could not resolve hostname" | The tunnel is off (the prompt shows `(GT:off)`), and the kill-switch blocks everything until it is up. Run `gtvpn connect` on your PC, then retry |
 | Tunnel up but GT hosts refuse you | Set `GTVPN_HIP=1` (some portals require a HIP report), then reconnect |
-| Portal rejects the client | Check `GTVPN_OS` / `GTVPN_CLIENT_VERSION` (defaults: Windows, 6.2.8-243) |
+| Portal rejects the client | Check `GTVPN_OS` / `GTVPN_CLIENT_VERSION` (empty: the client's own Linux identity; the official app is `Windows` / `6.2.8-243`) |
 | `unsafe legacy renegotiation` | `GTVPN_FIX_OPENSSL=1` |
 | "gateway does not exist" or "No gateways found" | That is gpclient misreading GT's Duo challenge. Use the default `GTVPN_CLIENT=auto` (OpenConnect for password sign-in), then `gtvpn up` |
-| Connect asks which gateway to use | Type `NI Gateway` (or `DC Gateway`), or set `GTVPN_GATEWAY_NAME` in `.env` |
+| Connect asks which gateway to use | Type `DC Gateway`, or set `GTVPN_GATEWAY_NAME` in `.env` |
+| "The gateway refused the sign-in" | Your password and Duo code were fine (the portal accepted them); that gateway did not take the portal's sign-in. Don't retry the same gateway with your password. Check `GTVPN_GATEWAY_NAME="DC Gateway"` in `.env`, then `gtvpn down && gtvpn up` |
 | The connect window closed before you could read the error | `gtvpn logs` shows the last sign-in transcript (passwords are never in it) |
 | No windows on Ubuntu | Run `./gtvpn up` from a desktop terminal (it needs `$DISPLAY`); `sudo apt install xauth` |
 | No windows on Windows | `ls /mnt/wslg/.X11-unix` in Ubuntu should show `X0`. If not: `wsl --update`, then `wsl --shutdown`. Then `gtvpn down && gtvpn up` and `gtvpn x11test` |

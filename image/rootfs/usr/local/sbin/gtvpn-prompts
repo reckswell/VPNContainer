@@ -1,0 +1,80 @@
+#!/usr/bin/perl
+# gtvpn-prompts: sits between OpenConnect's sign-in output (stderr) and your
+# terminal. It relabels each prompt with exactly what to type there, marked
+# [PASSWORD] or [DUO CODE], so the two are never confused, and passes
+# everything else through unchanged.
+#
+# It also ends the sign-in if the gateway refuses it. OpenConnect would ask
+# again, and repeating a refused sign-in only adds failed logins, which can
+# lock a GT account.
+#
+# Usage: openconnect --authenticate ... 2> >(gtvpn-prompts)
+use strict; use warnings;
+
+my ($Y, $R, $N) = ("\e[1;33m", "\e[1;31m", "\e[0m");
+my $PW  = "\e[1;36m[PASSWORD]$N";
+my $DUO = "\e[1;35m[DUO CODE]$N";
+my ($gw, $stopped, $held) = (0, 0, '');
+
+sub note { print STDERR "$_[1]\[gtvpn] $_[0]$N\n" }
+
+# One complete line, or a prompt that waits for input (no newline yet).
+sub piece {
+  my ($s) = @_;
+  return if $stopped;
+  (my $t = $s) =~ s/^\[\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\] //;   # --timestamp
+  if ($t =~ /^Username:\s*$/) {
+    $s = "GT username: ";
+  } elsif ($t =~ /^Password:\s*$/) {
+    $s = $gw ? "$PW gateway sign-in: your GT password again (hidden as you type): "
+             : "$PW your GT password (hidden as you type): ";
+  } elsif ($t =~ /^Challenge:\s*$/) {
+    $s = $gw ? "$DUO the gateway wants its own Duo code: wait for a NEW 6-digit code in Duo Mobile, not your password (hidden): "
+             : "$DUO the 6-digit code shown in Duo Mobile right now, not your password (hidden as you type): ";
+  } elsif ($t =~ /^GATEWAY: (\[.*\]):\s*$/) {
+    $s = "Gateway: type one name exactly as listed $1: ";
+  }
+  print STDERR $s;
+
+  # The gateway step starts at the gateway choice, or at the first request
+  # to a gateway (/ssl-vpn/; the portal is /global-protect/).
+  if (!$gw && ($t =~ /^Please select GlobalProtect gateway/ || $t =~ m{^POST https://[^/\s]+/ssl-vpn/})) {
+    $gw = 1;
+    note("Portal sign-in accepted (GT password and Duo code). Now the gateway.", $Y);
+    note("The gateway normally reuses that sign-in and asks for nothing more.", $Y);
+  } elsif ($t =~ /^Unexpected 512 result from server/) {
+    if ($gw) {
+      note("The gateway refused the sign-in, so gtvpn is stopping here instead of", $R);
+      note("asking again (repeated failed logins can lock a GT account). Nothing", $R);
+      note("was connected. Run 'gtvpn logs' to see this transcript.", $R);
+      $stopped = 1;
+      # The only OpenConnect in this container right now is this sign-in:
+      # gtvpn-connect refuses to run while a tunnel is up.
+      system('pkill', '-TERM', '-x', 'openconnect');
+    } else {
+      note("GT refused that: a mistyped password, or a Duo code that was already used or had expired.", $Y);
+    }
+  }
+}
+
+sub flush_held { if (length $held) { piece($held); $held = '' } }
+
+$| = 1;
+binmode STDIN; binmode STDERR;
+my $rin = ''; vec($rin, fileno(STDIN), 1) = 1;
+while (1) {
+  # A prompt has no newline. If nothing more arrives for a moment, what is
+  # held is a prompt waiting for you, so show it.
+  my $ready = select(my $rout = $rin, undef, undef, length $held ? 0.3 : undef);
+  if (!$ready) { flush_held(); next }
+  my $n = sysread(STDIN, my $chunk, 4096);
+  last unless $n;
+  $held .= $chunk;
+  # Split off each prompt (several can come in one read when answers were
+  # typed ahead) and each complete line.
+  while ($held =~ s/^((?:Username|Password|Challenge): )(?=.)//s
+      || $held =~ s/^([^\n]*\n)//) { piece($1) }
+  # A prompt is complete once it ends in ':' (and maybe a space).
+  flush_held() if $held =~ /:\s*$/;
+}
+flush_held();
