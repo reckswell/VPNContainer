@@ -259,8 +259,14 @@ read it:
   the container unset `SSH_AUTH_SOCK` when it points there. Nothing from GT
   can reach these: INPUT is DROP on the tunnel, so only processes you start
   in the container could.
-- **GT hosts directly:** `gt-<alias>` entries use `ProxyJump gtvpn`. The
-  host's ssh/VS Code reaches the GT host *through the container's tunnel*.
+- **GT hosts directly:** `gt-<alias>` entries use `ProxyJump gtvpn`, and
+  so does a `Match host *.gatech.edu,128.61.*,130.207.*,143.215.*` block
+  for any other GT server typed by name or address (VS Code Remote-SSH's
+  *Connect to Host*; `GTVPN_SSH_VIA_CONTAINER=0` turns it off; `10.*` is
+  left out because home networks use it too). The host's ssh/VS Code
+  reaches the GT host *through the container's tunnel*. VS Code runs
+  Remote-SSH on the host even in a container window, so this jump is how
+  it gets to GT from inside the container.
   Container sshd allows only local (`-W`/`-L`) forwarding, and those
   connections are opened as `dev`, so they are tunnel-only. The lab checks
   that a jump cannot reach the internet or LAN.

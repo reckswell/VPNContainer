@@ -140,6 +140,9 @@ write_win_ssh_config() {
 
 # ---- hosts.conf: your GT servers, in standard OpenSSH config syntax --------
 GT_MATCH='*.gatech.edu,10.*,128.61.*,130.207.*,143.215.*'
+# GT names and GT's public address blocks, which this computer reaches only
+# through the container (see ssh_config_text).
+GT_VIA='*.gatech.edu,128.61.*,130.207.*,143.215.*'
 hosts_ensure() {
   [[ -f hosts.conf ]] && return 0
   cp hosts.conf.example hosts.conf && say "created hosts.conf (list your GT servers there)"
@@ -248,6 +251,22 @@ ssh_config_text() { # identity known_hosts controlpath|none
       fi
       echo "    ServerAliveInterval 30"
     done
+    # Every other GT server, typed by name or GT address (VS Code Remote-SSH
+    # "Connect to Host", or ssh here), also goes through the container, so
+    # this computer never connects to GT itself. 10.* is left out: it is
+    # also used by home and other private networks.
+    if [[ $(envget GTVPN_SSH_VIA_CONTAINER) != 0 ]]; then
+      echo
+      echo "# Any other GT server (by name or GT address): also THROUGH the container's tunnel"
+      echo "Match host $GT_VIA"
+      echo "    ProxyJump gtvpn"
+      if [[ $cm != none ]]; then
+        echo "    ControlMaster auto"
+        echo "    ControlPath $cm"
+        echo "    ControlPersist 8h"
+      fi
+      echo "    ServerAliveInterval 30"
+    fi
   }
 }
 

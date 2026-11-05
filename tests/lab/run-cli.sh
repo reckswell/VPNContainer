@@ -25,6 +25,11 @@ chmod 644 tests/lab/fakeapi/*.pem
 check "gtvpn setup" ./gtvpn setup
 check ".env has this user's UID" grep -qx "HOST_UID=$(id -u)" .env
 check "ssh config includes the gtvpn block" grep -q "Include $HOME/.ssh/gtvpn/config" "$HOME/.ssh/config"
+jumps() { ssh -G -F "$HOME/.ssh/config" "$1" 2>/dev/null </dev/null | grep -qx 'proxyjump gtvpn'; }
+check "a GT host typed by name goes through the container (VS Code Remote-SSH)" jumps ece-linlab19.ece.gatech.edu
+check "a GT address goes through the container" jumps 143.215.155.65
+no_jumps() { ! jumps example.com && ! jumps 10.1.2.3 && ! jumps gtvpn; }
+check "non-GT hosts, 10.x addresses and gtvpn itself are left alone" no_jumps
 docker compose up -d ocserv fakeapi fakeportal >/dev/null 2>&1; sleep 3
 export LAB_PIN; LAB_PIN=$(docker logs gtvpn-lab-ocserv 2>&1 | awk '/^LABPIN/{print $2}')
 check "gtvpn up (container sealed, self-test passed)" ./gtvpn up --no-build

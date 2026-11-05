@@ -129,9 +129,16 @@ browser and a *globalprotectcallback* link hands the result back.)
   container, and `ssh cadence` with X11 just works there. Same on Windows
   and Ubuntu. `gtvpn setup` installs the attach config, and on Windows the
   setup script adds the Dev Containers extension.
-- **Open a folder on a GT server directly:** Remote-SSH to `gt-cadence`, or
-  `gt-<name>` for any host in `hosts.conf`. It hops through the container's
-  tunnel automatically. Use this to edit files on the server. To start
+- **Open a folder on a GT server directly:** Remote-SSH to `gt-<name>` for
+  any host in `hosts.conf`, or to any GT server by its name or address
+  (*Connect to Host… → ece-linlab19.ece.gatech.edu*). Every one of them goes
+  through the container: your computer only talks to the container's sshd,
+  and the container opens the connection to GT through its tunnel, so your
+  computer never connects to GT itself. (VS Code always runs Remote-SSH on
+  your computer, even from a container window; this jump is how it reaches
+  GT from inside the container.) Names under `*.gatech.edu` and GT's
+  address blocks are covered; for your own `~/.ssh/config` aliases that
+  point at GT, add `ProxyJump gtvpn` or list them in `hosts.conf`. To start
   Cadence, use a `gtvpn code` window and run `ssh cadence` in its terminal,
   because that is the path with X11.
 - Add [vscode/settings-snippet.jsonc](vscode/settings-snippet.jsonc) to
