@@ -260,6 +260,7 @@ ssh_config_text() { # identity known_hosts controlpath|none
       echo "# Any other GT server (by name or GT address): also THROUGH the container's tunnel"
       echo "Match host $GT_VIA"
       echo "    ProxyJump gtvpn"
+      [[ $user =~ ^[A-Za-z0-9._-]+$ ]] && echo "    User $user"
       if [[ $cm != none ]]; then
         echo "    ControlMaster auto"
         echo "    ControlPath $cm"
