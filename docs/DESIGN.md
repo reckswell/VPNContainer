@@ -1,0 +1,219 @@
+# gtvpn design
+
+## Goal
+
+Run Georgia Tech's GlobalProtect VPN so that:
+
+1. GT-bound work (SSH, VS Code remote, Cadence Virtuoso / Vivado over X11)
+   reaches GT **only** through the tunnel.
+2. Nothing else on the computer is routed to GT, and GT has no path back
+   into the computer.
+3. It feels native: one command to sign in, VS Code attaches, GUI tools pop
+   up as normal windows on Ubuntu 24.04 and on Windows.
+4. Overhead stays tiny when idle, with CPU/memory limits you set.
+5. Claude Code (and other dev tools) work inside it for future projects,
+   without that traffic going through GT.
+
+## Threat model
+
+| Concern | Mitigation |
+|---|---|
+| Host traffic (browser, games, personal apps) ends up on GT's network | The tunnel exists only in the container's network namespace. The host's routing table, DNS and interfaces are never touched. Checked by `host/verify-host.sh` (H7–H15). |
+| GT (or a compromised GT host) reaches into the computer | The container accepts no inbound connections from the tunnel (INPUT policy DROP; only sshd on the Docker-side interface, published to `127.0.0.1`). The proprietary GlobalProtect agent (HIP scans, enforced policies) is not installed; the open-source client sends a HIP report only if you enable it. |
+| GT-bound traffic leaks outside the tunnel (tunnel drops, DNS falls back, client crashes) | Fail-closed kill-switch: only the VPN client's own sockets may use the WAN interface, and only on the VPN control ports. The interactive user can use the tunnel and nothing else. Tunnel-down, crash and tampering cases are tested in the lab. |
+| DNS leaks | Docker's DNS (`127.0.0.11`, which forwards to your home resolver) is reserved for the VPN client and the egress proxy. Your tools can only resolve through GT's DNS over the tunnel. GT never sees the lookups for the direct-egress hostnames, because those are pinned from Docker DNS. |
+| Container reaches your LAN / Docker host / other containers | Private, link-local and multicast ranges are rejected on the WAN interface. Inter-container traffic is disabled on the gtvpn network. |
+| IPv6 side channel | IPv6 is disabled by sysctl, and ip6tables drops everything. |
+| Someone (or something) opens the firewall at runtime | A watchdog fingerprints the ruleset every 15 s. On drift it tears the tunnel down and re-applies the kill-switch. |
+| `dev` becomes root inside the container and drops the kill-switch | Every script root runs, and every directory above one, is root-owned and not writable by `dev`. The image build normalises modes (a checkout on a Windows drive shows every file as 0777) and refuses to finish otherwise. Checked again at every start (F4). Root writes into the shared `runtime/out` folder only through `gtvpn-outwrite` (temp file + rename), so a symlink `dev` plants there cannot redirect the write. |
+| The container gets the host to run something | The host treats `runtime/out` as untrusted: `gtvpn connect` opens only an `https://` sign-in address or the container's own regular `login.html`, never a program, a path or another URL scheme. |
+| X11 exposure | Remote GT apps can see other **X11** windows on your display. On Ubuntu's Wayland session and on WSLg, your normal apps are native Wayland/Windows apps and are not visible to X clients. Untrusted forwarding (`ssh -X`) can be enabled per host, but Virtuoso normally requires trusted (`-Y`). |
+
+Out of scope: a malicious *root* process inside the container (root holds
+`NET_ADMIN` in that namespace and could rewrite the rules; the watchdog
+catches that afterwards, not before). Everything you run as `dev` cannot
+change the firewall.
+
+## Approaches considered
+
+| Option | Isolation | Linux | Windows | X11 | VS Code | Overhead | Verdict |
+|---|---|---|---|---|---|---|---|
+| **Container (Docker/Podman) + open-source GP client** | Own network namespace; kill-switch inside | Native | WSL2 + WSLg | Host Xwayland / WSLg socket | Remote-SSH or Dev Containers | ~15 MB RAM idle | **Chosen** |
+| Official GlobalProtect app on the host | None: captures host traffic (HIP agent too) | Yes | Yes | n/a | n/a | Agent always on | Rejected; this is what we are avoiding |
+| Plain `ip netns` + openconnect | Good | Yes | No (no netns on Windows) | Manual | Hard (no attach target) | Lowest | Linux-only, fiddly |
+| Dedicated WSL2 distro running the VPN | **Weak**: all WSL2 distros share one network namespace/VM, so the VPN would affect every distro | No | Yes | WSLg | Remote-WSL | Medium | Rejected (not isolated) |
+| Full VM (VirtualBox/Hyper-V) | Strong | Yes | Yes | Inside VM | Remote-SSH | High (you reported it is too slow) | Rejected |
+| Firejail / systemd-nspawn | Good | Yes | No | Possible | Awkward | Low | Linux-only |
+
+The container wins on the only combination that matters here: real
+network-namespace isolation on **both** OSes, a single artifact, an easy VS
+Code target, and idle cost near zero. On Windows it runs inside WSL2 (a
+lightweight utility VM that is already there), with the VPN still confined
+to the container's own namespace *inside* that VM.
+
+## Architecture
+
+```
+ Host (Ubuntu 24.04 or Windows+WSL2)                  ┌──────── gtvpn container (own netns) ──────────────────────────┐
+                                                      │                                                               │
+  VS Code ──ssh──► 127.0.0.1:2222 ───────────────────►│ sshd (key-only, user dev, -L/-W forwarding only)              │
+  browser ◄── GT SSO URL (runtime/out/login.url) ─────│ gtvpn-connect ─ gpauth (SAML) ─► gpclient ─► tun0 ═══════════╪══► GT
+  browser ──globalprotectcallback: link──► gtvpn ────►│ gtvpn-callback                                                │  (all GT traffic)
+  X server (Xwayland / WSLg) ◄── /tmp/.X11-unix ──────│ ssh -Y to GT host  ◄═══ X11 over the tunnel ═══ Virtuoso      │
+                                                      │                                                               │
+                                                      │ tinyproxy 127.0.0.1:3128 ─(allow-list, 443 only)─► eth0 ──────┼──► api.anthropic.com,
+                                                      │   (policy-routed, never via tun0)                             │    github.com, ...
+                                                      │                                                               │
+                                                      │ kill-switch: everything else → REJECT (counted)               │
+                                                      └───────────────────────────────────────────────────────────────┘
+```
+
+### Identities and what each may do
+
+| Identity | Who | tun0 | WAN (eth0) | Docker DNS |
+|---|---|---|---|---|
+| `root:gpvpn` | gpclient, gpauth | yes | TCP 443, UDP 4501 to public IPs only | yes |
+| `tinyproxy:gtegress` | direct-egress proxy | (policy-routed away) | TCP 443 to public IPs only, for allow-listed names | yes |
+| `dev` | you, VS Code server, ssh, Claude Code | yes | **no** | **no** |
+| anything else (incl. plain root) | | yes | **no** | **no** |
+
+These are enforced with iptables `owner` matches. The policy is `DROP`, and
+the catch-all is `REJECT` through a counting chain (`GTVPN_BLOCKED`). The
+verifier uses that counter to prove each blocked attempt was stopped by the
+kill-switch itself, rather than failing by accident.
+
+## GlobalProtect client
+
+We use [GlobalProtect-openconnect](https://github.com/yuezk/GlobalProtect-openconnect)
+3.2.0 (`gpclient` + `gpauth`), taken from its official image pinned by
+digest. Those are musl binaries; the Dockerfile copies them, their exact
+shared libraries and the musl loader onto Ubuntu 24.04, because the VS Code
+server and Claude Code need glibc. `gpclient` embeds libopenconnect, so no
+separate openconnect build is needed.
+
+### Sign-in (GT SSO + Duo)
+
+`gpauth --browser manual` normally prints a URL on a random local port and
+waits for a pasted `globalprotectcallback:` link. We automate both ends:
+
+1. `gtvpn-connect` reads that URL and resolves it **inside** the container.
+   It is a one-shot redirect (or an auto-posting form) to GT's login page.
+   The result goes to `runtime/out/login.url`, so the host browser never
+   needs network access into the container.
+2. The host-side `gtvpn connect` watches that file and opens it in your
+   default browser (or `GTVPN_BROWSER`, for example a private window).
+3. After GT login + Duo, the browser opens `globalprotectcallback:…`. A
+   per-user URL handler (an XDG `.desktop` file on Linux, HKCU registry on
+   Windows) runs `gtvpn callback`, which passes it into the container on
+   stdin (`gtvpn-callback`). Pasting into the terminal works too.
+4. `gpauth` prints the auth cookie, and `gpclient connect --cookie-on-stdin
+   --background` brings up `tun0`.
+
+This flow was exercised against a fake portal, up to the point where the
+portal would issue a real cookie. Password/Duo-push portals are supported
+with `GTVPN_AUTH=password`.
+
+## X11
+
+- **Ubuntu 24.04 (GNOME on Wayland):** the container mounts `/tmp/.X11-unix`
+  read-only and gets a wildcard-family copy of your Xwayland cookie,
+  refreshed on every `gtvpn up`. `dev` runs with your UID, so the
+  `SI:localuser` fallback also works. Inside, `~/.Xauthority` holds the
+  cookie under both the wildcard and `gtvpn/unix:N` names; without that,
+  ssh's X11 forwarding fails with `Invalid MIT-MAGIC-COOKIE-1`, which the lab
+  caught.
+- **Windows:** WSLg is a built-in X server. The container mounts
+  `/mnt/wslg/.X11-unix` (Docker Engine in WSL) or
+  `/run/desktop/mnt/host/wslg/.X11-unix` (Docker Desktop). No VcXsrv/X410
+  install, no cookie.
+- Inside the container, `ssh <alias>` uses `ForwardX11Trusted yes`,
+  compression and connection multiplexing, so there is one Duo prompt per
+  host for 8 hours.
+
+## VS Code
+
+- **Primary: Remote-SSH to `gtvpn`** (`127.0.0.1:2222`, key-only, host key
+  pinned by `gtvpn setup`). It works the same on Linux and Windows. With
+  `remote.SSH.localServerDownload: always`, VS Code downloads its server on
+  the host and copies it in, because the sealed container cannot.
+- **GT hosts directly:** `gt-<alias>` entries use `ProxyJump gtvpn`. The
+  host's ssh/VS Code reaches the GT host *through the container's tunnel*.
+  Container sshd allows only local (`-W`/`-L`) forwarding, and those
+  connections are opened as `dev`, so they are tunnel-only. The lab checks
+  that a jump cannot reach the internet or LAN.
+- **Alternative: Dev Containers "Attach to Running Container"** with the
+  provided image config (`remoteUser: dev`).
+
+## Direct egress for Claude Code
+
+A sealed container would make Claude Code unusable in split-tunnel mode, and
+in full-tunnel mode it would send that traffic through GT. Instead:
+
+- tinyproxy on `127.0.0.1:3128` with a default-deny, exact-hostname
+  allow-list (`GTVPN_DIRECT_ALLOW`), CONNECT to port 443 only. It refuses IP
+  literals and always refuses `*.gatech.edu`.
+- Its sockets are marked and policy-routed (`ip rule fwmark → table 166`)
+  out of `eth0` with MASQUERADE, so they bypass GT even when GT pushes a
+  default route.
+- Allow-listed names are resolved through Docker DNS and pinned in
+  `/etc/hosts`, refreshed every 5 minutes, so GT's DNS never sees them.
+- `HTTPS_PROXY`/`NO_PROXY` are set for `dev` sessions. `NO_PROXY` covers GT
+  names and ranges so they still go straight into the tunnel.
+- Claude Code itself is the official native binary from the npm platform
+  package, checked against the registry's sha512 integrity hash at build.
+  The auto-updater is disabled; `gtvpn rebuild` updates it.
+
+Set `GTVPN_DIRECT_EGRESS=0` for a container that can reach GT and nothing
+else.
+
+## Verification ("recursive checks")
+
+Three layers, run continuously by `gtvpn watch`:
+
+1. **Container** (`gtvpn-verify`): firewall integrity and policy, IPv6 off,
+   root-run files not writable by `dev`, and 13 blocked-path probes as `dev`, as plain root and as the VPN client
+   (internet, DNS servers, Docker DNS, Docker host, LAN, wrong ports, IPv6,
+   name resolution while down). Each probe must fail **and** increment the
+   kill-switch counter. A positive control checks that the VPN client can
+   still reach the portal. With the tunnel up: VPN DNS servers routed via
+   tun0, GT names resolve, probe targets reachable via tun0, and the
+   gateway is unreachable for anyone but the client. Direct-egress checks:
+   loopback-only proxy, allow-listed host works, non-listed host/GT/raw IP
+   and other ports refused, pins come from Docker DNS, policy routing goes
+   via eth0, and the pinned IP is unreachable without the proxy.
+   It runs automatically at container start, and the container refuses to
+   start if it fails.
+2. **Host** (`host/verify-host.sh`): container is not host-networked or
+   privileged, capabilities and `no-new-privileges` are as expected, ports
+   are on loopback only, sshd is unreachable from the LAN IP, the VPN
+   address/routes/DNS are absent on the host, GT-internal probe targets are
+   unreachable from the host, no GP client runs on the host (and on Windows
+   the PANGP adapter is down), and host vs container egress IPs differ.
+3. **Lab** (`tests/lab/run-lab.sh`, `run-x11.sh`): a real tunnel to an
+   ocserv stand-in gateway, in split and full-tunnel modes, plus a fake
+   allow-listed API, a fake GT ssh server and an Xvfb "host display". It
+   runs all of the above plus host→container→GT ProxyJump, SSH auth
+   hardening, kill -9 of the client, firewall tampering (watchdog), and the
+   Cadence path (remote X app → ssh over tunnel → container → host X).
+   `run-cli.sh` drives the real host CLI, including a planted-symlink
+   attack on `runtime/out` and hostile sign-in addresses. `run-perms.sh`
+   builds the image from an all-0777 copy, as from a Windows drive.
+
+## Resource use
+
+Idle: sshd, tinyproxy and a few shell loops, about 5 MB RSS (measured) and ~0%
+CPU. Limits come from `.env` (`GTVPN_CPUS`, `GTVPN_MEMORY`, `GTVPN_PIDS`),
+and on Windows also from `.wslconfig` (`Setup-GtVpn.ps1 -Memory 6GB
+-Processors 4`). The image is ~260 MB compressed with Claude Code (~100 MB
+without).
+
+## Extending later
+
+- Other company VPNs: `gpclient` handles any GlobalProtect portal
+  (`GTVPN_PORTAL`). For AnyConnect/Pulse/Fortinet, add `openconnect` to the
+  image and switch `gtvpn-connect`; the kill-switch, verifier, X11 and VS
+  Code layers are protocol-agnostic. For simultaneous VPNs, run one
+  container per VPN (`COMPOSE_PROJECT_NAME`, different `GTVPN_SSH_PORT`).
+- Heavier GUI use: if X11 over the VPN is too slow for Virtuoso, GT's
+  remote desktop offerings can be reached the same way (for example VNC
+  through `ssh -L` inside the container).

@@ -1,0 +1,11 @@
+// Add to your VS Code *user* settings (Ctrl+Shift+P -> "Preferences: Open User Settings (JSON)").
+{
+  // The container cannot reach VS Code's download servers (it is sealed),
+  // so let VS Code download the server/extensions on your machine and copy
+  // them over SSH. Works for `gtvpn` and for GT hosts reached via gt-<alias>.
+  "remote.SSH.localServerDownload": "always",
+  "remote.downloadExtensionsLocally": true,
+  // Windows only: use the built-in OpenSSH client.
+  // "remote.SSH.path": "C:\\Windows\\System32\\OpenSSH\\ssh.exe",
+  "remote.SSH.remotePlatform": { "gtvpn": "linux" }
+}

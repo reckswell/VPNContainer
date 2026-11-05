@@ -1,0 +1,9 @@
+{
+  "remoteUser": "dev",
+  "workspaceFolder": "/home/dev/projects",
+  "remoteEnv": { "GTVPN": "1" },
+  "settings": {
+    "terminal.integrated.defaultProfile.linux": "bash"
+  },
+  "extensions": []
+}

@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# gtvpn-egress: the allow-listed direct path (for Claude Code and other dev
+# tools) that deliberately does NOT go through the GT tunnel.
+#
+#   * A filtering HTTPS proxy (tinyproxy) on 127.0.0.1:3128 accepts CONNECT
+#     only to the exact hostnames in GTVPN_DIRECT_ALLOW, port 443 only.
+#   * The proxy runs as group gtegress, the only identity besides the VPN
+#     client that the kill-switch lets out of the WAN interface; its packets
+#     are policy-routed out of the WAN even when the VPN is full-tunnel.
+#   * Allow-listed names are resolved through Docker's DNS (never GT's) and
+#     pinned in /etc/hosts, so GT does not even see those DNS lookups.
+#
+#   gtvpn-egress start     write config, pin names, start proxy + refresher
+#   gtvpn-egress pin       re-resolve and re-pin the allow-listed names
+set -euo pipefail
+
+ALLOW=${GTVPN_DIRECT_ALLOW:-api.anthropic.com claude.ai platform.claude.com console.anthropic.com statsig.anthropic.com downloads.claude.ai}
+PORT=${GTVPN_PROXY_PORT:-3128}
+CONF=/run/gtvpn/tinyproxy.conf
+FILTER=/run/gtvpn/egress-allow.ere
+MARK_BEGIN="# >>> gtvpn direct-egress pins (managed) >>>"
+MARK_END="# <<< gtvpn direct-egress pins <<<"
+log() { printf '[gtvpn-egress] %s\n' "$*" >&2; }
+as_egress() { setpriv --reuid=tinyproxy --regid=gtegress --clear-groups -- "$@"; }
+
+is_gt() { [[ ${1,,} == gatech.edu || ${1,,} == *.gatech.edu ]]; }
+valid_host() { [[ $1 =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)+$ ]]; }
+
+pin() {
+  local h ips block="" tmp
+  for h in $ALLOW; do
+    valid_host "$h" || { log "ignoring invalid hostname '$h'"; continue; }
+    is_gt "$h" && { log "refusing GT host '$h' on the direct path (GT is tunnel-only)"; continue; }
+    ips=$(as_egress dig +time=3 +tries=2 +short @127.0.0.11 "$h" A 2>/dev/null \
+          | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | head -4 || true)
+    if [[ -z $ips ]]; then log "could not resolve $h (offline?)"; continue; fi
+    while read -r ip; do block+="$ip $h"$'\n'; done <<<"$ips"
+  done
+  tmp=$(mktemp)
+  # Docker bind-mounts /etc/hosts, so rewrite it in place (no rename).
+  awk -v b="$MARK_BEGIN" -v e="$MARK_END" '$0==b{skip=1;next} $0==e{skip=0;next} !skip' /etc/hosts > "$tmp"
+  { cat "$tmp"; echo "$MARK_BEGIN"; printf '%s' "$block"; echo "$MARK_END"; } > /etc/hosts
+  rm -f "$tmp"
+}
+
+start() {
+  : > "$FILTER"
+  local h
+  for h in $ALLOW; do
+    valid_host "$h" || continue
+    is_gt "$h" && continue
+    printf '^%s$\n' "${h//./\\.}" >> "$FILTER"
+  done
+  cat > "$CONF" <<EOF
+User tinyproxy
+Group gtegress
+Port $PORT
+Listen 127.0.0.1
+BindSame no
+Timeout 600
+MaxClients 64
+Allow 127.0.0.1
+ConnectPort 443
+Filter "$FILTER"
+FilterType ere
+FilterURLs Off
+FilterDefaultDeny Yes
+DisableViaHeader Yes
+LogLevel Notice
+LogFile "/var/log/gtvpn/egress.log"
+PidFile "/run/gtvpn/tinyproxy.pid"
+EOF
+  touch /var/log/gtvpn/egress.log; chown tinyproxy:gtegress /var/log/gtvpn/egress.log
+  pin
+  tinyproxy -c "$CONF"
+  ( while sleep "${GTVPN_PIN_INTERVAL:-300}"; do pin || true; done ) &
+  log "direct egress proxy on 127.0.0.1:$PORT for: $ALLOW"
+}
+
+case ${1:-} in
+  start) start ;;
+  pin) pin ;;
+  *) echo "usage: $0 start|pin" >&2; exit 2 ;;
+esac

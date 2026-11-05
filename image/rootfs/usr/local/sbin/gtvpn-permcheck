@@ -1,0 +1,16 @@
+#!/bin/sh
+# gtvpn-permcheck: print every path that root runs or trusts and that is
+# not root-owned or is group/world-writable; exit 1 if there is any.
+# Root runs our scripts (watchdog, connect, verify). If dev could write to
+# one, or to a directory above one, dev could become root and drop the
+# kill-switch. Used by the image build and by gtvpn-verify (check F4).
+{
+  # the directories above our files
+  find / /etc /usr /usr/local /usr/bin /usr/sbin /usr/lib /usr/libexec /opt /etc/ssh \
+    -maxdepth 0 ! -type l \( -perm /022 -o ! -user root \) -print
+  # our files and the VPN client, in full
+  find /usr/local/sbin /usr/local/bin /etc/gtvpn /etc/ssh/ssh_config.d /etc/ssh/sshd_config.d \
+    /etc/profile.d /opt/gp /usr/libexec/gpclient /usr/bin/gpclient /usr/bin/gpauth \
+    -xdev ! -type l \( -perm /022 -o ! -user root \) -print
+} 2>/dev/null | grep . && exit 1
+exit 0

@@ -1,0 +1,34 @@
+# sshd for the gtvpn container. Reachable only via 127.0.0.1:<port> on the host.
+Port 2222
+ListenAddress 0.0.0.0
+HostKey /var/lib/gtvpn/ssh/ssh_host_ed25519_key
+PidFile /run/gtvpn/sshd.pid
+
+AllowUsers dev
+PermitRootLogin no
+PubkeyAuthentication yes
+AuthorizedKeysFile /etc/gtvpn/authorized_keys/%u
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+UsePAM no
+StrictModes yes
+MaxAuthTries 3
+LoginGraceTime 20
+
+# ProxyJump / VS Code need local (-L / -W) forwarding; the forwarded
+# connections are opened by the 'dev' user and are therefore tunnel-only.
+AllowTcpForwarding local
+AllowStreamLocalForwarding no
+GatewayPorts no
+PermitTunnel no
+X11Forwarding no
+AllowAgentForwarding no
+PermitUserEnvironment no
+# Rewritten at start with the host's DISPLAY.
+SetEnv DISPLAY=:0 GTVPN=1
+
+ClientAliveInterval 30
+ClientAliveCountMax 4
+Subsystem sftp internal-sftp
+LogLevel INFO

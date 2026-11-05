@@ -1,0 +1,98 @@
+# gtvpn: Georgia Tech GlobalProtect inside an isolated container.
+# Use the ./gtvpn wrapper (it fills in .env); plain `docker compose` works too.
+name: gtvpn
+
+services:
+  gtvpn:
+    build:
+      context: ./image
+      args:
+        BASE_IMAGE: ${GTVPN_BASE_IMAGE:-ubuntu:24.04}
+        INSTALL_CLAUDE_CODE: ${GTVPN_INSTALL_CLAUDE_CODE:-1}
+        CLAUDE_CODE_VERSION: ${GTVPN_CLAUDE_CODE_VERSION:-latest}
+    image: gtvpn:local
+    container_name: gtvpn
+    hostname: gtvpn
+    init: true
+    restart: "no"
+    stop_grace_period: 15s
+
+    # --- Isolation ---------------------------------------------------------
+    # Own network namespace (never `network_mode: host`): the tunnel, its
+    # routes and its DNS exist only in here. NET_ADMIN is scoped to this
+    # namespace; it cannot touch the host's routing table.
+    networks: [gtvpn_net]
+    cap_drop: [ALL]
+    cap_add:
+      - NET_ADMIN        # create tun0, set routes, apply the kill-switch
+      - NET_RAW          # ping / iptables
+      - SETUID           # sshd privilege separation, drop to 'dev'
+      - SETGID
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - KILL
+      - SYS_CHROOT       # sshd privsep
+      - AUDIT_WRITE      # sshd login records
+    security_opt:
+      - no-new-privileges:true
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      net.ipv6.conf.all.disable_ipv6: 1
+      net.ipv6.conf.default.disable_ipv6: 1
+      net.ipv4.conf.all.src_valid_mark: 1
+    # Only ever published on the host's loopback.
+    ports:
+      - "127.0.0.1:${GTVPN_SSH_PORT:-2222}:2222"
+
+    # --- Resources (edit in .env) -------------------------------------------
+    cpus: ${GTVPN_CPUS:-2}
+    mem_limit: ${GTVPN_MEMORY:-2g}
+    memswap_limit: ${GTVPN_MEMORY:-2g}
+    pids_limit: ${GTVPN_PIDS:-512}
+
+    environment:
+      HOST_UID: ${HOST_UID:-1000}
+      HOST_GID: ${HOST_GID:-1000}
+      GTVPN_PORTAL: ${GTVPN_PORTAL:-vpn.gatech.edu}
+      GTVPN_GATEWAY: ${GTVPN_GATEWAY:-}
+      GTVPN_AUTH: ${GTVPN_AUTH:-auto}
+      GTVPN_USER: ${GTVPN_USER:-}
+      GTVPN_HIP: ${GTVPN_HIP:-0}
+      GTVPN_OS: ${GTVPN_OS:-}
+      GTVPN_CLIENT_VERSION: ${GTVPN_CLIENT_VERSION:-}
+      GTVPN_FIX_OPENSSL: ${GTVPN_FIX_OPENSSL:-0}
+      GTVPN_CLIENT_ARGS: ${GTVPN_CLIENT_ARGS:-}
+      GTVPN_AUTH_ARGS: ${GTVPN_AUTH_ARGS:-}
+      GTVPN_GT_USER: ${GTVPN_GT_USER:-}
+      GTVPN_SSH_HOSTS: ${GTVPN_SSH_HOSTS:-}
+      GTVPN_PROBE_TARGETS: ${GTVPN_PROBE_TARGETS:-}
+      GTVPN_PROBE_NAMES: ${GTVPN_PROBE_NAMES:-gatech.edu}
+      GTVPN_EGRESS_URL: ${GTVPN_EGRESS_URL:-}
+      GTVPN_BLOCK_PRIVATE: ${GTVPN_BLOCK_PRIVATE:-1}
+      GTVPN_CONTROL_ALLOW_CIDRS: ${GTVPN_CONTROL_ALLOW_CIDRS:-}
+      GTVPN_DISPLAY: ${GTVPN_DISPLAY:-:0}
+      # Allow-listed direct path (off the GT tunnel) for Claude Code / dev tools
+      GTVPN_DIRECT_EGRESS: ${GTVPN_DIRECT_EGRESS:-1}
+      GTVPN_DIRECT_ALLOW: ${GTVPN_DIRECT_ALLOW:-api.anthropic.com claude.ai platform.claude.com console.anthropic.com statsig.anthropic.com downloads.claude.ai}
+      GTVPN_NO_PROXY_EXTRA: ${GTVPN_NO_PROXY_EXTRA:-}
+
+    volumes:
+      - home:/home/dev                       # your container home (ssh keys, configs)
+      - state:/var/lib/gtvpn                 # sshd host key
+      - ./runtime/in:/run/gtvpn/in:ro        # authorized_keys, X11 cookie (from host)
+      - ./runtime/out:/run/gtvpn/out         # sign-in URL, host key, last verify report
+      - ${GTVPN_X11_DIR:-/tmp/.X11-unix}:/tmp/.X11-unix:ro
+      - ${GTVPN_SHARE_DIR:-./share}:/home/dev/share   # optional files shared with the host
+
+networks:
+  gtvpn_net:
+    driver: bridge
+    enable_ipv6: false
+    driver_opts:
+      com.docker.network.bridge.enable_icc: "false"
+
+volumes:
+  home:
+  state:

@@ -1,0 +1,348 @@
+#!/usr/bin/env bash
+# gtvpn: host-side control for the isolated Georgia Tech VPN container.
+# Works on Ubuntu 24.04 and inside WSL2 (Windows). Run `./gtvpn help`.
+set -euo pipefail
+
+HERE=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+cd "$HERE"
+NAME=gtvpn
+SSH_DIR="$HOME/.ssh/gtvpn"
+
+c_b=$'\033[1m'; c_g=$'\033[32m'; c_r=$'\033[31m'; c_y=$'\033[33m'; c_0=$'\033[0m'
+say()  { printf '%s[gtvpn]%s %s\n' "$c_b" "$c_0" "$*"; }
+warn() { printf '%s[gtvpn] %s%s\n' "$c_y" "$*" "$c_0" >&2; }
+die()  { printf '%s[gtvpn] %s%s\n' "$c_r" "$*" "$c_0" >&2; exit 1; }
+
+is_wsl() { grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; }
+
+# Container engine: docker (default) or podman (GTVPN_ENGINE=podman).
+ENGINE=${GTVPN_ENGINE:-docker}
+compose() {
+  if [[ $ENGINE == podman ]]; then podman compose "$@"; else docker compose "$@"; fi
+}
+engine() { "$ENGINE" "$@"; }
+running() { [[ $(engine inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null) == true ]]; }
+need_running() { running || die "container is not running; start it with: ./gtvpn up"; }
+
+# Read KEY=VALUE from .env without executing it.
+envget() {
+  local k=$1 line v=""
+  [[ -f .env ]] || { echo ""; return; }
+  line=$(grep -E "^${k}=" .env | tail -1 || true)
+  v=${line#*=}; v=${v%\"}; v=${v#\"}; v=${v%\'}; v=${v#\'}
+  printf '%s' "$v"
+}
+envset() { # key value  (in-place, keeps the rest of the file)
+  local k=$1 v=$2 tmp; tmp=$(mktemp)
+  if grep -qE "^${k}=" .env; then
+    awk -v k="$k" -v v="$v" 'BEGIN{FS=OFS="="} $1==k{$0=k"="v} {print}' .env > "$tmp"
+  else cp .env "$tmp"; printf '%s=%s\n' "$k" "$v" >> "$tmp"; fi
+  cat "$tmp" > .env; rm -f "$tmp"
+}
+
+open_url() { # url-or-file
+  local u=$1 b; b=$(envget GTVPN_BROWSER)
+  if [[ -n $b ]]; then
+    # shellcheck disable=SC2086
+    nohup $b "$u" >/dev/null 2>&1 & return
+  fi
+  if is_wsl; then
+    if [[ -e $u ]]; then u=$(wslpath -w "$u"); fi
+    if command -v wslview >/dev/null; then wslview "$u" >/dev/null 2>&1 & return; fi
+    powershell.exe -NoProfile -Command "Start-Process '${u//\'/\'\'}'" >/dev/null 2>&1 & return
+  fi
+  command -v xdg-open >/dev/null && { xdg-open "$u" >/dev/null 2>&1 & return; }
+  warn "could not open a browser; open this yourself: $u"
+}
+
+# ---------------------------------------------------------------------------
+# X11: decide which X server socket the container gets, and an auth cookie.
+x11_detect() {
+  local disp sockdir
+  if is_wsl; then
+    disp=:0
+    if engine info --format '{{.OperatingSystem}}' 2>/dev/null | grep -qi 'docker desktop'; then
+      sockdir=/run/desktop/mnt/host/wslg/.X11-unix     # Docker Desktop's view of WSLg
+    else
+      sockdir=/mnt/wslg/.X11-unix                      # Docker Engine inside WSL
+    fi
+  else
+    disp=${DISPLAY:-:0}
+    case $disp in
+      :*|unix:*) ;;
+      *) warn "DISPLAY=$disp is not a local X server; using :0"; disp=:0 ;;
+    esac
+    disp=":${disp##*:}"; disp=${disp%%.*}
+    sockdir=/tmp/.X11-unix
+  fi
+  envset GTVPN_DISPLAY "$disp"
+  envset GTVPN_X11_DIR "$sockdir"
+}
+
+x11_cookie() {
+  # Fresh cookie each `up`: Xwayland generates a new one every login.
+  mkdir -p runtime/in
+  local out=runtime/in/xauth disp; disp=$(envget GTVPN_DISPLAY)
+  rm -f "$out"
+  if is_wsl; then return 0; fi          # WSLg needs no cookie
+  if command -v xauth >/dev/null && [[ -n ${DISPLAY:-} ]]; then
+    # 'ffff' = FamilyWild, so the cookie matches inside the container.
+    if xauth nlist "$DISPLAY" 2>/dev/null | sed -e 's/^..../ffff/' | xauth -f "$out" nmerge - 2>/dev/null && [[ -s $out ]]; then
+      chmod 600 "$out"; return 0
+    fi
+  fi
+  rm -f "$out"
+  # Fallback: allow just this local user (the container's 'dev' has your UID).
+  if command -v xhost >/dev/null && [[ -n ${DISPLAY:-} ]]; then
+    xhost "+SI:localuser:$(id -un)" >/dev/null 2>&1 || true
+  fi
+  [[ -n ${DISPLAY:-} ]] || warn "no DISPLAY in this shell; X11 apps will need 'gtvpn up' from a desktop session"
+  : "${disp}"
+}
+
+# ---------------------------------------------------------------------------
+ssh_setup() {
+  mkdir -p "$SSH_DIR"; chmod 700 "$HOME/.ssh" "$SSH_DIR"
+  [[ -s $SSH_DIR/id_ed25519 ]] || ssh-keygen -q -t ed25519 -N '' -C "gtvpn-$(hostname)" -f "$SSH_DIR/id_ed25519"
+  mkdir -p runtime/in
+  # Keep any extra keys (e.g. the Windows-side key added by Setup-GtVpn.ps1).
+  touch runtime/in/authorized_keys
+  grep -qF "$(cut -d' ' -f2 "$SSH_DIR/id_ed25519.pub")" runtime/in/authorized_keys || cat "$SSH_DIR/id_ed25519.pub" >> runtime/in/authorized_keys
+  chmod 644 runtime/in/authorized_keys
+  write_ssh_config
+  if ! grep -qF "Include $SSH_DIR/config" "$HOME/.ssh/config" 2>/dev/null; then
+    local tmp; tmp=$(mktemp)
+    { echo "Include $SSH_DIR/config"; echo; cat "$HOME/.ssh/config" 2>/dev/null || true; } > "$tmp"
+    cat "$tmp" > "$HOME/.ssh/config"; rm -f "$tmp"; chmod 600 "$HOME/.ssh/config"
+    say "added 'Include $SSH_DIR/config' to ~/.ssh/config"
+  fi
+}
+
+write_ssh_config() { ssh_config_text "$SSH_DIR/id_ed25519" "$SSH_DIR/known_hosts" "$SSH_DIR/cm-%C" > "$SSH_DIR/config"; chmod 600 "$SSH_DIR/config"; }
+
+ssh_config_text() { # identity known_hosts controlpath|none
+  local id=$1 kh=$2 cm=$3 port user hosts pair alias fq
+  port=$(envget GTVPN_SSH_PORT); port=${port:-2222}
+  user=$(envget GTVPN_GT_USER); hosts=$(envget GTVPN_SSH_HOSTS)
+  {
+    echo "# Managed by gtvpn ($HERE). Regenerate with: ./gtvpn setup"
+    echo "Host gtvpn"
+    echo "    HostName 127.0.0.1"
+    echo "    Port $port"
+    echo "    User dev"
+    echo "    IdentityFile $id"
+    echo "    IdentitiesOnly yes"
+    echo "    UserKnownHostsFile $kh"
+    echo "    StrictHostKeyChecking yes"
+    echo "    ForwardAgent no"
+    echo "    ForwardX11 no"
+    echo "    ServerAliveInterval 30"
+    for pair in $hosts; do
+      alias=${pair%%=*}; fq=${pair#*=}
+      [[ -n $alias && -n $fq && $alias != "$pair" ]] || continue
+      echo
+      echo "# GT host '$alias' reached THROUGH the container's tunnel"
+      echo "Host gt-$alias"
+      echo "    HostName $fq"
+      [[ -n $user ]] && echo "    User $user"
+      echo "    ProxyJump gtvpn"
+      if [[ $cm != none ]]; then
+        echo "    ControlMaster auto"
+        echo "    ControlPath $cm"
+        echo "    ControlPersist 8h"
+      fi
+      echo "    ServerAliveInterval 30"
+    done
+  }
+}
+
+pin_hostkey() {
+  local port pub; port=$(envget GTVPN_SSH_PORT); port=${port:-2222}
+  for _ in $(seq 30); do [[ -s runtime/out/ssh_host_ed25519_key.pub ]] && break; sleep 1; done
+  pub=$(cut -d' ' -f1,2 runtime/out/ssh_host_ed25519_key.pub 2>/dev/null || true)
+  [[ -n $pub ]] || { warn "container host key not published yet"; return; }
+  echo "[127.0.0.1]:$port $pub" > "$SSH_DIR/known_hosts"; chmod 600 "$SSH_DIR/known_hosts"
+}
+
+install_url_handler() {
+  # Lets the browser hand the GT sign-in result straight back to the container.
+  if is_wsl; then
+    say "Windows: the link handler is installed by windows\\Setup-GtVpn.ps1"
+    return
+  fi
+  command -v xdg-mime >/dev/null || { warn "xdg-mime not found; you will paste the sign-in link manually"; return; }
+  local d="$HOME/.local/share/applications"; mkdir -p "$d"
+  cat > "$d/gtvpn-callback.desktop" <<EOF
+[Desktop Entry]
+Type=Application
+Name=GT VPN sign-in (gtvpn)
+Comment=Hands the GlobalProtect SSO result to the isolated gtvpn container
+Exec=$HERE/gtvpn callback %u
+Terminal=false
+NoDisplay=true
+MimeType=x-scheme-handler/globalprotectcallback;
+EOF
+  xdg-mime default gtvpn-callback.desktop x-scheme-handler/globalprotectcallback
+  command -v update-desktop-database >/dev/null && update-desktop-database "$d" >/dev/null 2>&1 || true
+  say "registered the globalprotectcallback: link handler"
+}
+
+vscode_attach_config() {
+  # Dev Containers "Attach to Running Container" defaults for this image.
+  local d
+  for d in "$HOME/.config/Code/User/globalStorage/ms-vscode-remote.remote-containers/imageConfigs" \
+           "$HOME/.config/Code - Insiders/User/globalStorage/ms-vscode-remote.remote-containers/imageConfigs"; do
+    [[ -d $(dirname "$(dirname "$d")") ]] || continue
+    mkdir -p "$d"; cp vscode/attached-container-config.json "$d/gtvpn%3alocal.json"
+  done
+}
+
+cmd_setup() {
+  command -v "$ENGINE" >/dev/null || die "$ENGINE is not installed (see README: Install)"
+  [[ -e /dev/net/tun ]] || warn "/dev/net/tun missing on this machine (sudo modprobe tun)"
+  [[ -f .env ]] || { cp .env.example .env; say "created .env (edit it to add your GT hosts)"; }
+  envset HOST_UID "$(id -u)"; envset HOST_GID "$(id -g)"
+  [[ $(id -u) != 0 ]] || die "run gtvpn as your normal user, not root"
+  x11_detect
+  ssh_setup
+  install_url_handler
+  is_wsl || vscode_attach_config
+  mkdir -p runtime/out share
+  say "setup done. Next: ./gtvpn up && ./gtvpn connect"
+}
+
+cmd_up() {
+  [[ -f .env ]] || cmd_setup
+  x11_detect; x11_cookie; write_ssh_config
+  local b=--build; [[ " $* " == *" --no-build "* ]] && b=""
+  compose up -d $b "$@"
+  for _ in $(seq 90); do
+    engine logs "$NAME" 2>&1 | grep -q 'ready\.' && break
+    if ! running; then engine logs --tail 40 "$NAME" >&2; die "container exited (see log above)"; fi
+    sleep 1
+  done
+  engine logs "$NAME" 2>&1 | grep -q 'ready\.' || { engine logs --tail 40 "$NAME" >&2; die "container did not become ready"; }
+  pin_hostkey
+  say "container is up and sealed (no tunnel yet). Next: ./gtvpn connect"
+}
+
+# Open the sign-in page the container published. runtime/out is writable
+# from inside the container, so its content is untrusted: open only an
+# https:// address or our own regular login.html, never a program, a path
+# or another URL scheme (Start-Process / xdg-open would run those).
+open_signin() {
+  local u f=$HERE/runtime/out/login.html
+  u=$(head -1 runtime/out/login.url 2>/dev/null || true)
+  if [[ $u == file:login.html && -f $f && ! -L $f ]]; then open_url "$f"
+  elif [[ ${#u} -le 8192 && $u =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[^[:space:]\"\'\`\\\<\>]*)?$ ]]; then open_url "$u"
+  else warn "ignored an unexpected sign-in address from the container: ${u:0:120}"; return 1; fi
+}
+
+cmd_connect() {
+  running || cmd_up
+  rm -f runtime/out/login.url
+  # Open the GT sign-in page in the host browser when the container asks.
+  (
+    for _ in $(seq 120); do
+      if [[ -s runtime/out/login.url ]]; then open_signin; exit 0; fi
+      sleep 0.5
+    done
+  ) &
+  local opener=$!
+  engine exec -it -u root "$NAME" gtvpn-connect || { kill $opener 2>/dev/null || true; die "connect failed"; }
+  kill $opener 2>/dev/null || true
+  echo
+  cmd_host_verify || true
+}
+
+cmd_callback() {
+  local data=${1:-}
+  [[ -n $data ]] || IFS= read -r data
+  printf '%s\n' "$data" | engine exec -i -u root "$NAME" gtvpn-callback
+  command -v notify-send >/dev/null && notify-send "GT VPN" "Sign-in handed to the gtvpn container" 2>/dev/null || true
+}
+
+cmd_verify() {
+  need_running
+  local rc=0
+  engine exec -u root "$NAME" gtvpn-verify "$@" || rc=1
+  echo
+  cmd_host_verify || rc=1
+  return $rc
+}
+
+cmd_host_verify() { bash "$HERE/host/verify-host.sh"; }
+
+cmd_watch() {
+  need_running
+  local n=${1:-60} i=0
+  say "re-verifying every ${n}s (Ctrl-C to stop)"
+  while true; do
+    i=$((i+1))
+    if engine exec -u root "$NAME" gtvpn-verify --quiet >/dev/null && bash "$HERE/host/verify-host.sh" --quiet >/dev/null; then
+      printf '%s round %d: %ssealed%s\n' "$(date +%T)" "$i" "$c_g" "$c_0"
+    else
+      printf '%s round %d: %sPROBLEM%s (run ./gtvpn verify)\n' "$(date +%T)" "$i" "$c_r" "$c_0"
+      command -v notify-send >/dev/null && notify-send -u critical "GT VPN" "gtvpn verification failed" 2>/dev/null || true
+    fi
+    sleep "$n"
+  done
+}
+
+usage() {
+  cat <<EOF
+${c_b}gtvpn${c_0} - Georgia Tech GlobalProtect in an isolated container
+
+  setup            one-time: .env, SSH key + config, X11, sign-in link handler
+  up               build/start the container (sealed, no tunnel yet)
+  connect          sign in (GT SSO + Duo in your browser) and start the tunnel
+  disconnect       stop the tunnel (container stays sealed)
+  status           tunnel, routes, DNS, kill-switch state
+  verify           full leak/reachability checks, container AND host side
+  watch [secs]     re-run all checks forever, alert on any failure
+  shell            bash in the container as 'dev'
+  ssh <alias|host> ssh to a GT host from inside the container (X11 on)
+  code [path]      open VS Code in the container (Remote-SSH)
+  claude [args]    run Claude Code inside the container
+  x11test          show a test window (xeyes) from the container
+  logs             container + VPN client logs
+  callback <url>   (used by the browser link handler)
+  rebuild          rebuild the image (updates Claude Code / base packages)
+  down             stop and remove the container (home volume is kept)
+EOF
+}
+
+# Sourcing (tests) defines the functions without running a command.
+[[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
+cmd=${1:-help}; shift || true
+case $cmd in
+  setup) cmd_setup ;;
+  up) cmd_up "$@" ;;
+  connect) cmd_connect ;;
+  disconnect) need_running; engine exec -u root "$NAME" gtvpn-disconnect ;;
+  status) need_running; engine exec -u root "$NAME" gtvpn-status ;;
+  verify) cmd_verify "$@" ;;
+  host-verify) cmd_host_verify ;;
+  watch) cmd_watch "$@" ;;
+  shell) need_running; engine exec -it -u dev -w /home/dev "$NAME" bash -l ;;
+  ssh) need_running; engine exec -it -u dev -w /home/dev "$NAME" bash -lc "ssh $(printf '%q ' "$@")" ;;
+  claude) need_running; engine exec -it -u dev -w "${GTVPN_WORKDIR:-/home/dev}" "$NAME" bash -lc "claude $(printf '%q ' "$@")" ;;
+  code)
+    need_running; pin_hostkey
+    command -v code >/dev/null || die "VS Code 'code' command not found on PATH"
+    code --remote ssh-remote+gtvpn "${1:-/home/dev}" ;;
+  x11test) need_running; engine exec -u dev "$NAME" bash -lc 'echo "DISPLAY=$DISPLAY"; timeout 20 xeyes || { echo "X11 test failed"; exit 1; }' ;;
+  logs) engine logs --tail 100 "$NAME"; engine exec -u root "$NAME" sh -c 'tail -n 50 /var/log/gtvpn/gpclient.log 2>/dev/null' || true ;;
+  callback) cmd_callback "$@" ;;
+  ssh-config) ssh_config_text "${1:-$SSH_DIR/id_ed25519}" "${2:-$SSH_DIR/known_hosts}" "${3:-$SSH_DIR/cm-%C}" ;;
+  hostkey) pin_hostkey >/dev/null 2>&1 || true; cut -d' ' -f1,2 runtime/out/ssh_host_ed25519_key.pub ;;
+  authorize) # add a public key (stdin) that may log in to the container, e.g. from Windows
+    IFS= read -r k; [[ $k =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-[a-z0-9-]+|sk-[a-z0-9@.-]+)\ [A-Za-z0-9+/=]+ ]] || die "not an ssh public key"
+    mkdir -p runtime/in; touch runtime/in/authorized_keys
+    grep -qF "$(cut -d' ' -f2 <<<"$k")" runtime/in/authorized_keys || echo "$k" >> runtime/in/authorized_keys
+    say "key authorized (takes effect on next ./gtvpn up)" ;;
+  rebuild) x11_detect; compose build --pull --no-cache; say "rebuilt; restart with ./gtvpn down && ./gtvpn up" ;;
+  down) compose down ;;
+  help|-h|--help) usage ;;
+  *) usage; exit 2 ;;
+esac

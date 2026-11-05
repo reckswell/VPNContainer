@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# gtvpn-outwrite NAME   (stdin -> /run/gtvpn/out/NAME)
+#
+# /run/gtvpn/out is the host's runtime/out folder, which dev can write to
+# (its UID is the host user's). Root must never write there with a plain
+# "> file": dev could have planted a symlink and redirected the write onto
+# any file in the container. Write a fresh temp file (mktemp, O_EXCL) and
+# rename it over the name; rename replaces a symlink instead of following it.
+set -euo pipefail
+OUT=/run/gtvpn/out
+name=${1:?usage: gtvpn-outwrite NAME}
+[[ $name =~ ^[A-Za-z0-9._-]+$ && $name != .* ]] || { echo "gtvpn-outwrite: bad name '$name'" >&2; exit 2; }
+[[ -d $OUT && ! -L $OUT ]] || { echo "gtvpn-outwrite: $OUT missing" >&2; exit 1; }
+tmp=$(mktemp "$OUT/.gtvpn-out.XXXXXX")
+trap 'rm -f "$tmp"' EXIT
+cat > "$tmp"
+chmod 0644 "$tmp"
+mv -fT "$tmp" "$OUT/$name"
+trap - EXIT

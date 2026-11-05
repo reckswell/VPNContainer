@@ -1,0 +1,6 @@
+# Everything runs in Linux (WSL or the container), so keep LF endings even
+# when the repo is cloned with Git for Windows (core.autocrlf=true would
+# otherwise turn the shell scripts into CRLF and break them).
+* text=auto eol=lf
+*.png binary
+*.tar.gz binary

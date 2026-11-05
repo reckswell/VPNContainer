@@ -1,0 +1,14 @@
+#!/bin/bash
+# Connect to the lab ocserv exactly the way gtvpn-connect runs gpclient:
+# as root:gpvpn, same tun name, same vpnc-script.
+set -eu
+GW=${1:-ocserv}
+/usr/local/sbin/gtvpn-disconnect >/dev/null 2>&1 || true
+printf 'student\n' | setpriv --regid=gpvpn --clear-groups -- \
+  openconnect --protocol=anyconnect --no-dtls -i tun0 \
+    --script /usr/libexec/gpclient/vpnc-script \
+    --servercert "${LAB_PIN:?}" \
+    -u gtuser --passwd-on-stdin -b --pid-file=/run/gtvpn/lab-oc.pid \
+    "https://$GW" >/var/log/gtvpn/lab-openconnect.log 2>&1
+for _ in $(seq 20); do ip -4 addr show tun0 2>/dev/null | grep -q inet && exit 0; sleep 0.5; done
+cat /var/log/gtvpn/lab-openconnect.log; exit 1

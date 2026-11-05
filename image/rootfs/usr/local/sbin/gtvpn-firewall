@@ -1,0 +1,178 @@
+#!/usr/bin/env bash
+# gtvpn-firewall: fail-closed kill-switch for the container's network namespace.
+#
+#   gtvpn-firewall apply     install the ruleset (run once, at container start)
+#   gtvpn-firewall check     exit 0 iff the live ruleset is exactly what apply installed
+#   gtvpn-firewall show      print rules with packet counters
+#
+# Model (IPv4; IPv6 is disabled and fully dropped):
+#   * Default policy DROP on INPUT, OUTPUT and FORWARD.
+#   * Anything may use the tunnel (tun+).
+#   * Only sockets owned by root *and* group gpvpn (the VPN client) may send
+#     NEW traffic out of the WAN interface, and only to the VPN control ports
+#     (TCP 443 for portal/gateway, UDP 4501 for GlobalProtect ESP-over-UDP).
+#   * The Docker embedded DNS (127.0.0.11) is reserved for the VPN client,
+#     so your tools can never resolve names outside the tunnel.
+#   * Private/LAN ranges are unreachable over the WAN interface (your home
+#     network and the Docker host are off-limits), unless allow-listed.
+#   * Inbound: only sshd on the WAN interface (published to host 127.0.0.1).
+#     Nothing on the tunnel side can open connections into the container.
+set -euo pipefail
+
+STATE=/run/gtvpn
+SHA_FILE=$STATE/fw.sha
+WAN_FILE=$STATE/wan_if
+GW_FILE=$STATE/wan_gw
+GPVPN_GID=$(getent group gpvpn | cut -d: -f3)
+EGRESS_GID=$(getent group gtegress | cut -d: -f3)
+# Optional allow-listed direct path (Claude Code, GitHub, ...) that bypasses
+# the GT tunnel. Only the local filtering proxy (group gtegress) may use it.
+DIRECT=${GTVPN_DIRECT_EGRESS:-1}
+EGRESS_MARK=0x1a6
+EGRESS_TABLE=166
+
+SSH_PORT=${GTVPN_SSHD_PORT:-2222}
+CTRL_TCP=${GTVPN_CONTROL_TCP_PORTS:-443}
+CTRL_UDP=${GTVPN_CONTROL_UDP_PORTS:-4501}
+BLOCK_PRIVATE=${GTVPN_BLOCK_PRIVATE:-1}
+# Space-separated CIDRs that the VPN client may reach on the WAN even though
+# they are private (only needed for test labs / on-prem portals).
+CTRL_ALLOW=${GTVPN_CONTROL_ALLOW_CIDRS:-}
+PRIVATE_NETS="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16 224.0.0.0/4 240.0.0.0/4"
+
+ipt()  { iptables  -w 5 "$@"; }
+ipt6() { ip6tables -w 5 "$@"; }
+
+log() { printf '[gtvpn-firewall] %s\n' "$*" >&2; }
+
+wan_if() {
+  if [[ -s $WAN_FILE ]]; then cat "$WAN_FILE"; return; fi
+  local i
+  i=$(ip -4 route show default 2>/dev/null | awk '{for(n=1;n<=NF;n++) if($n=="dev"){print $(n+1); exit}}')
+  [[ -n $i ]] || { log "cannot determine WAN interface"; return 1; }
+  echo "$i"
+}
+
+fingerprint() {
+  # Rules only (no counters): IPv4 filter + mangle, IPv6 filter, policy routing.
+  { ipt -S; ipt -t mangle -S; ipt6 -S 2>/dev/null || echo "ip6tables-unavailable"
+    ip rule show 2>/dev/null | grep -F "lookup $EGRESS_TABLE" || true
+  } | sha256sum | cut -d' ' -f1
+}
+
+apply() {
+  mkdir -p "$STATE"
+  local WAN; WAN=$(wan_if); echo "$WAN" > "$WAN_FILE"
+  # Remember the Docker-side gateway: a VPN client killed hard can leave the
+  # container without its default route, and we need it to recover.
+  if [[ ! -s $GW_FILE ]]; then
+    ip -4 route show default dev "$WAN" | awk '{print $3; exit}' > "$GW_FILE"
+  fi
+  [[ -s $GW_FILE ]] || { log "cannot determine WAN gateway"; return 1; }
+
+  # ---- IPv4 -------------------------------------------------------------
+  # Lock everything first so there is no window where traffic can pass.
+  ipt -P INPUT DROP; ipt -P OUTPUT DROP; ipt -P FORWARD DROP
+  ipt -F; ipt -X
+
+  ipt -N GTVPN_BLOCKED
+  ipt -A GTVPN_BLOCKED -p tcp -j REJECT --reject-with tcp-reset
+  ipt -A GTVPN_BLOCKED -j REJECT --reject-with icmp-admin-prohibited
+
+  # INPUT
+  ipt -A INPUT -i lo -j ACCEPT
+  ipt -A INPUT -m conntrack --ctstate INVALID -j DROP
+  ipt -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  ipt -A INPUT -i "$WAN" -p tcp --dport "$SSH_PORT" -m conntrack --ctstate NEW -j ACCEPT
+  ipt -A INPUT -j DROP
+
+  # OUTPUT: loopback (Docker DNS reserved for the VPN client)
+  ipt -A OUTPUT -o lo -d 127.0.0.11 -m owner --uid-owner 0 --gid-owner "$GPVPN_GID" -j ACCEPT
+  [[ $DIRECT == 1 ]] && ipt -A OUTPUT -o lo -d 127.0.0.11 -m owner --gid-owner "$EGRESS_GID" -j ACCEPT
+  ipt -A OUTPUT -o lo -d 127.0.0.11 -j GTVPN_BLOCKED
+  ipt -A OUTPUT -o lo -j ACCEPT
+  ipt -A OUTPUT -m conntrack --ctstate INVALID -j DROP
+  ipt -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+  # OUTPUT: the tunnel, for everyone
+  ipt -A OUTPUT -o tun+ -j ACCEPT
+
+  # OUTPUT: WAN, VPN client only
+  ipt -N GTVPN_CTRL
+  local c p
+  for c in $CTRL_ALLOW; do ipt -A GTVPN_CTRL -d "$c" -j RETURN; done
+  if [[ $BLOCK_PRIVATE == 1 ]]; then
+    for c in $PRIVATE_NETS; do ipt -A GTVPN_CTRL -d "$c" -j GTVPN_BLOCKED; done
+  fi
+  ipt -A GTVPN_CTRL -j RETURN
+  ipt -A OUTPUT -o "$WAN" -m owner --uid-owner 0 --gid-owner "$GPVPN_GID" -j GTVPN_CTRL
+  for p in ${CTRL_TCP//,/ }; do
+    ipt -A OUTPUT -o "$WAN" -p tcp --dport "$p" -m owner --uid-owner 0 --gid-owner "$GPVPN_GID" -m conntrack --ctstate NEW -j ACCEPT
+  done
+  for p in ${CTRL_UDP//,/ }; do
+    ipt -A OUTPUT -o "$WAN" -p udp --dport "$p" -m owner --uid-owner 0 --gid-owner "$GPVPN_GID" -j ACCEPT
+  done
+
+  # OUTPUT: WAN, allow-listed direct egress proxy only (TCP 443).
+  if [[ $DIRECT == 1 ]]; then
+    ipt -A OUTPUT -o "$WAN" -m owner --gid-owner "$EGRESS_GID" -j GTVPN_CTRL
+    ipt -A OUTPUT -o "$WAN" -p tcp --dport 443 -m owner --gid-owner "$EGRESS_GID" -m conntrack --ctstate NEW -j ACCEPT
+  fi
+
+  # Everything else is a leak attempt: count and reject (fast failure).
+  ipt -A OUTPUT -j GTVPN_BLOCKED
+
+  # FORWARD: the container never routes for anyone.
+  ipt -A FORWARD -j DROP
+
+  # ---- Policy routing for the direct path --------------------------------
+  # Even with a full-tunnel VPN (default route via tun0), the proxy's sockets
+  # are marked and routed out of the WAN, so GT never carries that traffic.
+  ipt -t mangle -F OUTPUT
+  ip rule del fwmark "$EGRESS_MARK" table "$EGRESS_TABLE" 2>/dev/null || true
+  ip route flush table "$EGRESS_TABLE" 2>/dev/null || true
+  if [[ $DIRECT == 1 ]]; then
+    ip route add default via "$(cat "$GW_FILE")" dev "$WAN" table "$EGRESS_TABLE"
+    ip rule add fwmark "$EGRESS_MARK" table "$EGRESS_TABLE" priority 100
+    ipt -t mangle -A OUTPUT -m owner --gid-owner "$EGRESS_GID" -j MARK --set-mark "$EGRESS_MARK"
+    # Source address may have been picked from tun0 before re-routing.
+    ipt -t nat -D POSTROUTING -o "$WAN" -m mark --mark "$EGRESS_MARK" -j MASQUERADE 2>/dev/null || true
+    ipt -t nat -A POSTROUTING -o "$WAN" -m mark --mark "$EGRESS_MARK" -j MASQUERADE
+  fi
+
+  # ---- IPv6: off ---------------------------------------------------------
+  if ipt6 -L >/dev/null 2>&1; then
+    ipt6 -P INPUT DROP; ipt6 -P OUTPUT DROP; ipt6 -P FORWARD DROP
+    ipt6 -F; ipt6 -X
+    ipt6 -A INPUT -i lo -j ACCEPT
+    ipt6 -A OUTPUT -o lo -j ACCEPT
+  else
+    log "ip6tables unavailable; relying on disable_ipv6 sysctl"
+  fi
+  for f in /proc/sys/net/ipv6/conf/*/disable_ipv6; do
+    [[ -w $f ]] && echo 1 > "$f" 2>/dev/null || true
+  done
+
+  fingerprint > "$SHA_FILE"
+  log "kill-switch active (wan=$WAN, control tcp=$CTRL_TCP udp=$CTRL_UDP, block_private=$BLOCK_PRIVATE, direct_egress=$DIRECT)"
+}
+
+check() {
+  local ok=0
+  [[ -s $SHA_FILE ]] || { echo "FAIL firewall never applied"; return 1; }
+  for ch in INPUT OUTPUT FORWARD; do
+    ipt -S | grep -qx -- "-P $ch DROP" || { echo "FAIL ipv4 $ch policy is not DROP"; ok=1; }
+  done
+  if [[ "$(fingerprint)" != "$(cat "$SHA_FILE")" ]]; then
+    echo "FAIL ruleset changed since it was applied"; ok=1
+  fi
+  [[ $ok == 0 ]] && echo "OK firewall intact"
+  return $ok
+}
+
+case ${1:-} in
+  apply) apply ;;
+  check) check ;;
+  show)  ipt -L -n -v --line-numbers; echo; ipt6 -L -n -v 2>/dev/null || true ;;
+  *) echo "usage: $0 apply|check|show" >&2; exit 2 ;;
+esac

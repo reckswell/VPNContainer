@@ -1,0 +1,199 @@
+# gtvpn: Georgia Tech VPN in a sealed container
+
+Connect to GT's GlobalProtect VPN **inside a small container**, not on your
+computer. SSH, VS Code and Cadence/Vivado windows work as usual. Your
+computer's own traffic never touches GT, and GT has no way back in.
+
+```
+  your computer ──(normal internet, untouched)──► the world
+       │
+       └─ gtvpn container ══ GlobalProtect tunnel ══► GT servers (ssh, Cadence, …)
+            • kill-switch: nothing leaves except through the tunnel
+            • VS Code / ssh attach on 127.0.0.1:2222
+            • X11 → your desktop (Ubuntu: Xwayland, Windows: WSLg)
+            • Claude Code, with its own allow-listed direct path (never via GT)
+```
+
+Idle cost is ~5 MB of RAM and ~0% CPU. Set CPU and memory limits in `.env`.
+Design, threat model and the alternatives considered are in
+[docs/DESIGN.md](docs/DESIGN.md).
+
+---
+
+## 1. Install (once per OS)
+
+### Ubuntu 24.04
+
+```bash
+sudo apt install docker.io docker-compose-v2 git xauth
+sudo usermod -aG docker $USER   # then log out and back in
+git clone https://github.com/reckswell/VPNContainer ~/VPNContainer && cd ~/VPNContainer
+./gtvpn setup
+```
+
+### Windows 10/11
+
+1. In PowerShell: `wsl --install -d Ubuntu-24.04` (reboot if asked; an
+   existing `Ubuntu` distro works too), then `wsl --update` to get WSLg, the
+   built-in X server.
+2. Docker, either way:
+   - **Docker Desktop:** Settings → Resources → WSL integration → turn on
+     your Ubuntu distro.
+   - **Docker Engine inside WSL:** in the Ubuntu terminal, run the `apt`
+     and `usermod` lines from the Ubuntu section above.
+3. Clone the repo wherever you keep projects, for example
+   `Documents\Projects` (Git for Windows is fine; `.gitattributes` keeps the
+   scripts' Linux line endings), and run the setup script from it:
+
+   ```powershell
+   cd $HOME\Documents\Projects
+   git clone https://github.com/reckswell/VPNContainer
+   cd VPNContainer
+   powershell -ExecutionPolicy Bypass -File .\windows\Setup-GtVpn.ps1 -Memory 6GB -Processors 4
+   ```
+
+   It finds the repo and your Ubuntu distro on its own (`-Distro` and
+   `-RepoPath` override that), runs `./gtvpn setup` in WSL, sets up SSH for
+   VS Code on Windows, registers the sign-in link handler, caps WSL's
+   resources (`-Memory`/`-Processors` are optional) and adds a `gtvpn`
+   command to PowerShell/cmd.
+
+> On Linux, Docker Engine is preferred over Docker Desktop, because Docker
+> Desktop's VM cannot use your X11 socket.
+
+## 2. Configure
+
+Edit `.env` (created by `setup`). The settings that matter:
+
+```bash
+GTVPN_GT_USER=gburdell3
+GTVPN_SSH_HOSTS="cadence=<your-ece-server>.ece.gatech.edu pace=login-ice.pace.gatech.edu"
+GTVPN_PROBE_TARGETS="<your-ece-server>.ece.gatech.edu:22"   # used by the leak tests
+GTVPN_CPUS=2
+GTVPN_MEMORY=2g
+```
+
+## 3. Daily use
+
+```bash
+./gtvpn up          # start the container (sealed: no network yet)
+./gtvpn connect     # browser opens GT Login + Duo; tunnel comes up; checks run
+./gtvpn ssh cadence # or: ./gtvpn shell, then `ssh cadence`
+virtuoso &          # (on the GT host) windows open on your desktop
+./gtvpn disconnect  # tunnel down; container stays sealed
+./gtvpn down        # stop everything (your container home is kept)
+```
+
+**Sign-in:** `connect` opens GT's login page in your normal browser. After
+Duo, the browser asks to open a *globalprotectcallback* link. Allow it,
+and the result goes straight into the container. If you skipped the link
+handler, copy that link and paste it into the terminal. Only the login page
+itself is visited from your computer (as it would be for Canvas). The
+tunnel is created inside the container.
+
+### VS Code
+
+- **Recommended:** *Remote-SSH: Connect to Host… → `gtvpn`*, or
+  `./gtvpn code`. You get a VS Code window whose terminal is inside the
+  container, and `ssh cadence` with X11 just works there. This works the
+  same way on Windows.
+- **Open a folder on a GT server directly:** connect to `gt-cadence`
+  (generated from `GTVPN_SSH_HOSTS`). It hops through the container's
+  tunnel automatically.
+- Add [vscode/settings-snippet.jsonc](vscode/settings-snippet.jsonc) to
+  your user settings. The container cannot reach VS Code's download servers
+  (by design), so VS Code downloads its server on your computer and copies
+  it in.
+- Alternative: *Dev Containers: Attach to Running Container → gtvpn*.
+  `setup` installs an attach config that logs you in as `dev`.
+
+### Cadence Virtuoso / Vivado (X11)
+
+Inside the container, `ssh <alias>` already uses trusted X11 forwarding,
+compression and connection sharing (one Duo prompt per host for 8 h).
+Test it with `./gtvpn x11test` (shows xeyes from the container). On
+Ubuntu, `gtvpn up` refreshes the Xwayland cookie each time. On Windows,
+WSLg needs nothing at all.
+
+### Claude Code for future projects
+
+`./gtvpn claude` (or `claude` in any container terminal). Your projects can
+live in `/home/dev/projects` (persistent volume), or share a host folder
+through `./share` → `/home/dev/share`. Claude Code reaches Anthropic through
+a filtering proxy that allows only the hostnames in `GTVPN_DIRECT_ALLOW`
+(Anthropic, GitHub, npm and PyPI by default). That traffic leaves directly
+and **never** goes through GT, even if GT sends you a full tunnel. Add hosts
+to that list as projects need them. Set `GTVPN_DIRECT_EGRESS=0` to make the
+container GT-only. Update Claude Code with `./gtvpn rebuild`.
+
+## 4. Verify (as often as you like)
+
+```bash
+./gtvpn verify      # ~45 checks: container side + host side, PASS/FAIL each
+./gtvpn watch 60    # re-run everything every 60 s, desktop alert on failure
+./gtvpn status      # tunnel, routes, DNS, blocked-attempt counter
+```
+
+What is checked (details in [docs/DESIGN.md](docs/DESIGN.md#verification-recursive-checks)):
+
+- **Inside:** firewall intact with policy DROP and IPv6 off. As your user,
+  as root and as the VPN client, every path out except the tunnel is
+  rejected (internet, foreign DNS, Docker DNS, Docker host, LAN, wrong
+  ports, IPv6). Each rejection must also bump the kill-switch counter. When
+  connected: GT DNS and your probe targets are routed through the tunnel and
+  reachable. The direct proxy refuses GT, raw IPs, other ports and
+  non-allow-listed sites.
+- **Host:** no VPN address, route or DNS on your computer, GT-internal
+  targets unreachable from it, no GlobalProtect client running on it (on
+  Windows, the official PANGP adapter is down), the container is not
+  host-networked or privileged, and ports are bound to 127.0.0.1 only.
+- The container refuses to start if the leak self-test fails. A watchdog
+  re-checks the firewall every 15 s and drops the tunnel if anything
+  changed it.
+
+## Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| Tunnel up but GT hosts refuse you | Set `GTVPN_HIP=1` (some portals require a HIP report), then reconnect |
+| Portal rejects the client | Try `GTVPN_OS=Windows` |
+| `unsafe legacy renegotiation` | `GTVPN_FIX_OPENSSL=1` |
+| Portal asks for a password instead of SSO | `GTVPN_AUTH=password`, `GTVPN_USER=<gt user>`; type `push` at the second prompt for Duo |
+| No windows on Ubuntu | Run `./gtvpn up` from a desktop terminal (it needs `$DISPLAY`); `sudo apt install xauth` |
+| No windows on Windows | `wsl --update`, then `wsl --shutdown`; check `ls /mnt/wslg/.X11-unix` |
+| VS Code hangs installing the server | Add `"remote.SSH.localServerDownload": "always"` |
+| A dev tool can't download something | Add its exact hostname to `GTVPN_DIRECT_ALLOW`, then `./gtvpn down && ./gtvpn up` |
+| `git@github.com` (port 22) fails | Use HTTPS remotes; the direct path is HTTPS-only |
+| Virtuoso is sluggish | Expected for X11 over a VPN. Compression is on; for heavy layout work use GT's remote desktop through the container |
+
+## Layout
+
+```
+gtvpn                         host CLI (Linux / WSL)
+compose.yaml, .env.example    container definition and settings
+image/                        Dockerfile + in-container scripts
+  rootfs/usr/local/sbin/      gtvpn-firewall (kill-switch), gtvpn-connect, gtvpn-egress, ...
+  rootfs/usr/local/bin/       gtvpn-verify (container-side checks)
+host/verify-host.sh           host-side checks
+windows/Setup-GtVpn.ps1       Windows setup
+vscode/                       VS Code settings + Dev Containers attach config
+tests/lab/                    end-to-end lab with a real tunnel (see below)
+docs/DESIGN.md                design, threat model, alternatives
+```
+
+## Tests
+
+`tests/lab/` builds a stand-in VPN gateway (ocserv) with "GT-internal"
+services, a fake allow-listed API, a fake portal and a fake GT ssh server,
+then attacks the setup:
+
+```bash
+tests/lab/run-lab.sh   # split + full tunnel: leaks, crash, tampering, SSH jump, proxy (46 checks)
+tests/lab/run-x11.sh   # remote X app → ssh over tunnel → container → host display
+tests/lab/run-cli.sh   # the real ./gtvpn flow incl. SSO hand-off via the link handler
+tests/lab/run-perms.sh # image built from a Windows-drive checkout (all files 0777) is still safe
+```
+
+The one piece the lab cannot do is GT's real portal and Duo. The first
+`./gtvpn connect` against `vpn.gatech.edu` is the final check, and
+`./gtvpn verify` will tell you if anything is off.

@@ -1,0 +1,10 @@
+.env
+runtime/in/*
+runtime/out/*
+!runtime/in/.keep
+!runtime/out/.keep
+share/*
+!share/.keep
+tests/lab/fakeapi/*.pem
+tests/lab/fakeportal/*.pem
+tests/lab/last-run.txt

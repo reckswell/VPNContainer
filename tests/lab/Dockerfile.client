@@ -1,0 +1,7 @@
+# Lab-only variant of the gtvpn image: adds the openconnect CLI so the
+# kill-switch can be tested against an ocserv stand-in gateway.
+FROM gtvpn:local
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends openconnect \
+    && rm -rf /var/lib/apt/lists/*
+COPY lab-connect /usr/local/sbin/lab-connect
+RUN chmod 0755 /usr/local/sbin/lab-connect

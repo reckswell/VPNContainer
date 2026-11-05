@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+# Tear the tunnel down. The kill-switch stays in place, so after this the
+# container has no outside connectivity at all.
+set -uo pipefail
+TUN=${GTVPN_TUN_IF:-tun0}
+if pgrep -x gpclient >/dev/null; then
+  setpriv --regid=gpvpn --clear-groups -- gpclient disconnect --wait 10 >/dev/null 2>&1 || true
+  sleep 1
+  pkill -TERM -x gpclient 2>/dev/null || true
+  sleep 1
+  pkill -KILL -x gpclient 2>/dev/null || true
+fi
+pkill -KILL -x openconnect 2>/dev/null || true   # test lab client
+ip link del "$TUN" 2>/dev/null || true
+rm -f /var/run/gpclient.lock
+# If the client died without cleaning up (kill -9, crash), put the
+# pre-VPN routing and DNS back so a reconnect is possible. The kill-switch
+# is unaffected either way.
+WAN=$(cat /run/gtvpn/wan_if 2>/dev/null || echo eth0)
+GW=$(cat /run/gtvpn/wan_gw 2>/dev/null || true)
+ip -4 route del 0.0.0.0/1 2>/dev/null || true
+ip -4 route del 128.0.0.0/1 2>/dev/null || true
+if [[ -n $GW ]] && ! ip -4 route show default | grep -q .; then
+  ip -4 route add default via "$GW" dev "$WAN" 2>/dev/null || true
+fi
+if [[ -s /run/gtvpn/resolv.conf.orig ]] && ! grep -q 127.0.0.11 /etc/resolv.conf; then
+  cat /run/gtvpn/resolv.conf.orig > /etc/resolv.conf
+fi
+echo "[gtvpn] disconnected"

@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Receives the "globalprotectcallback:..." link from the host's URL handler on
+# stdin (never argv, so it does not show up in process listings) and passes
+# it to a waiting gtvpn-connect.
+set -euo pipefail
+umask 077
+data=$(head -c 65536 | tr -d '\r\n[:space:]')
+data=${data#\"}; data=${data%\"}
+[[ $data == globalprotectcallback:* ]] || { echo "not a globalprotectcallback link" >&2; exit 2; }
+# Only base64/URL-ish characters are expected.
+[[ $data =~ ^globalprotectcallback:[A-Za-z0-9+/=._~%:\&?-]+$ ]] || { echo "unexpected characters in callback" >&2; exit 2; }
+ls -d /run/gtvpn/auth.* >/dev/null 2>&1 || { echo "no sign-in in progress (run 'gtvpn connect' first)" >&2; exit 3; }
+printf '%s\n' "$data" > /run/gtvpn/callback.tmp
+mv /run/gtvpn/callback.tmp /run/gtvpn/callback
+echo "delivered"
