@@ -42,6 +42,14 @@ SUM=$(docker exec gtvpn sha256sum /etc/gtvpn/sshd_config)
 check "a symlink planted in runtime/out does not redirect root's writes" \
   bash -c "[[ -n '$SUM' && \"\$(docker exec gtvpn sha256sum /etc/gtvpn/sshd_config)\" == '$SUM' ]] && [[ -f runtime/out/verify.txt && ! -L runtime/out/verify.txt ]]"
 
+# Interactive shells say when the tunnel is off (else: "Could not resolve hostname").
+SH=$(docker exec -u dev gtvpn bash -ic '__gtvpn_prompt; echo "chroot=$debian_chroot"; ssh -o BatchMode=yes -o ConnectTimeout=3 x.gatech.edu true' 2>&1)
+check "shell prompt shows (GT:off) while the tunnel is down" grep -q 'chroot=GT:off' <<<"$SH"
+check "shell and ssh print the 'connect first' hint while the tunnel is down" \
+  bash -c "[[ \$(grep -c 'GT tunnel is off' <<<\"\$1\") -ge 2 ]]" _ "$SH"
+check "non-interactive ssh commands get no hint (VS Code, scripts)" \
+  bash -c "! ssh -F '$HOME/.ssh/config' -o BatchMode=yes gtvpn 'true' 2>&1 | grep -q 'GT tunnel'"
+
 # hosts.conf: one standard ssh config for the container and for VS Code.
 sed -i 's/^GTVPN_GT_USER=.*/GTVPN_GT_USER=gtdefault/' .env
 cat > hosts.conf <<'HOSTS'

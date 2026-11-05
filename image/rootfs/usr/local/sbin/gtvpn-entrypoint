@@ -47,7 +47,8 @@ if [[ ${GTVPN_DIRECT_EGRESS:-1} == 1 ]]; then
   NP="localhost,127.0.0.1,.gatech.edu,gatech.edu,${GTVPN_NO_PROXY_EXTRA:-}10.0.0.0/8,128.61.0.0/16,130.207.0.0/16,143.215.0.0/16"
   SESSION_ENV+=(HTTPS_PROXY="$P" https_proxy="$P" NO_PROXY="$NP" no_proxy="$NP" DISABLE_AUTOUPDATER=1)
 fi
-{ for kv in "${SESSION_ENV[@]}"; do printf 'export %q\n' "$kv"; done; } > /etc/profile.d/gtvpn.sh
+{ for kv in "${SESSION_ENV[@]}"; do printf 'export %q\n' "$kv"; done
+  echo '[ -r /etc/gtvpn/shell.sh ] && . /etc/gtvpn/shell.sh'; } > /etc/profile.d/gtvpn.sh
 # Interactive non-login shells (VS Code terminals) too.
 grep -q gtvpn.sh /etc/bash.bashrc || echo '[ -r /etc/profile.d/gtvpn.sh ] && . /etc/profile.d/gtvpn.sh' >> /etc/bash.bashrc
 

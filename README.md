@@ -174,6 +174,7 @@ What is checked (details in [docs/DESIGN.md](docs/DESIGN.md#verification-recursi
 
 | Symptom | Fix |
 |---|---|
+| Inside the container, `ssh` to a GT host says "Could not resolve hostname" | The tunnel is off (the prompt shows `(GT:off)`), and the kill-switch blocks everything until it is up. Run `gtvpn connect` on your PC, then retry |
 | Tunnel up but GT hosts refuse you | Set `GTVPN_HIP=1` (some portals require a HIP report), then reconnect |
 | Portal rejects the client | Try `GTVPN_OS=Windows` |
 | `unsafe legacy renegotiation` | `GTVPN_FIX_OPENSSL=1` |
