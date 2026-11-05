@@ -95,19 +95,19 @@ GTVPN_MEMORY=2g
 
 ```bash
 ./gtvpn up          # start the container (sealed: no network yet)
-./gtvpn connect     # browser opens GT Login + Duo; tunnel comes up; checks run
+./gtvpn connect     # GT username, password, then "push" for Duo; tunnel comes up; checks run
 ./gtvpn ssh cadence # or: ./gtvpn shell, then `ssh cadence`
 virtuoso &          # (on the GT host) windows open on your desktop
 ./gtvpn disconnect  # tunnel down; container stays sealed
 ./gtvpn down        # stop everything (your container home is kept)
 ```
 
-**Sign-in:** `connect` opens GT's login page in your normal browser. After
-Duo, the browser asks to open a *globalprotectcallback* link. Allow it,
-and the result goes straight into the container. If you skipped the link
-handler, copy that link and paste it into the terminal. Only the login page
-itself is visited from your computer (as it would be for Canvas). The
-tunnel is created inside the container.
+**Sign-in:** `connect` asks, in your terminal, for your GT username and
+password, then for the Duo factor: type `push` and approve it on your
+phone. This is the same sign-in the official GlobalProtect app uses at GT.
+Everything, including the sign-in, happens inside the container. (For VPN
+portals that use browser SSO instead, `connect` opens the login page in your
+browser and a *globalprotectcallback* link hands the result back.)
 
 ### VS Code
 
@@ -182,9 +182,10 @@ What is checked (details in [docs/DESIGN.md](docs/DESIGN.md#verification-recursi
 |---|---|
 | Inside the container, `ssh` to a GT host says "Could not resolve hostname" | The tunnel is off (the prompt shows `(GT:off)`), and the kill-switch blocks everything until it is up. Run `gtvpn connect` on your PC, then retry |
 | Tunnel up but GT hosts refuse you | Set `GTVPN_HIP=1` (some portals require a HIP report), then reconnect |
-| Portal rejects the client | Try `GTVPN_OS=Windows` |
+| Portal rejects the client | Check `GTVPN_OS` / `GTVPN_CLIENT_VERSION` (defaults: Windows, 6.2.8-243) |
 | `unsafe legacy renegotiation` | `GTVPN_FIX_OPENSSL=1` |
-| Portal asks for a password instead of SSO | `GTVPN_AUTH=password`, `GTVPN_USER=<gt user>`; type `push` at the second prompt for Duo |
+| "gateway does not exist" or "No gateways found" | GT gives Linux clients no gateways. Keep `GTVPN_OS` empty (= Windows) or set `GTVPN_OS=Windows`, or pin `GTVPN_GATEWAY=ni-ext-gw.vpn.gatech.edu`, then `gtvpn up` |
+| The connect window closed before you could read the error | `gtvpn logs` shows the last sign-in transcript (passwords are never in it) |
 | No windows on Ubuntu | Run `./gtvpn up` from a desktop terminal (it needs `$DISPLAY`); `sudo apt install xauth` |
 | No windows on Windows | `ls /mnt/wslg/.X11-unix` in Ubuntu should show `X0`. If not: `wsl --update`, then `wsl --shutdown`. Then `gtvpn down && gtvpn up` and `gtvpn x11test` |
 | `ssh gtvpn` says "Could not resolve hostname" in Git Bash | Git Bash's own ssh can't read the Windows config. Use PowerShell or VS Code, which use Windows' OpenSSH |

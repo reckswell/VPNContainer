@@ -56,9 +56,10 @@ to the container's own namespace *inside* that VM.
 ```
  Host (Ubuntu 24.04 or Windows+WSL2)                  ┌──────── gtvpn container (own netns) ──────────────────────────┐
                                                       │                                                               │
-  VS Code ──ssh──► 127.0.0.1:2222 ───────────────────►│ sshd (key-only, user dev, -L/-W forwarding only)              │
-  browser ◄── GT SSO URL (runtime/out/login.url) ─────│ gtvpn-connect ─ gpauth (SAML) ─► gpclient ─► tun0 ═══════════╪══► GT
-  browser ──globalprotectcallback: link──► gtvpn ────►│ gtvpn-callback                                                │  (all GT traffic)
+  VS Code ──docker exec (Dev Containers, as dev) ────►│ VS Code server, terminals                                     │
+  ssh ──► 127.0.0.1:2222 ────────────────────────────►│ sshd (key-only, user dev, -L/-W forwarding only)              │
+  terminal: GT password + Duo "push" ────────────────►│ gtvpn-connect ─► gpclient ─► gateway ─► tun0 ════════════════╪══► GT
+  (SSO portals: browser ◄─ login.url, callback link ─►│  gpauth (SAML), gtvpn-callback)                               │  (all GT traffic)
   X server (Xwayland / WSLg) ◄── /tmp/.X11-unix ──────│ ssh -Y to GT host  ◄═══ X11 over the tunnel ═══ Virtuoso      │
                                                       │                                                               │
                                                       │ tinyproxy 127.0.0.1:3128 ─(allow-list, 443 only)─► eth0 ──────┼──► api.anthropic.com,
@@ -91,27 +92,70 @@ shared libraries and the musl loader onto Ubuntu 24.04, because the VS Code
 server and Claude Code need glibc. `gpclient` embeds libopenconnect, so no
 separate openconnect build is needed.
 
-### Sign-in (GT SSO + Duo)
+### How GT's VPN works (learned from the official app)
 
-`gpauth --browser manual` normally prints a URL on a random local port and
-waits for a pasted `globalprotectcallback:` link. We automate both ends:
+To match the official client, we read the official GlobalProtect app's
+settings and logs on a Windows PC where it was installed, and surveyed its
+install files (file list, driver INF files, text found in the binaries).
+Nothing was run, patched or connected. What GT does:
+
+- **Portal `vpn.gatech.edu` is only a portal.** After sign-in its config
+  lists the real gateways, both priority 1: `ni-ext-gw.vpn.gatech.edu` and
+  `dc-ext-gw.vpn.gatech.edu`. Its `/ssl-vpn/prelogin.esp` answers "gateway
+  does not exist". The official app picks the faster gateway.
+- **Linux clients get no gateways.** For `clientos=Linux` the portal config
+  holds no gateway list, which is why the client's default (Linux) failed.
+  gtvpn therefore reports itself as the official Windows app
+  (`GTVPN_OS=Windows`, `GTVPN_CLIENT_VERSION=6.2.8-243`, the defaults).
+- **Sign-in is username + password at the portal, then Duo** as a second
+  prompt ("Choose a secondary factor from ('push', 'phone') or enter
+  passcode"). No SSO (`use-sso=no`, no SAML in prelogin). The gateway then
+  accepts the portal's cookie ("Using portal's user credential to login to
+  gateway"), so there is one Duo prompt per connect.
+- **Protocol:** portal `/global-protect/prelogin.esp` → `getconfig.esp`;
+  gateway `/ssl-vpn/prelogin.esp` → `login.esp` → `getconfig.esp`, then the
+  tunnel: IPsec ESP over UDP 4501 (aes-256-gcm/sha1), with a TLS fallback
+  (`/ssl-tunnel-connect.sslvpn`). Full tunnel, GT DNS
+  (130.207.244.251/.244), 3 h idle and session timeouts. gpclient
+  (libopenconnect) speaks exactly this; the kill-switch lets only its
+  `gpvpn` identity out, to TCP 443 and UDP 4501.
+- **Tunnel interface:** on Windows a Palo Alto NDIS miniport ("PANGP Virtual
+  Ethernet Adapter"); here a plain `tun0`, inside the container only.
+- **HIP:** the gateway asks for a Host Information Profile report
+  (`hip-report-needed=yes`), hourly. The official app collects it with the
+  OPSWAT SDK: host info, anti-malware, firewall, disk encryption, patches,
+  backup, DLP. GT's gateway answered every check with success, no
+  quarantine and no remediation. gpclient's built-in `--hip` report
+  describes an invented Windows PC (antivirus products that are not
+  there), so gtvpn does not send it by default (`GTVPN_HIP=0`).
+
+### Sign-in
+
+**Password + Duo (GT):** `gtvpn connect` runs `gtvpn-connect` in your
+terminal. gpclient asks for your GT username and password, then the Duo
+factor: type `push` and approve it on your phone. Prompts do not echo, and
+the terminal transcript (`/var/log/gtvpn/connect.log`, root-only, kept so
+an error survives a closed window) therefore never contains them.
+
+**SSO portals (SAML):** `gpauth --browser manual` normally prints a URL on
+a random local port and waits for a pasted `globalprotectcallback:` link.
+We automate both ends:
 
 1. `gtvpn-connect` reads that URL and resolves it **inside** the container.
-   It is a one-shot redirect (or an auto-posting form) to GT's login page.
+   It is a one-shot redirect (or an auto-posting form) to the login page.
    The result goes to `runtime/out/login.url`, so the host browser never
    needs network access into the container.
 2. The host-side `gtvpn connect` watches that file and opens it in your
    default browser (or `GTVPN_BROWSER`, for example a private window).
-3. After GT login + Duo, the browser opens `globalprotectcallback:…`. A
-   per-user URL handler (an XDG `.desktop` file on Linux, HKCU registry on
-   Windows) runs `gtvpn callback`, which passes it into the container on
-   stdin (`gtvpn-callback`). Pasting into the terminal works too.
+3. After login, the browser opens `globalprotectcallback:…`. A per-user URL
+   handler (an XDG `.desktop` file on Linux, HKCU registry on Windows) runs
+   `gtvpn callback`, which passes it into the container on stdin
+   (`gtvpn-callback`). Pasting into the terminal works too.
 4. `gpauth` prints the auth cookie, and `gpclient connect --cookie-on-stdin
    --background` brings up `tun0`.
 
-This flow was exercised against a fake portal, up to the point where the
-portal would issue a real cookie. Password/Duo-push portals are supported
-with `GTVPN_AUTH=password`.
+The SSO flow is exercised in the lab against a fake portal, up to the point
+where the portal would issue a real cookie.
 
 ## X11
 

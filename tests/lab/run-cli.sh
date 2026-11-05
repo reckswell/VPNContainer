@@ -149,6 +149,11 @@ wait $CPID 2>/dev/null
 OUT=$(sed 's/\x1b\[[0-9;]*m//g' "$LOG")
 check "container received the sign-in from the handler" grep -q "received sign-in from the browser handler" <<<"$OUT"
 check "gpauth accepted the SAML result and gpclient was started" grep -q "signed in; starting tunnel" <<<"$OUT"
+check "connect kept a root-only transcript of the sign-in terminal" bash -c \
+  "[[ \$(docker exec gtvpn stat -c '%a %U' /var/log/gtvpn/connect.log) == '600 root' ]] && docker exec gtvpn grep -q 'starting tunnel' /var/log/gtvpn/connect.log"
+check "gtvpn logs shows the transcript" bash -c "./gtvpn logs 2>&1 | grep -q -- '--- connect.log'"
+check "gpclient accepted its log file (0600; it refuses one others can read)" bash -c \
+  "! grep -q 'must not be readable' <<<\"\$1\" && [[ \$(docker exec gtvpn stat -c %a /var/log/gtvpn/gpclient.log) == 600 ]]" _ "$OUT"
 check "sign-in temp files and login URL were cleaned up" bash -c "! ls runtime/out/login.* >/dev/null 2>&1 && ! docker exec gtvpn sh -c 'ls -d /run/gtvpn/auth.* 2>/dev/null' | grep -q ."
 check "after the failed (fake) tunnel the container is still sealed" ./gtvpn verify --pre
 exit $FAILED

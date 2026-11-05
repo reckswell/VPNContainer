@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # gtvpn-connect: sign in to the GlobalProtect portal and bring the tunnel up.
 #
-# SSO (SAML + Duo) flow, which is what Georgia Tech uses:
+# SSO (SAML + Duo) flow, for portals that use it:
 #   1. gpauth asks the portal for the SAML login URL.
 #   2. The URL is handed to the host (runtime/out/login.url); the host-side
 #      `gtvpn connect` opens it in your normal browser. You log in with
@@ -12,10 +12,20 @@
 #   4. gpclient uses the resulting cookie to connect. The tunnel lives only
 #      in this container's network namespace.
 #
-# Password flow (GTVPN_AUTH=password): gpclient prompts for user/password
-# and the Duo second factor (e.g. type "push") in this terminal.
+# Password flow, which is what Georgia Tech uses: gpclient prompts for
+# user/password and the Duo second factor (type "push") in this terminal.
 set -euo pipefail
 [[ $(id -u) == 0 ]] || { echo "run as root: docker exec -it -u root gtvpn gtvpn-connect" >&2; exit 1; }
+
+# Keep a transcript of this sign-in (what the terminal showed), so an error
+# is not lost when the window closes: /var/log/gtvpn/connect.log, root-only,
+# replaced each time (`gtvpn logs` shows it). `script` records output only,
+# and the password and Duo prompts do not echo, so neither is in it.
+TRANSCRIPT=/var/log/gtvpn/connect.log
+if [[ -z ${GTVPN_IN_TRANSCRIPT:-} && -t 0 && -t 1 ]] && command -v script >/dev/null; then
+  rm -f "$TRANSCRIPT"; install -m 0600 /dev/null "$TRANSCRIPT"
+  SHELL=/bin/bash GTVPN_IN_TRANSCRIPT=1 exec script -qefc "$(printf '%q ' "$0" "$@")" "$TRANSCRIPT"
+fi
 
 PORTAL=${GTVPN_PORTAL:-vpn.gatech.edu}
 AUTH=${GTVPN_AUTH:-auto}
@@ -39,10 +49,12 @@ fi
 # Clear any half-dead previous session (stale client, missing default route).
 /usr/local/sbin/gtvpn-disconnect >/dev/null 2>&1 || true
 
+# gpclient takes --fix-openssl before the subcommand (gpauth takes it anywhere).
+gp_global=()
+[[ ${GTVPN_FIX_OPENSSL:-0} == 1 ]] && gp_global+=(--fix-openssl)
 common=(-i "$TUN" --disable-ipv6)
 [[ -n ${GTVPN_GATEWAY:-} ]] && common+=(-g "$GTVPN_GATEWAY") || common+=(--auto-gateway)
 [[ ${GTVPN_HIP:-0} == 1 ]] && common+=(--hip)
-[[ ${GTVPN_FIX_OPENSSL:-0} == 1 ]] && common+=(--fix-openssl)
 [[ -n ${GTVPN_OS:-} ]] && common+=(--os "$GTVPN_OS")
 [[ -n ${GTVPN_CLIENT_VERSION:-} ]] && common+=(--client-version "$GTVPN_CLIENT_VERSION")
 # shellcheck disable=SC2206
@@ -67,11 +79,12 @@ if [[ $AUTH == auto ]]; then
 fi
 
 rm -f "$OUT"/login.url "$OUT"/login.html "$CB"
-: > "$LOG"
+# gpclient --background refuses a log file other users can read or write.
+rm -f "$LOG"; install -m 0600 /dev/null "$LOG"
 
 if [[ $AUTH == password ]]; then
   say "password sign-in (for Duo, enter e.g. 'push' at the second prompt)"
-  as_vpn gpclient connect "$PORTAL" ${GTVPN_USER:+-u "$GTVPN_USER"} "${common[@]}" \
+  as_vpn gpclient "${gp_global[@]}" connect "$PORTAL" ${GTVPN_USER:+-u "$GTVPN_USER"} "${common[@]}" \
     --background --log-file "$LOG"
 else
   work=$(mktemp -d /run/gtvpn/auth.XXXXXX); chmod 700 "$work"
@@ -148,7 +161,7 @@ else
   gpid=""
   grep -q '"success"' "$work/auth.json" || die "sign-in was not accepted: $(head -c 300 "$work/auth.json")"
   say "signed in; starting tunnel"
-  as_vpn gpclient connect "$PORTAL" --cookie-on-stdin "${common[@]}" \
+  as_vpn gpclient "${gp_global[@]}" connect "$PORTAL" --cookie-on-stdin "${common[@]}" \
     --background --log-file "$LOG" <"$work/auth.json"
 fi
 

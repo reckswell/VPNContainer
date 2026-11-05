@@ -434,7 +434,7 @@ ${c_b}gtvpn${c_0} - Georgia Tech GlobalProtect in an isolated container
 
   setup            one-time: .env, SSH key + config, X11, sign-in link handler
   up               build/start the container (sealed, no tunnel yet)
-  connect          sign in (GT SSO + Duo in your browser) and start the tunnel
+  connect          sign in (GT password + Duo "push") and start the tunnel
   disconnect       stop the tunnel (container stays sealed)
   status           tunnel, routes, DNS, kill-switch state
   verify           full leak/reachability checks, container AND host side
@@ -470,7 +470,8 @@ case $cmd in
   claude) need_running; engine exec -it -u dev -w "${GTVPN_WORKDIR:-/home/dev}" "$NAME" bash -lc "claude $(printf '%q ' "$@")" ;;
   code) cmd_code "$@" ;;
   x11test) need_running; engine exec -u dev "$NAME" bash -lc 'echo "DISPLAY=$DISPLAY"; timeout 20 xeyes || { echo "X11 test failed"; exit 1; }' ;;
-  logs) engine logs --tail 100 "$NAME"; engine exec -u root "$NAME" sh -c 'tail -n 50 /var/log/gtvpn/gpclient.log 2>/dev/null' || true ;;
+  logs) engine logs --tail 100 "$NAME"
+    engine exec -u root "$NAME" sh -c 'for f in connect gpclient; do [ -s /var/log/gtvpn/$f.log ] || continue; echo "--- $f.log"; tail -n 50 /var/log/gtvpn/$f.log | sed "s/\x1b\[[0-9;]*[A-Za-z]//g; s/\r//g"; done' || true ;;
   callback) cmd_callback "$@" ;;
   hosts) cmd_hosts ;;
   ssh-config) ssh_config_text "${1:-$SSH_DIR/id_ed25519}" "${2:-$SSH_DIR/known_hosts}" "${3:-$SSH_DIR/cm-%C}" ;;
