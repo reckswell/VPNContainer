@@ -19,4 +19,9 @@ PROMPT_COMMAND="__gtvpn_prompt${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
 # ssh while the tunnel is off: say why it is about to fail.
 ssh() { __gtvpn_up || __gtvpn_hint; command ssh "$@"; }
 
+# VS Code Dev Containers hands your computer's ssh-agent to the container
+# (a /tmp/vscode-ssh-auth-*.sock socket). Keep your personal keys out of the
+# GT side: terminals here do not use it.
+case ${SSH_AUTH_SOCK:-} in /tmp/vscode-ssh-auth-*) unset SSH_AUTH_SOCK ;; esac
+
 __gtvpn_up || __gtvpn_hint

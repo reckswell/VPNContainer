@@ -11,8 +11,9 @@
     2. optionally sets WSL resource limits (.wslconfig),
     3. runs `./gtvpn setup` inside WSL,
     4. creates a Windows SSH key and authorizes it in the container,
-    5. writes %USERPROFILE%\.ssh\gtvpn\config (+ Include) so VS Code
-       Remote-SSH on Windows can open "gtvpn" and your gt-<alias> hosts,
+    5. writes %USERPROFILE%\.ssh\gtvpn\config (+ Include) for ssh and your
+       gt-<alias> hosts, and installs VS Code's Dev Containers extension so
+       `gtvpn code` opens VS Code inside the container (through Docker),
     6. registers the globalprotectcallback: link handler so the browser
        hands the GT sign-in straight back to the container,
     7. installs a `gtvpn` command for PowerShell / cmd.
@@ -120,6 +121,15 @@ if ($existing -notmatch [regex]::Escape($include)) {
   Say "added '$include' to $userCfg"
 }
 
+# VS Code: Dev Containers attaches to the container through Docker Desktop.
+# (`gtvpn setup` above installed its attach config: log in as dev.)
+if (Get-Command code -ErrorAction SilentlyContinue) {
+  $exts = & code --list-extensions 2>$null
+  if ($exts -notcontains "ms-vscode-remote.remote-containers") {
+    & code --install-extension ms-vscode-remote.remote-containers | Write-Host
+  }
+} else { Warn "VS Code ('code') not found on PATH; install it, add the Dev Containers extension, then re-run this script." }
+
 # 6. globalprotectcallback: link handler -> container -----------------------
 $base = "HKCU:\Software\Classes\globalprotectcallback"
 if (Test-Path "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Classes\globalprotectcallback") {
@@ -153,5 +163,5 @@ try {
 
 Say "Done. Next:"
 Write-Host "   gtvpn connect          # GT sign-in in your browser, then the tunnel starts"
-Write-Host "   VS Code: Remote-SSH: Connect to Host... -> gtvpn"
+Write-Host "   gtvpn code             # VS Code inside the container (Dev Containers)"
 Write-Host "   In that terminal: ssh <alias>  then run virtuoso (windows appear via WSLg)"

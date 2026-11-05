@@ -38,7 +38,7 @@ change the firewall.
 
 | Option | Isolation | Linux | Windows | X11 | VS Code | Overhead | Verdict |
 |---|---|---|---|---|---|---|---|
-| **Container (Docker/Podman) + open-source GP client** | Own network namespace; kill-switch inside | Native | WSL2 + WSLg | Host Xwayland / WSLg socket | Remote-SSH or Dev Containers | ~15 MB RAM idle | **Chosen** |
+| **Container (Docker/Podman) + open-source GP client** | Own network namespace; kill-switch inside | Native | WSL2 + WSLg | Host Xwayland / WSLg socket | Dev Containers or Remote-SSH | ~15 MB RAM idle | **Chosen** |
 | Official GlobalProtect app on the host | None: captures host traffic (HIP agent too) | Yes | Yes | n/a | n/a | Agent always on | Rejected; this is what we are avoiding |
 | Plain `ip netns` + openconnect | Good | Yes | No (no netns on Windows) | Manual | Hard (no attach target) | Lowest | Linux-only, fiddly |
 | Dedicated WSL2 distro running the VPN | **Weak**: all WSL2 distros share one network namespace/VM, so the VPN would affect every distro | No | Yes | WSLg | Remote-WSL | Medium | Rejected (not isolated) |
@@ -156,17 +156,32 @@ read it:
 
 ## VS Code
 
-- **Primary: Remote-SSH to `gtvpn`** (`127.0.0.1:2222`, key-only, host key
-  pinned by `gtvpn setup`). It works the same on Linux and Windows. With
-  `remote.SSH.localServerDownload: always`, VS Code downloads its server on
-  the host and copies it in, because the sealed container cannot.
+- **Primary: Dev Containers "Attach to Running Container"** (`gtvpn code`).
+  VS Code enters through `docker exec`, so there is no network path at all.
+  The image label `devcontainer.metadata` and the attach config that
+  `gtvpn setup` installs (`vscode/attached-container-config.json`, in VS
+  Code's globalStorage, on WSL the Windows one) both set `remoteUser: dev`.
+  Root is never used, because root holds NET_ADMIN and could rewrite the
+  kill-switch. Dev Containers downloads the server on the host and copies
+  it in. Processes it starts are ordinary `dev` processes in the container's
+  namespace, so the kill-switch applies to them exactly as to ssh sessions
+  (the lab checks this through `docker exec -u dev`).
+- **What Dev Containers forwards from the host**, and how it is limited:
+  git credentials and Docker credentials are turned off by the settings
+  snippet (`dev.containers.gitCredentialHelperConfigLocation: none`,
+  `dev.containers.dockerCredentialHelper: false`). Its ssh-agent socket
+  (`/tmp/vscode-ssh-auth-*.sock`) has no setting, so interactive shells in
+  the container unset `SSH_AUTH_SOCK` when it points there. Nothing from GT
+  can reach these: INPUT is DROP on the tunnel, so only processes you start
+  in the container could.
 - **GT hosts directly:** `gt-<alias>` entries use `ProxyJump gtvpn`. The
   host's ssh/VS Code reaches the GT host *through the container's tunnel*.
   Container sshd allows only local (`-W`/`-L`) forwarding, and those
   connections are opened as `dev`, so they are tunnel-only. The lab checks
   that a jump cannot reach the internet or LAN.
-- **Alternative: Dev Containers "Attach to Running Container"** with the
-  provided image config (`remoteUser: dev`).
+- **Also possible: Remote-SSH to `gtvpn`** (`127.0.0.1:2222`, key-only, host
+  key pinned by `gtvpn setup`). With `remote.SSH.localServerDownload:
+  always`, VS Code downloads its server on the host and copies it in.
 
 ## Direct egress for Claude Code
 

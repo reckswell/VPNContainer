@@ -50,6 +50,39 @@ check "shell and ssh print the 'connect first' hint while the tunnel is down" \
 check "non-interactive ssh commands get no hint (VS Code, scripts)" \
   bash -c "! ssh -F '$HOME/.ssh/config' -o BatchMode=yes gtvpn 'true' 2>&1 | grep -q 'GT tunnel'"
 
+# VS Code Dev Containers attach (gtvpn code): through docker exec, as dev.
+LBL=$(docker inspect -f '{{index .Config.Labels "devcontainer.metadata"}}' gtvpn)
+check "image tells Dev Containers to log in as dev" \
+  python3 -c 'import json,sys; assert json.loads(sys.argv[1])[0]["remoteUser"]=="dev"' "$LBL"
+VSC=$(mktemp -d); mkdir -p "$VSC/bin" "$VSC/cfg/Code/User"
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/args"\n' "$VSC" > "$VSC/bin/code"; chmod +x "$VSC/bin/code"
+check "gtvpn code runs VS Code with a Dev Containers attach URI" \
+  env PATH="$VSC/bin:$PATH" XDG_CONFIG_HOME="$VSC/cfg" ./gtvpn code
+URI=$(sed -n 2p "$VSC/args" 2>/dev/null)
+check "the URI names the gtvpn container and opens ~/projects" python3 - "$URI" <<'PY'
+import sys, json
+u = sys.argv[1]; pre = "vscode-remote://attached-container+"
+assert u.startswith(pre), u
+hexpart, path = u[len(pre):].split("/", 1)
+assert json.loads(bytes.fromhex(hexpart)) == {"containerName": "/gtvpn"}
+assert "/" + path == "/home/dev/projects", path
+PY
+check "gtvpn code installed the attach config (remoteUser dev)" python3 -c 'import json,sys; assert json.load(open(sys.argv[1]))["remoteUser"]=="dev"' \
+  "$VSC/cfg/Code/User/globalStorage/ms-vscode-remote.remote-containers/imageConfigs/gtvpn%3alocal.json"
+check "gtvpn code refuses a path that is not a plain absolute path" \
+  bash -c "! env PATH='$VSC/bin:$PATH' XDG_CONFIG_HOME='$VSC/cfg' ./gtvpn code '/x;y' 2>/dev/null"
+rm -rf "$VSC"
+# What a Dev Containers terminal is: docker exec -u dev, login shell env probe.
+ENVP=$(docker exec -u dev gtvpn bash -lic 'env' 2>/dev/null)
+check "attached VS Code gets the session env (DISPLAY, GTVPN, Claude Code proxy)" \
+  bash -c "grep -q '^DISPLAY=' <<<\"\$1\" && grep -qx 'GTVPN=1' <<<\"\$1\" && grep -q '^HTTPS_PROXY=http://127.0.0.1:3128' <<<\"\$1\"" _ "$ENVP"
+check "attached VS Code processes are sealed too (no internet without the tunnel)" \
+  bash -c "! docker exec -u dev gtvpn curl -sS -m 5 --noproxy '*' -o /dev/null https://1.1.1.1 2>/dev/null"
+check "container terminals drop VS Code's forwarded ssh-agent" bash -c \
+  "[[ \$(docker exec -u dev -e SSH_AUTH_SOCK=/tmp/vscode-ssh-auth-x.sock gtvpn bash -ic 'echo \"s=\${SSH_AUTH_SOCK:-none}\"' 2>/dev/null | tail -1) == s=none ]]"
+check "...but keep an agent you started in the container" bash -c \
+  "[[ \$(docker exec -u dev -e SSH_AUTH_SOCK=/tmp/ssh-x/agent.1 gtvpn bash -ic 'echo \"s=\${SSH_AUTH_SOCK:-none}\"' 2>/dev/null | tail -1) == s=/tmp/ssh-x/agent.1 ]]"
+
 # hosts.conf: one standard ssh config for the container and for VS Code.
 sed -i 's/^GTVPN_GT_USER=.*/GTVPN_GT_USER=gtdefault/' .env
 cat > hosts.conf <<'HOSTS'

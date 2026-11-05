@@ -1,11 +1,18 @@
 // Add to your VS Code *user* settings (Ctrl+Shift+P -> "Preferences: Open User Settings (JSON)").
 {
   // The container cannot reach VS Code's download servers (it is sealed),
-  // so let VS Code download the server/extensions on your machine and copy
-  // them over SSH. Works for `gtvpn` and for GT hosts reached via gt-<alias>.
-  "remote.SSH.localServerDownload": "always",
+  // so VS Code downloads its server and extensions on your machine and copies
+  // them in. Dev Containers always does that for the server; the first line
+  // does it for extensions (any remote), the second for Remote-SSH servers
+  // (`gtvpn` and GT hosts reached via gt-<alias>).
   "remote.downloadExtensionsLocally": true,
+  "remote.SSH.localServerDownload": "always",
   // Windows only: use the built-in OpenSSH client.
   // "remote.SSH.path": "C:\\Windows\\System32\\OpenSSH\\ssh.exe",
-  "remote.SSH.remotePlatform": { "gtvpn": "linux" }
+  "remote.SSH.remotePlatform": { "gtvpn": "linux" },
+  // Dev Containers (gtvpn code / Attach to Running Container): do not hand
+  // your computer's git and Docker credentials to containers. These are
+  // user-wide, so they also apply to any other dev containers you use.
+  "dev.containers.gitCredentialHelperConfigLocation": "none",
+  "dev.containers.dockerCredentialHelper": false
 }

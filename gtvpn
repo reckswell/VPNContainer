@@ -120,13 +120,18 @@ write_ssh_config() {
   ssh_config_text "$SSH_DIR/id_ed25519" "$SSH_DIR/known_hosts" "$SSH_DIR/cm-%C" > "$SSH_DIR/config"; chmod 600 "$SSH_DIR/config"
   write_win_ssh_config
 }
+# Under WSL: a Windows environment variable (e.g. USERPROFILE), as C:\...
+win_env() {
+  local v; v=$(cd /mnt/c 2>/dev/null && cmd.exe /c "echo %$1%" 2>/dev/null | tr -d '\r') || return 1
+  [[ $v =~ ^[A-Za-z]:\\ ]] || return 1
+  printf '%s' "$v"
+}
 # On WSL, also refresh the copy Windows' ssh (and VS Code on Windows) reads,
 # if Setup-GtVpn.ps1 created it. Windows OpenSSH has no ControlMaster.
 write_win_ssh_config() {
   is_wsl || return 0
   local prof dir win
-  prof=$(cd /mnt/c 2>/dev/null && cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r') || return 0
-  [[ $prof =~ ^[A-Za-z]:\\ ]] || return 0
+  prof=$(win_env USERPROFILE) || return 0
   dir=$(wslpath -u "$prof" 2>/dev/null)/.ssh/gtvpn
   [[ -f $dir/config ]] || return 0
   win=${prof//\\//}/.ssh/gtvpn
@@ -277,14 +282,52 @@ EOF
   say "registered the globalprotectcallback: link handler"
 }
 
+# VS Code Dev Containers: "Attach to Running Container" opens the container
+# through Docker (docker exec), with no network hop. This per-image config
+# makes it log in as dev (never root, which holds the kill-switch) and open
+# ~/projects. VS Code reads it from its globalStorage; on WSL that is the
+# Windows VS Code's, under %APPDATA%.
 vscode_attach_config() {
-  # Dev Containers "Attach to Running Container" defaults for this image.
-  local d
-  for d in "$HOME/.config/Code/User/globalStorage/ms-vscode-remote.remote-containers/imageConfigs" \
-           "$HOME/.config/Code - Insiders/User/globalStorage/ms-vscode-remote.remote-containers/imageConfigs"; do
-    [[ -d $(dirname "$(dirname "$d")") ]] || continue
-    mkdir -p "$d"; cp vscode/attached-container-config.json "$d/gtvpn%3alocal.json"
+  local base app d n=0
+  if is_wsl; then
+    app=$(win_env APPDATA) || { warn "could not find %APPDATA%; VS Code attach config not installed"; return 0; }
+    base=$(wslpath -u "$app")
+  else
+    base=${XDG_CONFIG_HOME:-$HOME/.config}
+  fi
+  for d in "$base/Code" "$base/Code - Insiders"; do
+    [[ -d $d/User ]] || continue
+    d="$d/User/globalStorage/ms-vscode-remote.remote-containers/imageConfigs"
+    mkdir -p "$d" && cp vscode/attached-container-config.json "$d/gtvpn%3alocal.json" && n=$((n+1))
   done
+  ((n)) || warn "VS Code not found; open it once, then run: gtvpn setup (for Dev Containers attach)"
+}
+
+# vscode-remote URI that attaches to the gtvpn container and opens PATH.
+vscode_attach_uri() { # path
+  local p=${1:-/home/dev/projects} hex
+  [[ $p =~ ^/[A-Za-z0-9._/~@+-]*$ ]] || die "use an absolute container path without spaces, e.g. /home/dev/projects"
+  hex=$(printf '{"containerName":"/%s"}' "$NAME" | od -An -v -tx1 | tr -d ' \n')
+  printf 'vscode-remote://attached-container+%s%s' "$hex" "$p"
+}
+
+cmd_code() {
+  local ssh=0 uri
+  [[ ${1:-} == --ssh ]] && { ssh=1; shift; }
+  need_running
+  if ((ssh)); then pin_hostkey; set -- --remote ssh-remote+gtvpn "${1:-/home/dev/projects}"
+  else
+    uri=$(vscode_attach_uri "${1:-}") || exit 1
+    vscode_attach_config >/dev/null 2>&1 || true
+    set -- --folder-uri "$uri"
+  fi
+  if is_wsl; then
+    # Windows' VS Code (code.cmd on the Windows PATH), so it uses Docker Desktop.
+    (cd /mnt/c && cmd.exe /c code "$@") || die "VS Code 'code' command not found on the Windows PATH"
+  else
+    command -v code >/dev/null || die "VS Code 'code' command not found on PATH"
+    code "$@"
+  fi
 }
 
 cmd_setup() {
@@ -297,7 +340,7 @@ cmd_setup() {
   hosts_sync || true
   ssh_setup
   install_url_handler
-  is_wsl || vscode_attach_config
+  vscode_attach_config
   mkdir -p runtime/out share
   say "setup done. Next: ./gtvpn up && ./gtvpn connect"
 }
@@ -399,7 +442,8 @@ ${c_b}gtvpn${c_0} - Georgia Tech GlobalProtect in an isolated container
   shell            bash in the container as 'dev'
   hosts            apply hosts.conf (your GT servers) to the container and VS Code
   ssh <alias|host> ssh to a GT host from inside the container (X11 on)
-  code [path]      open VS Code in the container (Remote-SSH)
+  code [path]      open VS Code in the container (Dev Containers attach, as dev)
+  code --ssh [path]  the same over Remote-SSH instead
   claude [args]    run Claude Code inside the container
   x11test          show a test window (xeyes) from the container
   logs             container + VPN client logs
@@ -424,10 +468,7 @@ case $cmd in
   shell) need_running; engine exec -it -u dev -w /home/dev "$NAME" bash -l ;;
   ssh) need_running; engine exec -it -u dev -w /home/dev "$NAME" bash -lc "ssh $(printf '%q ' "$@")" ;;
   claude) need_running; engine exec -it -u dev -w "${GTVPN_WORKDIR:-/home/dev}" "$NAME" bash -lc "claude $(printf '%q ' "$@")" ;;
-  code)
-    need_running; pin_hostkey
-    command -v code >/dev/null || die "VS Code 'code' command not found on PATH"
-    code --remote ssh-remote+gtvpn "${1:-/home/dev}" ;;
+  code) cmd_code "$@" ;;
   x11test) need_running; engine exec -u dev "$NAME" bash -lc 'echo "DISPLAY=$DISPLAY"; timeout 20 xeyes || { echo "X11 test failed"; exit 1; }' ;;
   logs) engine logs --tail 100 "$NAME"; engine exec -u root "$NAME" sh -c 'tail -n 50 /var/log/gtvpn/gpclient.log 2>/dev/null' || true ;;
   callback) cmd_callback "$@" ;;

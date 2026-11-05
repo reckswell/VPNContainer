@@ -9,7 +9,8 @@ computer's own traffic never touches GT, and GT has no way back in.
        │
        └─ gtvpn container ══ GlobalProtect tunnel ══► GT servers (ssh, Cadence, …)
             • kill-switch: nothing leaves except through the tunnel
-            • VS Code / ssh attach on 127.0.0.1:2222
+            • VS Code attaches through Docker (Dev Containers), as user dev
+            • ssh in on 127.0.0.1:2222 (key-only)
             • X11 → your desktop (Ubuntu: Xwayland, Windows: WSLg)
             • Claude Code, with its own allow-listed direct path (never via GT)
 ```
@@ -110,21 +111,26 @@ tunnel is created inside the container.
 
 ### VS Code
 
-- **Recommended:** *Remote-SSH: Connect to Host… → `gtvpn`*, or
-  `./gtvpn code`. You get a VS Code window whose terminal is inside the
-  container, and `ssh cadence` with X11 just works there. This works the
-  same way on Windows.
-- **Open a folder on a GT server directly:** connect to `gt-cadence`, or
+- **Recommended:** `gtvpn code`, or *Dev Containers: Attach to Running
+  Container… → gtvpn*. VS Code goes into the container through Docker
+  itself (no network hop) and logs in as `dev`. Its terminal is inside the
+  container, and `ssh cadence` with X11 just works there. Same on Windows
+  and Ubuntu. `gtvpn setup` installs the attach config, and on Windows the
+  setup script adds the Dev Containers extension.
+- **Open a folder on a GT server directly:** Remote-SSH to `gt-cadence`, or
   `gt-<name>` for any host in `hosts.conf`. It hops through the container's
   tunnel automatically. Use this to edit files on the server. To start
-  Cadence, use a `gtvpn` window and run `ssh cadence` in its terminal,
+  Cadence, use a `gtvpn code` window and run `ssh cadence` in its terminal,
   because that is the path with X11.
 - Add [vscode/settings-snippet.jsonc](vscode/settings-snippet.jsonc) to
   your user settings. The container cannot reach VS Code's download servers
-  (by design), so VS Code downloads its server on your computer and copies
-  it in.
-- Alternative: *Dev Containers: Attach to Running Container → gtvpn*.
-  `setup` installs an attach config that logs you in as `dev`.
+  (by design), so VS Code downloads its server and extensions on your
+  computer and copies them in. The snippet also stops Dev Containers from
+  handing your computer's git and Docker credentials to the container, and
+  container terminals ignore the ssh-agent it forwards, so your personal
+  keys stay on your computer.
+- Also possible: *Remote-SSH → `gtvpn`* (or `gtvpn code --ssh`), over the
+  container's loopback-only, key-only sshd.
 
 ### Cadence Virtuoso / Vivado (X11)
 
@@ -182,6 +188,7 @@ What is checked (details in [docs/DESIGN.md](docs/DESIGN.md#verification-recursi
 | No windows on Ubuntu | Run `./gtvpn up` from a desktop terminal (it needs `$DISPLAY`); `sudo apt install xauth` |
 | No windows on Windows | `ls /mnt/wslg/.X11-unix` in Ubuntu should show `X0`. If not: `wsl --update`, then `wsl --shutdown`. Then `gtvpn down && gtvpn up` and `gtvpn x11test` |
 | `ssh gtvpn` says "Could not resolve hostname" in Git Bash | Git Bash's own ssh can't read the Windows config. Use PowerShell or VS Code, which use Windows' OpenSSH |
+| `gtvpn code` opens a window as root, or VS Code asks which container | Install the Dev Containers extension (`ms-vscode-remote.remote-containers`), open VS Code once, then run `gtvpn setup` again to install the attach config |
 | VS Code hangs installing the server | Add `"remote.SSH.localServerDownload": "always"` |
 | A host is missing from VS Code's list | Run `gtvpn hosts`, then reopen the Remote-SSH list. Only plain names on `Host` lines become entries (`Host *.example` is a pattern, not a host) |
 | A dev tool can't download something | Add its exact hostname to `GTVPN_DIRECT_ALLOW`, then `./gtvpn down && ./gtvpn up` |

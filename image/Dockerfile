@@ -97,6 +97,11 @@ RUN set -eu; cd /tmp/rootfs; \
     cd /; rm -rf /tmp/rootfs; \
     /usr/local/sbin/gtvpn-permcheck || { echo "unsafe permissions (see above)"; exit 1; }
 
+# VS Code Dev Containers reads this when it attaches: run as dev, never root
+# (root holds NET_ADMIN, i.e. the kill-switch). gtvpn setup also installs the
+# same choice as an attach config (vscode/attached-container-config.json).
+LABEL devcontainer.metadata='[{"remoteUser":"dev"}]'
+
 # Nothing listens except sshd (key-only) on 2222, published to 127.0.0.1.
 EXPOSE 2222
 STOPSIGNAL SIGTERM
