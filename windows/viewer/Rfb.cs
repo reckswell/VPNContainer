@@ -1,6 +1,7 @@
 // A VNC (RFB 3.8) client for TigerVNC's Xvnc: no authentication (the
 // session is reached only through gtvpn's private forwards), 32-bit pixels,
-// Tight encoding with JPEG, CopyRect, the cursor shape, and desktop resizes.
+// the ZRLE and Tight (with JPEG) encodings, CopyRect, the cursor shape, and
+// desktop resizes.
 //
 // The framebuffer is an int[] of 0x00RRGGBB pixels (B, G, R, X in memory,
 // the layout of a 32-bit Windows DIB). The receive thread decodes into it
@@ -44,12 +45,18 @@ namespace GtVpn
         public event Action<string> CutTextReceived;    // receive thread: the session's clipboard
 
         public int JpegQuality = 8, CompressLevel = 1;
+        // ZRLE first (lossless): for CAD pictures (few colours, fine hatching)
+        // it costs Xvnc about half the compression work of Tight, whose 8-bit
+        // palette indices make zlib Xvnc's main cost. Tight sends JPEG for
+        // photo-like areas instead.
+        public bool PreferZrle = true;
         public bool ServerCanResize;
         bool continuous;
         public bool UseContinuous = Environment.GetEnvironmentVariable("GTVPN_VIEWER_CU") != "0";
         uint screenId;
         int wantW, wantH;
-        readonly Inflater[] zs = { new Inflater(), new Inflater(), new Inflater(), new Inflater() };
+        readonly ZStream[] zs = { new ZStream(), new ZStream(), new ZStream(), new ZStream() };
+        readonly ZStream zrle = new ZStream();
         byte[] zin = new byte[1 << 16], zout = new byte[1 << 16];
         public long Frames, Bytes;
 
@@ -79,10 +86,11 @@ namespace GtVpn
             Fb = new int[Width * Height];
             // SetPixelFormat: 32 bpp, depth 24, little endian, true colour, R<<16 G<<8 B.
             Write(new byte[] { 0, 0, 0, 0, 32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0 });
-            // Tight, CopyRect, Raw; ExtendedDesktopSize, DesktopSize, LastRect,
-            // the cursor shape, Fence and ContinuousUpdates; JPEG quality and
-            // zlib level.
-            var enc = new List<int> { 7, 1, 0, -308, -223, -224, -239, -312, -313, -32 + JpegQuality, -256 + CompressLevel };
+            // ZRLE, Tight, CopyRect, Raw; ExtendedDesktopSize, DesktopSize,
+            // LastRect, the cursor shape, Fence and ContinuousUpdates; JPEG
+            // quality and zlib level.
+            var enc = new List<int> { 16, 7, 1, 0, -308, -223, -224, -239, -312, -313, -32 + JpegQuality, -256 + CompressLevel };
+            if (!PreferZrle) { enc.Remove(16); enc.Insert(1, 16); }
             if (!UseContinuous) enc.Remove(-313);
             var m = new MemoryStream();
             m.WriteByte(2); m.WriteByte(0); PutU16(m, enc.Count);
@@ -207,6 +215,7 @@ namespace GtVpn
                         lock (FbLock) CopyRect(sx, sy, x, y, w, h);
                         dirty.Add(new Rectangle(x, y, w, h)); break;
                     case 7: Tight(x, y, w, h); dirty.Add(new Rectangle(x, y, w, h)); break;
+                    case 16: Zrle(x, y, w, h); dirty.Add(new Rectangle(x, y, w, h)); break;
                     case -239: CursorShape(x, y, w, h); break;
                     case -223: Resize(w, h); resized = true; break;
                     case -308:
@@ -383,6 +392,99 @@ namespace GtVpn
                             Marshal.Copy(new IntPtr(bd.Scan0.ToInt64() + (long)r * bd.Stride), Fb, (y + r) * Width + x, bd.Width);
                 }
                 finally { bmp.UnlockBits(bd); }
+            }
+        }
+
+        // ---- ZRLE -----------------------------------------------------------
+        // One zlib stream for the connection; per rectangle a length and the
+        // compressed tiles (64x64, rows of tiles): raw, solid, packed palette
+        // (2-16 colours), RLE, or palette RLE. A pixel is 3 bytes, B G R.
+        byte[] zr = new byte[1 << 16];
+
+        void Zrle(int x, int y, int w, int h)
+        {
+            int clen = (int)ReadU32();
+            if (clen < 0 || clen > 64 << 20) throw new IOException("bad ZRLE length " + clen);
+            if (zin.Length < clen) zin = new byte[clen];
+            ReadInto(zin, 0, clen);
+            int n = zrle.InflateAll(zin, 0, clen, ref zr);
+            byte[] b = zr;
+            var pal = new int[128];
+            int p = 0;
+            lock (FbLock)
+            {
+                int[] fb = Fb; int stride = Width;
+                for (int ty = y; ty < y + h; ty += 64)
+                {
+                    int th = Math.Min(64, y + h - ty);
+                    for (int tx = x; tx < x + w; tx += 64)
+                    {
+                        int tw = Math.Min(64, x + w - tx);
+                        int sub = b[p++];
+                        if (sub == 0)
+                        {
+                            for (int r = 0; r < th; r++)
+                            {
+                                int o = (ty + r) * stride + tx;
+                                for (int k = 0; k < tw; k++, p += 3) fb[o + k] = b[p] | (b[p + 1] << 8) | (b[p + 2] << 16);
+                            }
+                        }
+                        else if (sub == 1)
+                        {
+                            int c = b[p] | (b[p + 1] << 8) | (b[p + 2] << 16); p += 3;
+                            for (int r = 0; r < th; r++)
+                            {
+                                int o = (ty + r) * stride + tx;
+                                for (int k = 0; k < tw; k++) fb[o + k] = c;
+                            }
+                        }
+                        else if (sub <= 16)
+                        {
+                            for (int i = 0; i < sub; i++, p += 3) pal[i] = b[p] | (b[p + 1] << 8) | (b[p + 2] << 16);
+                            int bits = sub == 2 ? 1 : sub <= 4 ? 2 : 4, mask = (1 << bits) - 1, rowBytes = (tw * bits + 7) >> 3;
+                            for (int r = 0; r < th; r++)
+                            {
+                                int o = (ty + r) * stride + tx, shift = 0, cur = 0, q = p;
+                                for (int k = 0; k < tw; k++)
+                                {
+                                    if (shift == 0) { cur = b[q++]; shift = 8; }
+                                    shift -= bits;
+                                    fb[o + k] = pal[(cur >> shift) & mask];
+                                }
+                                p += rowBytes;
+                            }
+                        }
+                        else if (sub == 128 || sub >= 130)
+                        {
+                            bool usePal = sub >= 130;
+                            if (usePal) for (int i = 0; i < sub - 128; i++, p += 3) pal[i] = b[p] | (b[p + 1] << 8) | (b[p + 2] << 16);
+                            int r = 0, k = 0, o = ty * stride + tx;
+                            while (r < th)
+                            {
+                                int c, len = 1;
+                                if (usePal)
+                                {
+                                    int idx = b[p++];
+                                    c = pal[idx & 127];
+                                    if ((idx & 128) != 0) { int v; do { v = b[p++]; len += v; } while (v == 255); }
+                                }
+                                else
+                                {
+                                    c = b[p] | (b[p + 1] << 8) | (b[p + 2] << 16); p += 3;
+                                    int v; do { v = b[p++]; len += v; } while (v == 255);
+                                }
+                                while (len-- > 0)
+                                {
+                                    if (r >= th) throw new IOException("ZRLE run past its tile");
+                                    fb[o + k] = c;
+                                    if (++k == tw) { k = 0; r++; o += stride; }
+                                }
+                            }
+                        }
+                        else throw new IOException("unknown ZRLE tile type " + sub);
+                        if (p > n) throw new IOException("ZRLE data ended early");
+                    }
+                }
             }
         }
 

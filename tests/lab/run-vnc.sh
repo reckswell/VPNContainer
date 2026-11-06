@@ -148,6 +148,8 @@ if command -v mono >/dev/null && command -v mcs >/dev/null; then
   check "each window of the session appears as a window of its own here" bash -c "shown gtvpn-lab-xlogo && shown gtvpn-lab-xev"
   check "the viewer is the session's window manager now" \
     bash -c "id=\$(srv \"xprop -display :$NW -root _NET_SUPPORTING_WM_CHECK\" | sed -n 's/.*# //p'); srv \"xprop -display :$NW -id \$id _NET_WM_NAME\" | grep -q gtvpn"
+  check "the viewer asks for ZRLE at zlib level 1, and this Xvnc (before 1.14) is told the same level" \
+    bash -c "grep -q 'zrle compress 1' '$KEYDIR/gtvpn-viewer.log' && on_srv 'pgrep -u gtuser -a Xvnc' | grep -q -- '-ZlibLevel=1'"
   # Same pixels: sample the xlogo window in the session and on this desktop.
   geom(){ srv "xwininfo -display :$NW -name $1" | awk '/Absolute upper-left X/{x=$NF} /Absolute upper-left Y/{y=$NF} /Width/{w=$NF} /Height/{h=$NF} END{print x, y, w, h}'; }
   read -r LX LY LW LH <<<"$(geom gtvpn-lab-xlogo)"

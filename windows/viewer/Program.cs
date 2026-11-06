@@ -1,7 +1,12 @@
 // gtvpn viewer: the windows of a gtvpn vnc session as separate native
 // windows, with Windows 11's own frames.
 //
-//   gtvpn-viewer.exe --vnc 127.0.0.1:P --x11 127.0.0.1:Q [--label TEXT] [--quality 0-9]
+//   gtvpn-viewer.exe --vnc 127.0.0.1:P --x11 127.0.0.1:Q [--label TEXT]
+//                    [--encoding zrle|tight] [--compress 0-9] [--quality 0-9]
+//
+// --encoding: what Xvnc sends first: zrle (lossless, the default) or tight
+// (JPEG for photo-like areas). --compress: zlib's effort in Xvnc (default 1;
+// 0 sends the most bytes for the least CPU there). --quality: Tight's JPEG.
 //
 // The X display cookie comes in the GTVPN_X_COOKIE environment variable (hex),
 // so it never shows on a command line. `gtvpn vnc <host> windows` sets up the
@@ -101,13 +106,15 @@ namespace GtVpn
         [STAThread]
         static int Main(string[] args)
         {
-            string vnc = null, x11 = null, label = "GT session"; int quality = 8;
+            string vnc = null, x11 = null, label = "GT session", encoding = "zrle"; int quality = 8, compress = 1;
             for (int i = 0; i + 1 < args.Length; i += 2)
             {
                 if (args[i] == "--vnc") vnc = args[i + 1];
                 else if (args[i] == "--x11") x11 = args[i + 1];
                 else if (args[i] == "--label") label = args[i + 1];
                 else if (args[i] == "--quality") quality = int.Parse(args[i + 1]);
+                else if (args[i] == "--compress") compress = int.Parse(args[i + 1]);
+                else if (args[i] == "--encoding") encoding = args[i + 1].ToLowerInvariant();
             }
             string cookie = Environment.GetEnvironmentVariable("GTVPN_X_COOKIE");
             Environment.SetEnvironmentVariable("GTVPN_X_COOKIE", null);
@@ -133,7 +140,12 @@ namespace GtVpn
                 string vh, xh;
                 int vp = Port(vnc, out vh), xp = Port(x11, out xh);
 
-                var rfb = new RfbClient { JpegQuality = Math.Max(0, Math.Min(9, quality)) };
+                var rfb = new RfbClient
+                {
+                    JpegQuality = Math.Max(0, Math.Min(9, quality)),
+                    CompressLevel = Math.Max(0, Math.Min(9, compress)),
+                    PreferZrle = encoding != "tight",
+                };
                 v.Rfb = rfb;
                 rfb.Updated += v.OnUpdated;
                 rfb.Resized += v.OnResized;
@@ -142,7 +154,8 @@ namespace GtVpn
                 rfb.Closed += delegate(string why) { v.OnClosed("VNC: " + why); };
                 var h = v.Handle;   // the UI thread's window exists before events arrive
                 rfb.Connect(vh, vp);
-                v.Log("VNC " + rfb.Name + " " + rfb.Width + "x" + rfb.Height + "; asking for " + screen.Width + "x" + screen.Height);
+                v.Log("VNC " + rfb.Name + " " + rfb.Width + "x" + rfb.Height + "; asking for " + screen.Width + "x" + screen.Height
+                    + "; " + (rfb.PreferZrle ? "zrle" : "tight") + " compress " + rfb.CompressLevel + " quality " + rfb.JpegQuality);
                 v.OnResized(rfb.Width, rfb.Height);
                 rfb.RequestDesktopSize(screen.Width, screen.Height);
 

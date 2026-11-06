@@ -114,10 +114,14 @@ start)
     # every connection that ends before signing in (gtvpn's checks that a
     # forward is open) as a failed attempt and shuts everyone out after 5;
     # only you can reach the socket, so that blacklist is off.
+    # Before TigerVNC 1.14 the ZRLE encoding (what gtvpn's viewer asks for)
+    # ignored the viewer's compression level and used zlib's default, which
+    # halves the frame rate; ZlibLevel=1 is the level the viewer asks for.
+    zl=; Xvnc -help 2>&1 | grep -q 'ZlibLevel *- Zlib' && zl=-ZlibLevel=1
     XDG_CACHE_HOME="$D/cache" XDG_CONFIG_HOME="$D/config" XDG_DATA_HOME="$D/data" \
       setsid nohup Xvnc ":$n" -auth "$XA" -nolisten tcp \
       -rfbunixpath "$SOCK" -rfbunixmode 0600 -rfbport -1 -localhost -interface 127.0.0.1 -SecurityTypes None \
-      -geometry 1920x1080 -depth 24 -dpi 96 -FrameRate 180 -AlwaysShared -AcceptSetDesktopSize=1 -UseBlacklist=0 \
+      -geometry 1920x1080 -depth 24 -dpi 96 -FrameRate 180 -AlwaysShared -AcceptSetDesktopSize=1 -UseBlacklist=0 $zl \
       >"$D/xvnc.log" 2>&1 </dev/null &
     say "$n" > "$D/display"
     i=0; until [ -S "$SOCK" ] && DISPLAY=":$n" xdpyinfo >/dev/null 2>&1; do

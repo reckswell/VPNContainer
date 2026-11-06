@@ -262,7 +262,7 @@ namespace GtVpn
         public string Label = "GT session";
         public bool Debug = Environment.GetEnvironmentVariable("GTVPN_VIEWER_DEBUG") == "1";
         readonly TextWriter log;
-        long paints, lastFrames, lastBytes, lastPaints; DateTime lastStat = DateTime.Now;
+        long paints, lastFrames, lastBytes, lastPaints; DateTime lastStat = DateTime.Now; TimeSpan lastCpu;
 
         public Viewer(TextWriter log)
         {
@@ -290,10 +290,12 @@ namespace GtVpn
             if (Rfb == null) return;
             var now = DateTime.Now; double dt = (now - lastStat).TotalSeconds; lastStat = now;
             long f = Rfb.Frames, b = Rfb.Bytes, p = Interlocked.Read(ref paints);
+            var cpu = System.Diagnostics.Process.GetCurrentProcess().TotalProcessorTime;
             if (Debug) { Log("tick frames " + f); lock (Rfb.FbLock) mirror.Save(Path.Combine(Path.GetTempPath(), "gtvpn-mirror.png")); }
             if (f != lastFrames)
-                Log(string.Format("updates/s {0:F1}  MB/s {1:F2}  paints/s {2:F1}  windows {3}", (f - lastFrames) / dt, (b - lastBytes) / dt / 1e6, (p - lastPaints) / dt, forms.Count));
-            lastFrames = f; lastBytes = b; lastPaints = p;
+                Log(string.Format("updates/s {0:F1}  MB/s {1:F2}  paints/s {2:F1}  cpu {3:F0}%  windows {4}", (f - lastFrames) / dt, (b - lastBytes) / dt / 1e6,
+                    (p - lastPaints) / dt, (cpu - lastCpu).TotalSeconds / dt * 100, forms.Count));
+            lastFrames = f; lastBytes = b; lastPaints = p; lastCpu = cpu;
             tray.Text = ("gtvpn viewer: " + Label).Substring(0, Math.Min(63, ("gtvpn viewer: " + Label).Length));
         }
 
