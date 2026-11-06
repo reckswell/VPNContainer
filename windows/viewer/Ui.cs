@@ -60,6 +60,80 @@ namespace GtVpn
             catch (EntryPointNotFoundException) { }
         }
 
+        // The taskbar groups windows by their AppUserModelID: give each X
+        // program its own (and no pinning: a pinned button could not start it).
+        [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        interface IPropertyStore
+        {
+            [PreserveSig] int GetCount(out uint n);
+            [PreserveSig] int GetAt(uint i, IntPtr key);
+            [PreserveSig] int GetValue(ref PropKey key, IntPtr value);
+            [PreserveSig] int SetValue(ref PropKey key, IntPtr value);
+            [PreserveSig] int Commit();
+        }
+        [StructLayout(LayoutKind.Sequential, Pack = 4)] struct PropKey { public Guid Fmt; public uint Pid; }
+        [DllImport("shell32.dll")] static extern int SHGetPropertyStoreForWindow(IntPtr hwnd, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out IPropertyStore store);
+
+        public static void SetAppId(IntPtr hwnd, string program)
+        {
+            if (!IsWindows) return;
+            var id = new StringBuilder("GtVpn.X.");
+            foreach (char c in program) if (id.Length < 100 && (char.IsLetterOrDigit(c) || c == '-' || c == '.')) id.Append(c < 128 ? c : '_');
+            IPropertyStore ps = null;
+            IntPtr pv = Marshal.AllocCoTaskMem(24), str = IntPtr.Zero;
+            try
+            {
+                var iid = new Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
+                if (SHGetPropertyStoreForWindow(hwnd, ref iid, out ps) != 0 || ps == null) return;
+                var fmt = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3");      // PKEY_AppUserModel_*
+                for (int i = 0; i < 24; i++) Marshal.WriteByte(pv, i, 0);
+                Marshal.WriteInt16(pv, 0, 11); Marshal.WriteInt16(pv, 8, -1);        // VT_BOOL true
+                var k = new PropKey { Fmt = fmt, Pid = 9 };                          // PreventPinning (before the ID)
+                ps.SetValue(ref k, pv);
+                str = Marshal.StringToCoTaskMemUni(id.ToString());
+                for (int i = 0; i < 24; i++) Marshal.WriteByte(pv, i, 0);
+                Marshal.WriteInt16(pv, 0, 31); Marshal.WriteIntPtr(pv, 8, str);      // VT_LPWSTR
+                k.Pid = 5;                                                           // ID
+                ps.SetValue(ref k, pv);
+            }
+            catch (Exception) { }
+            finally
+            {
+                if (ps != null) Marshal.ReleaseComObject(ps);
+                if (str != IntPtr.Zero) Marshal.FreeCoTaskMem(str);
+                Marshal.FreeCoTaskMem(pv);
+            }
+        }
+
+        // A window's own icon from _NET_WM_ICON (width, height, ARGB pixels,
+        // repeated per size): the size nearest 32x32 that is not smaller, as
+        // a .ico in memory.
+        public static Icon MakeIcon(uint[] p)
+        {
+            int best = -1, bw = 0, bh = 0;
+            for (int i = 0; i + 2 < p.Length; )
+            {
+                int w = (int)p[i], h = (int)p[i + 1];
+                if (w <= 0 || h <= 0 || w > 4096 || h > 4096 || (long)i + 2 + (long)w * h > p.Length) break;
+                if (w <= 256 && h <= 256 && (best < 0 || (bw < 32 ? w > bw : w >= 32 && w < bw))) { best = i; bw = w; bh = h; }
+                i += 2 + w * h;
+            }
+            if (best < 0) return null;
+            int mask = (bw + 31) / 32 * 4 * bh, size = 40 + bw * bh * 4 + mask;
+            var ms = new MemoryStream();
+            var o = new BinaryWriter(ms);
+            o.Write((short)0); o.Write((short)1); o.Write((short)1);                // ICONDIR
+            o.Write((byte)(bw & 255)); o.Write((byte)(bh & 255)); o.Write((byte)0); o.Write((byte)0);
+            o.Write((short)1); o.Write((short)32); o.Write(size); o.Write(22);      // ICONDIRENTRY
+            o.Write(40); o.Write(bw); o.Write(bh * 2); o.Write((short)1); o.Write((short)32);
+            o.Write(0); o.Write(bw * bh * 4 + mask); o.Write(0); o.Write(0); o.Write(0); o.Write(0);
+            for (int y = bh - 1; y >= 0; y--)                                       // bottom-up BGRA
+                for (int x = 0; x < bw; x++) o.Write(p[best + 2 + y * bw + x]);
+            o.Write(new byte[mask]);
+            ms.Position = 0;
+            try { return new Icon(ms); } catch (Exception) { return null; }
+        }
+
         // A window that opened while you were in another program: flash its
         // taskbar button until you switch to it (Windows does not let it come
         // to the front by itself).
@@ -180,6 +254,7 @@ namespace GtVpn
         public Rectangle XRect { get; set; } // where the window is in the session (framebuffer coordinates)
         readonly Viewer v;
         public bool ClosingFromX, Applying;
+        public bool Ready;                   // placed where the session's window is: from now on, report moves
         public DateTime LastSent;
 
         public XForm(Viewer v, XWin w, XForm owner)
@@ -200,7 +275,8 @@ namespace GtVpn
                 MaximizeBox = !fixedSize && !w.Dialog && !w.NoMaximize;
                 MinimizeBox = !w.NoMinimize;
                 if (owner != null) { Owner = owner; ShowInTaskbar = false; MinimizeBox = false; }
-                if (v.AppIcon != null) Icon = v.AppIcon;
+                var xi = w.Icon != null ? Native.MakeIcon(w.Icon) : null;
+                if (xi != null) Icon = xi; else if (v.AppIcon != null) Icon = v.AppIcon;
                 if (w.MinW > 0 || w.MinH > 0) MinimumSize = Size.Empty; // set after the frame is known
             }
             if (v.CurrentCursor != null) Cursor = v.CurrentCursor;
@@ -214,6 +290,10 @@ namespace GtVpn
             {
                 var cp = base.CreateParams;
                 if (Win != null && Win.Popup) cp.ExStyle |= 0x08000000 | 0x00000080; // WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+                // A frameless window as WS_POPUP: Windows gives a WS_OVERLAPPED
+                // window a caption while it creates it. Keep the system menu and
+                // minimize, so its taskbar button can minimize it.
+                else if (Win != null && Win.Frameless) cp.Style = unchecked((int)0x80000000) | (cp.Style & ~0x00CF0000) | 0x00080000 | 0x00020000;
                 return cp;
             }
         }
@@ -236,7 +316,14 @@ namespace GtVpn
             finally { Applying = false; }
         }
 
-        protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); Native.StyleFrame(Handle, Win != null && Win.Popup, false); }
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            Native.StyleFrame(Handle, Win != null && Win.Popup, false);
+            // One taskbar button per program (WM_CLASS), as Windows programs
+            // have, rather than every window under the viewer's.
+            if (Win != null && !Win.Popup && Win.Class.Length > 0) Native.SetAppId(Handle, Win.Class);
+        }
 
         protected override void OnShown(EventArgs e)
         {
@@ -267,15 +354,17 @@ namespace GtVpn
         protected override void OnActivated(EventArgs e) { base.OnActivated(e); if (!Win.Popup) v.FormActivated(this); }
         protected override void OnDeactivate(EventArgs e) { base.OnDeactivate(e); v.Deactivated(); }
 
-        protected override void OnMove(EventArgs e) { base.OnMove(e); if (!Applying && IsHandleCreated) v.NativeMoved(this, false); }
+        protected override void OnMove(EventArgs e) { base.OnMove(e); if (!Applying && Ready) v.NativeMoved(this, false); }
         protected override void OnResize(EventArgs e)
         {
             base.OnResize(e);
-            if (Applying || !IsHandleCreated) return;
+            // Not before Ready: while Windows creates a frameless window it
+            // briefly gives it a caption at the default size and place.
+            if (Applying || !Ready) return;
             if (WindowState == FormWindowState.Minimized) { v.Minimized(this); return; }
             v.NativeMoved(this, false);
         }
-        protected override void OnResizeEnd(EventArgs e) { base.OnResizeEnd(e); v.NativeMoved(this, true); }
+        protected override void OnResizeEnd(EventArgs e) { base.OnResizeEnd(e); if (Ready) v.NativeMoved(this, true); }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
@@ -596,6 +685,9 @@ namespace GtVpn
 
         public void Add(XWin w)
         {
+            // Where the window is now: the window manager's thread keeps
+            // updating w while this waits for the UI thread.
+            int gx = w.X, gy = w.Y, gw = w.W, gh = w.H;
             Ui(delegate
             {
                 XForm old;
@@ -607,17 +699,20 @@ namespace GtVpn
                 forms[w.Id] = f;
                 f.CreateControl();
                 var h = f.Handle;
-                f.Place(w.X, w.Y, w.W, w.H);
+                f.Place(gx, gy, gw, gh);
                 if (!w.Popup)
                 {
                     // Record where the native window really is (Windows may
                     // have adjusted it) and move the session's window there.
                     var c = f.PointToScreen(Point.Empty);
                     int nx = c.X - OriginX, ny = c.Y - OriginY;
-                    if (nx != w.X || ny != w.Y) { w.X = nx; w.Y = ny; Wm.Move(w.Id, nx, ny); }
+                    w.W = gw; w.H = gh; w.X = nx; w.Y = ny;
+                    if (nx != gx || ny != gy) Wm.Move(w.Id, nx, ny);
                 }
+                f.Ready = true;
                 f.Show();
-                Log((w.Popup ? "popup " : "window ") + w.Id.ToString("x") + " \"" + w.Title + "\" " + w.W + "x" + w.H + "+" + w.X + "+" + w.Y);
+                Log((w.Popup ? "popup " : "window ") + w.Id.ToString("x") + " \"" + w.Title + "\" " + w.W + "x" + w.H + "+" + w.X + "+" + w.Y
+                    + (w.Class.Length > 0 ? " (" + w.Class + ")" : ""));
             });
         }
 
@@ -632,6 +727,11 @@ namespace GtVpn
                 f.Close();
                 f.Dispose();
             });
+        }
+
+        public void SetIcon(uint id, uint[] icon)
+        {
+            Ui(delegate { XForm f; if (forms.TryGetValue(id, out f)) { var i = Native.MakeIcon(icon); if (i != null) f.Icon = i; } });
         }
 
         public void Title(uint id, string title) { Ui(delegate { XForm f; if (forms.TryGetValue(id, out f)) f.Text = title; }); }

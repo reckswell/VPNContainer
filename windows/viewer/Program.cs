@@ -162,7 +162,8 @@ namespace GtVpn
                 var x = new XConn();
                 v.X = x;
                 x.Closed += delegate(string why) { v.OnClosed("X: " + why); };
-                x.AsyncError += delegate(XError e, int sq) { v.Log("X error " + e.Code + " from request " + e.Major); };
+                // BadWindow (3): a window closed while a request to it was on its way.
+                x.AsyncError += delegate(XError e, int sq) { if (e.Code != 3) v.Log("X error " + e.Code + " from request " + e.Major); };
                 x.Connect(xh, xp, Hex(cookie));
                 var wm = new Wm(x, v) { OriginX = screen.X, OriginY = screen.Y };
                 var wa = Screen.PrimaryScreen.WorkingArea;

@@ -5,11 +5,14 @@
 # with a menu: a dialog (no maximize or minimize button on Windows), a splash
 # screen (no frame), and a window that opens 8 s later (switch to another
 # program first: its taskbar button flashes). Double-click the word in the
-# text field to select it: your Windows clipboard must not change.
+# text field to select it: your Windows clipboard must not change. Its
+# windows have a red-orange icon and a taskbar button of their own
+# ("gtvpn-wmtest"), apart from other programs in the session.
 import sys, time
 from PyQt5 import QtWidgets, QtCore, QtGui
 def log(*a): print(time.strftime("%H:%M:%S"), *a, flush=True)
-app = QtWidgets.QApplication(sys.argv)
+app = QtWidgets.QApplication(sys.argv); app.setApplicationName("gtvpn-wmtest")
+ic = QtGui.QPixmap(48, 48); ic.fill(QtGui.QColor("#f53")); app.setWindowIcon(QtGui.QIcon(ic))
 w = QtWidgets.QMainWindow(); w.setWindowTitle("gtvpn-test-main"); w.setGeometry(300, 200, 700, 400)
 mb = w.menuBar().addMenu("File")
 def dlg():
@@ -28,7 +31,7 @@ def later():
     QtCore.QTimer.singleShot(8000, show)
 mb.addAction("Open dialog", dlg); mb.addAction("Splash", splash); mb.addAction("Window in 8 s", later); mb.addAction("Quit", app.quit)
 c = QtWidgets.QWidget(); w.setCentralWidget(c); v = QtWidgets.QVBoxLayout(c)
-e = QtWidgets.QLineEdit("gtvpn-primary-test-" + str(int(time.time()))); v.addWidget(e)
+e = QtWidgets.QLineEdit("gtvpnselectiontest" + str(int(time.time()))); v.addWidget(e)
 v.addWidget(QtWidgets.QLabel("Double-click the word above to select it (X's PRIMARY selection)."))
 cb = QtWidgets.QApplication.clipboard()
 # Only lengths and the test's own marker are printed: what you copied in

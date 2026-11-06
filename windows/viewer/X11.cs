@@ -205,6 +205,7 @@ namespace GtVpn
         void Activate(uint id);
         void SetState(uint id, bool maximize, bool minimize);
         void Replaced();                      // another window manager took over
+        void SetIcon(uint id, uint[] icon);   // _NET_WM_ICON changed
     }
 
     sealed class XWin
@@ -218,6 +219,8 @@ namespace GtVpn
         public bool TakeFocus, DeleteWindow, InputHint = true;
         public bool Dialog;
         public bool Frameless, NoMaximize, NoMinimize;  // splash screens; Motif hints
+        public string Class = "";             // WM_CLASS: the program (one taskbar button each)
+        public uint[] Icon;                   // _NET_WM_ICON: width, height, ARGB pixels, ...
     }
 
     sealed class Wm
@@ -233,8 +236,8 @@ namespace GtVpn
              A_NET_SUPPORTED, A_NET_SUPPORTING_WM_CHECK, A_NET_ACTIVE_WINDOW, A_NET_WM_STATE, A_NET_WM_STATE_MAXIMIZED_VERT,
              A_NET_WM_STATE_MAXIMIZED_HORZ, A_NET_WM_STATE_HIDDEN, A_NET_FRAME_EXTENTS, A_NET_REQUEST_FRAME_EXTENTS,
              A_NET_WM_WINDOW_TYPE, A_NET_WM_WINDOW_TYPE_DIALOG, A_NET_CLIENT_LIST, A_NET_MOVERESIZE_WINDOW, A_NET_CLOSE_WINDOW, A_WM_S0,
-             A_MOTIF_WM_HINTS, A_NET_WM_WINDOW_TYPE_SPLASH;
-        const uint WM_NAME = 39, WM_TRANSIENT_FOR = 68, WM_NORMAL_HINTS = 40, WM_HINTS = 35, ATOM = 4, CARDINAL = 6, WINDOW = 33, STRING = 31;
+             A_MOTIF_WM_HINTS, A_NET_WM_WINDOW_TYPE_SPLASH, A_NET_WM_ICON;
+        const uint WM_NAME = 39, WM_TRANSIENT_FOR = 68, WM_NORMAL_HINTS = 40, WM_HINTS = 35, WM_CLASS = 67, ATOM = 4, CARDINAL = 6, WINDOW = 33, STRING = 31;
 
         public Wm(XConn x, IWmSink sink) { this.x = x; this.sink = sink; }
 
@@ -251,7 +254,7 @@ namespace GtVpn
                 "_NET_SUPPORTED", "_NET_SUPPORTING_WM_CHECK", "_NET_ACTIVE_WINDOW", "_NET_WM_STATE", "_NET_WM_STATE_MAXIMIZED_VERT",
                 "_NET_WM_STATE_MAXIMIZED_HORZ", "_NET_WM_STATE_HIDDEN", "_NET_FRAME_EXTENTS", "_NET_REQUEST_FRAME_EXTENTS",
                 "_NET_WM_WINDOW_TYPE", "_NET_WM_WINDOW_TYPE_DIALOG", "_NET_CLIENT_LIST", "_NET_MOVERESIZE_WINDOW", "_NET_CLOSE_WINDOW", "WM_S0",
-                "_MOTIF_WM_HINTS", "_NET_WM_WINDOW_TYPE_SPLASH" };
+                "_MOTIF_WM_HINTS", "_NET_WM_WINDOW_TYPE_SPLASH", "_NET_WM_ICON" };
             var reqs = new List<Req>();
             foreach (var n in names) { var b = Encoding.ASCII.GetBytes(n); reqs.Add(new Req(16, 0).U16(b.Length).U16(0).Bytes(b)); }
             var res = x.CallAll(reqs);
@@ -263,7 +266,7 @@ namespace GtVpn
             A_NET_ACTIVE_WINDOW = a[k++]; A_NET_WM_STATE = a[k++]; A_NET_WM_STATE_MAXIMIZED_VERT = a[k++]; A_NET_WM_STATE_MAXIMIZED_HORZ = a[k++];
             A_NET_WM_STATE_HIDDEN = a[k++]; A_NET_FRAME_EXTENTS = a[k++]; A_NET_REQUEST_FRAME_EXTENTS = a[k++]; A_NET_WM_WINDOW_TYPE = a[k++];
             A_NET_WM_WINDOW_TYPE_DIALOG = a[k++]; A_NET_CLIENT_LIST = a[k++]; A_NET_MOVERESIZE_WINDOW = a[k++]; A_NET_CLOSE_WINDOW = a[k++]; A_WM_S0 = a[k++];
-            A_MOTIF_WM_HINTS = a[k++]; A_NET_WM_WINDOW_TYPE_SPLASH = a[k++];
+            A_MOTIF_WM_HINTS = a[k++]; A_NET_WM_WINDOW_TYPE_SPLASH = a[k++]; A_NET_WM_ICON = a[k++];
 
             // Our own (invisible) window: the WM_S0 owner and EWMH check window.
             me = x.NewId();
@@ -399,6 +402,7 @@ namespace GtVpn
                     XWin xw;
                     if (!wins.TryGetValue(w, out xw)) break;
                     if (atom == A_NET_WM_NAME || atom == WM_NAME) { xw.Title = GetTitle(w); sink.Title(w, xw.Title); }
+                    else if (atom == A_NET_WM_ICON && !xw.Popup) { uint[] icon = PropU32(x.Call(GetIcon(w))); if (icon.Length > 2) sink.SetIcon(w, icon); }
                     break;
                 }
                 case 29: // SelectionClear: another window manager (metacity, or a
@@ -439,7 +443,7 @@ namespace GtVpn
                 GetProp(w, A_NET_WM_NAME, A_UTF8_STRING), GetProp(w, WM_NAME, 0),
                 GetProp(w, WM_TRANSIENT_FOR, WINDOW), GetProp(w, WM_NORMAL_HINTS, 0),
                 GetProp(w, A_WM_PROTOCOLS, ATOM), GetProp(w, WM_HINTS, 0), GetProp(w, A_NET_WM_WINDOW_TYPE, ATOM),
-                GetProp(w, A_MOTIF_WM_HINTS, 0),
+                GetProp(w, A_MOTIF_WM_HINTS, 0), GetProp(w, WM_CLASS, STRING), GetIcon(w),
             };
             var r = x.CallAll(reqs);
             if (r[0] == null) return;                     // gone already
@@ -483,6 +487,9 @@ namespace GtVpn
                 }
             }
             if (xw.TransientFor != 0) xw.Dialog = true;
+            string[] cls = PropString(r[9]).Split('\0');
+            if (cls.Length >= 2) xw.Class = cls[1];
+            uint[] icon = PropU32(r[10]); if (icon.Length > 2) xw.Icon = icon;
 
             if (!mapped)
             {
@@ -580,6 +587,13 @@ namespace GtVpn
         static Req GetProp(uint w, uint prop, uint type)
         {
             return new Req(20, 0).U32(w).U32(prop).U32(type).U32(0).U32(65536);
+        }
+
+        // The first 48 KB of _NET_WM_ICON: the sizes up to 64x64 (programs list
+        // the small ones first), not the large ones a taskbar button needs no more than.
+        Req GetIcon(uint w)
+        {
+            return new Req(20, 0).U32(w).U32(A_NET_WM_ICON).U32(CARDINAL).U32(0).U32(12288);
         }
 
         string GetTitle(uint w)

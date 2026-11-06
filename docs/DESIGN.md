@@ -355,7 +355,9 @@ the same session twice:
   `_MOTIF_WM_HINTS` can take away minimize, maximize or the whole frame,
   and splash screens have none. A window that opens while another program
   is in front flashes its taskbar button (Windows does not let it take the
-  foreground).
+  foreground). Windows are grouped on the taskbar by their program: each
+  gets the AppUserModelID `GtVpn.X.<WM_CLASS>` (and no pinning, since a
+  pinned button could not start it) and its `_NET_WM_ICON` as its icon.
 - **Input:** mouse and keys go to Xvnc as RFB events at root coordinates
   (Windows virtual keys become X keysyms, with Ctrl and Alt kept as
   modifiers); focus goes through the window manager. Text copied on

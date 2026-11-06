@@ -299,6 +299,8 @@ uses the same session, but instead of one desktop in a viewer window, every
 window of the session (the CIW, the Library Manager, layout and schematic
 windows, their dialogs) appears on your desktop as a window of its own, with
 Windows 11's own title bar and frame, snapping, the taskbar and Alt+Tab.
+Each program in the session (Virtuoso, an xterm) gets a taskbar button of
+its own, with its own icon.
 Menus, tooltips and pop-ups appear where Cadence draws them. It is gtvpn's
 own small viewer (`windows/viewer`, C#), built on first use with the C#
 compiler that comes with Windows into `%LOCALAPPDATA%\gtvpn`; nothing is
