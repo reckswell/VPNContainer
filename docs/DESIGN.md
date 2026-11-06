@@ -349,11 +349,21 @@ the same session twice:
   window moves the X window; Cadence opening a dialog opens a Windows
   window, owned by its parent). Override-redirect windows (menus,
   tooltips, combo-box lists) become borderless, topmost windows that never
-  take focus. Windows 11's dark title bar follows the system theme.
+  take focus. Windows 11's dark title bar follows the system theme, also
+  when you switch it while windows are open. Dialogs (transient or
+  `_NET_WM_WINDOW_TYPE_DIALOG`) get no maximize button, as on Windows;
+  `_MOTIF_WM_HINTS` can take away minimize, maximize or the whole frame,
+  and splash screens have none. A window that opens while another program
+  is in front flashes its taskbar button (Windows does not let it take the
+  foreground).
 - **Input:** mouse and keys go to Xvnc as RFB events at root coordinates
   (Windows virtual keys become X keysyms, with Ctrl and Alt kept as
   modifiers); focus goes through the window manager. Text copied on
-  either side is offered on the other (RFB cut text).
+  either side is offered on the other (RFB cut text). Xvnc runs with
+  `-SendPrimary=0`, so only the CLIPBOARD selection comes to Windows: a
+  mouse selection (PRIMARY) does not replace the Windows clipboard. A
+  session started before that option is changed with `vncconfig -set` when
+  it is reused, where the server has vncconfig.
 - **Build and lifetime:** `gtvpn vnc <host> windows` compiles it on first
   use (and again when its sources change) with the `csc.exe` of .NET
   Framework 4, which is part of Windows 10 and 11, into

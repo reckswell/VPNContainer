@@ -217,6 +217,7 @@ namespace GtVpn
         public int MinW, MinH, MaxW, MaxH;
         public bool TakeFocus, DeleteWindow, InputHint = true;
         public bool Dialog;
+        public bool Frameless, NoMaximize, NoMinimize;  // splash screens; Motif hints
     }
 
     sealed class Wm
@@ -231,7 +232,8 @@ namespace GtVpn
         uint A_WM_PROTOCOLS, A_WM_DELETE_WINDOW, A_WM_TAKE_FOCUS, A_WM_STATE, A_WM_CHANGE_STATE, A_NET_WM_NAME, A_UTF8_STRING,
              A_NET_SUPPORTED, A_NET_SUPPORTING_WM_CHECK, A_NET_ACTIVE_WINDOW, A_NET_WM_STATE, A_NET_WM_STATE_MAXIMIZED_VERT,
              A_NET_WM_STATE_MAXIMIZED_HORZ, A_NET_WM_STATE_HIDDEN, A_NET_FRAME_EXTENTS, A_NET_REQUEST_FRAME_EXTENTS,
-             A_NET_WM_WINDOW_TYPE, A_NET_WM_WINDOW_TYPE_DIALOG, A_NET_CLIENT_LIST, A_NET_MOVERESIZE_WINDOW, A_NET_CLOSE_WINDOW, A_WM_S0;
+             A_NET_WM_WINDOW_TYPE, A_NET_WM_WINDOW_TYPE_DIALOG, A_NET_CLIENT_LIST, A_NET_MOVERESIZE_WINDOW, A_NET_CLOSE_WINDOW, A_WM_S0,
+             A_MOTIF_WM_HINTS, A_NET_WM_WINDOW_TYPE_SPLASH;
         const uint WM_NAME = 39, WM_TRANSIENT_FOR = 68, WM_NORMAL_HINTS = 40, WM_HINTS = 35, ATOM = 4, CARDINAL = 6, WINDOW = 33, STRING = 31;
 
         public Wm(XConn x, IWmSink sink) { this.x = x; this.sink = sink; }
@@ -248,7 +250,8 @@ namespace GtVpn
             string[] names = { "WM_PROTOCOLS", "WM_DELETE_WINDOW", "WM_TAKE_FOCUS", "WM_STATE", "WM_CHANGE_STATE", "_NET_WM_NAME", "UTF8_STRING",
                 "_NET_SUPPORTED", "_NET_SUPPORTING_WM_CHECK", "_NET_ACTIVE_WINDOW", "_NET_WM_STATE", "_NET_WM_STATE_MAXIMIZED_VERT",
                 "_NET_WM_STATE_MAXIMIZED_HORZ", "_NET_WM_STATE_HIDDEN", "_NET_FRAME_EXTENTS", "_NET_REQUEST_FRAME_EXTENTS",
-                "_NET_WM_WINDOW_TYPE", "_NET_WM_WINDOW_TYPE_DIALOG", "_NET_CLIENT_LIST", "_NET_MOVERESIZE_WINDOW", "_NET_CLOSE_WINDOW", "WM_S0" };
+                "_NET_WM_WINDOW_TYPE", "_NET_WM_WINDOW_TYPE_DIALOG", "_NET_CLIENT_LIST", "_NET_MOVERESIZE_WINDOW", "_NET_CLOSE_WINDOW", "WM_S0",
+                "_MOTIF_WM_HINTS", "_NET_WM_WINDOW_TYPE_SPLASH" };
             var reqs = new List<Req>();
             foreach (var n in names) { var b = Encoding.ASCII.GetBytes(n); reqs.Add(new Req(16, 0).U16(b.Length).U16(0).Bytes(b)); }
             var res = x.CallAll(reqs);
@@ -260,6 +263,7 @@ namespace GtVpn
             A_NET_ACTIVE_WINDOW = a[k++]; A_NET_WM_STATE = a[k++]; A_NET_WM_STATE_MAXIMIZED_VERT = a[k++]; A_NET_WM_STATE_MAXIMIZED_HORZ = a[k++];
             A_NET_WM_STATE_HIDDEN = a[k++]; A_NET_FRAME_EXTENTS = a[k++]; A_NET_REQUEST_FRAME_EXTENTS = a[k++]; A_NET_WM_WINDOW_TYPE = a[k++];
             A_NET_WM_WINDOW_TYPE_DIALOG = a[k++]; A_NET_CLIENT_LIST = a[k++]; A_NET_MOVERESIZE_WINDOW = a[k++]; A_NET_CLOSE_WINDOW = a[k++]; A_WM_S0 = a[k++];
+            A_MOTIF_WM_HINTS = a[k++]; A_NET_WM_WINDOW_TYPE_SPLASH = a[k++];
 
             // Our own (invisible) window: the WM_S0 owner and EWMH check window.
             me = x.NewId();
@@ -435,6 +439,7 @@ namespace GtVpn
                 GetProp(w, A_NET_WM_NAME, A_UTF8_STRING), GetProp(w, WM_NAME, 0),
                 GetProp(w, WM_TRANSIENT_FOR, WINDOW), GetProp(w, WM_NORMAL_HINTS, 0),
                 GetProp(w, A_WM_PROTOCOLS, ATOM), GetProp(w, WM_HINTS, 0), GetProp(w, A_NET_WM_WINDOW_TYPE, ATOM),
+                GetProp(w, A_MOTIF_WM_HINTS, 0),
             };
             var r = x.CallAll(reqs);
             if (r[0] == null) return;                     // gone already
@@ -455,7 +460,28 @@ namespace GtVpn
             foreach (uint p in PropU32(r[5])) { if (p == A_WM_DELETE_WINDOW) xw.DeleteWindow = true; if (p == A_WM_TAKE_FOCUS) xw.TakeFocus = true; }
             uint[] wmh = PropU32(r[6]);
             if (wmh.Length >= 2 && (wmh[0] & 1) != 0) xw.InputHint = wmh[1] != 0;
-            foreach (uint p in PropU32(r[7])) if (p == A_NET_WM_WINDOW_TYPE_DIALOG) xw.Dialog = true;
+            foreach (uint p in PropU32(r[7]))
+            {
+                if (p == A_NET_WM_WINDOW_TYPE_DIALOG) xw.Dialog = true;
+                if (p == A_NET_WM_WINDOW_TYPE_SPLASH) xw.Frameless = true;
+            }
+            // _MOTIF_WM_HINTS: flags, functions, decorations. In both masks,
+            // bit 0 ("all") means every other bit set is one taken away.
+            uint[] mh = PropU32(r[8]);
+            if (mh.Length >= 3)
+            {
+                if ((mh[0] & 1) != 0)
+                {
+                    uint fn = mh[1]; bool all = (fn & 1) != 0;
+                    xw.NoMinimize = all == ((fn & 8) != 0);                 // MWM_FUNC_MINIMIZE
+                    xw.NoMaximize = all == ((fn & 16) != 0);                // MWM_FUNC_MAXIMIZE
+                }
+                if ((mh[0] & 2) != 0)
+                {
+                    uint d = mh[2]; bool all = (d & 1) != 0;
+                    if (all == ((d & 8) != 0)) xw.Frameless = true;         // no MWM_DECOR_TITLE
+                }
+            }
             if (xw.TransientFor != 0) xw.Dialog = true;
 
             if (!mapped)

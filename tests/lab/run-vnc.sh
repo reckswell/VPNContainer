@@ -67,6 +67,11 @@ export N P
 check "the session's folder names it, and nothing new is in the home folder but the cookie" \
   bash -c "[[ \$(srv 'cat $SD/display') == $N && \$(srv 'cd ~ && find . -mindepth 1 ! -name .Xauthority | sort') == \"\$1\" ]] && srv 'test -s ~/.Xauthority'" _ "$HOME0"
 check "starting again reuses the same session" bash -c "dev 'gtvpn-vnc cadence start' | grep -qx 'reusing your session :$N'"
+off(){ [[ $(srv "DISPLAY=:$N vncconfig -get SendPrimary") =~ ^(0|false|off)$ ]]; }
+export -f off
+check "selecting text in it does not replace your computer's clipboard (SendPrimary off)" off
+check "a session started before that change gets it when it is reused" \
+  bash -c "srv 'DISPLAY=:$N vncconfig -set SendPrimary=1' && dev 'gtvpn-vnc cadence start' >/dev/null && off"
 check "another session on the server (like VS Code's terminal) draws on it" srv "DISPLAY=:$N xdpyinfo >/dev/null"
 check "the window manager runs in it (metacity, as on ece-linlab19)" bash -c "on_srv \"pgrep -u gtuser -x metacity\" >/dev/null"
 check "Xvnc listens on no TCP port of the server" \

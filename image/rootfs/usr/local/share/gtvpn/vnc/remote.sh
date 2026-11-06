@@ -87,6 +87,11 @@ start)
   command -v Xvnc >/dev/null 2>&1 || die "this server has no Xvnc (TigerVNC server)"
   if n=$(live); then
     say "reusing your session :$n"
+    # Sessions started before SendPrimary=0 (below) was added: turn it off
+    # now, if this server has vncconfig.
+    if command -v vncconfig >/dev/null 2>&1; then
+      DISPLAY=":$n" timeout 5 vncconfig -set SendPrimary=0 >/dev/null 2>&1 || true
+    fi
     # gtvpn's viewer for Windows was the window manager and has quit: bring
     # title bars back for the VNC viewer.
     if [ "${2:-}" != nowm ] && ! wm_running "$n"; then
@@ -114,6 +119,10 @@ start)
     # every connection that ends before signing in (gtvpn's checks that a
     # forward is open) as a failed attempt and shuts everyone out after 5;
     # only you can reach the socket, so that blacklist is off.
+    # SendPrimary=0: only what you copy (Ctrl+C, Edit > Copy) reaches your
+    # computer's clipboard; selecting text with the mouse (X's PRIMARY
+    # selection) no longer replaces it. Middle-click pastes such a selection
+    # inside the session as before.
     # Before TigerVNC 1.14 the ZRLE encoding (what gtvpn's viewer asks for)
     # ignored the viewer's compression level and used zlib's default, which
     # halves the frame rate; ZlibLevel=1 is the level the viewer asks for.
@@ -121,7 +130,7 @@ start)
     XDG_CACHE_HOME="$D/cache" XDG_CONFIG_HOME="$D/config" XDG_DATA_HOME="$D/data" \
       setsid nohup Xvnc ":$n" -auth "$XA" -nolisten tcp \
       -rfbunixpath "$SOCK" -rfbunixmode 0600 -rfbport -1 -localhost -interface 127.0.0.1 -SecurityTypes None \
-      -geometry 1920x1080 -depth 24 -dpi 96 -FrameRate 180 -AlwaysShared -AcceptSetDesktopSize=1 -UseBlacklist=0 $zl \
+      -geometry 1920x1080 -depth 24 -dpi 96 -FrameRate 180 -AlwaysShared -AcceptSetDesktopSize=1 -UseBlacklist=0 -SendPrimary=0 $zl \
       >"$D/xvnc.log" 2>&1 </dev/null &
     say "$n" > "$D/display"
     i=0; until [ -S "$SOCK" ] && DISPLAY=":$n" xdpyinfo >/dev/null 2>&1; do

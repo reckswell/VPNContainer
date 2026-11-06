@@ -32,21 +32,43 @@ namespace GtVpn
         [DllImport("user32.dll")] public static extern IntPtr CreateIconIndirect(ref ICONINFO info);
         [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
         [DllImport("user32.dll")] public static extern bool AddClipboardFormatListener(IntPtr hwnd);
+        [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int w, int h, uint flags);
+        [DllImport("user32.dll")] static extern bool FlashWindowEx(ref FLASHWINFO info);
+        [StructLayout(LayoutKind.Sequential)] struct FLASHWINFO { public int cbSize; public IntPtr hwnd; public uint flags, count, timeout; }
 
         // Windows 11 frames: dark title bars when the system is in dark mode,
         // and square corners for menus and other popups (their content is
         // drawn square by the program in the session).
-        public static void StyleFrame(IntPtr hwnd, bool popup)
+        // redraw: the window is on the screen already (shown, or the Windows
+        // theme changed), and its title bar must be drawn again to show it.
+        public static void StyleFrame(IntPtr hwnd, bool popup, bool redraw)
         {
             if (!IsWindows) return;
             try
             {
                 int v;
                 if (popup) { v = 1; DwmSetWindowAttribute(hwnd, 33, ref v, 4); }      // DWMWA_WINDOW_CORNER_PREFERENCE: do not round
-                else if (DarkMode()) { v = 1; DwmSetWindowAttribute(hwnd, 20, ref v, 4); } // DWMWA_USE_IMMERSIVE_DARK_MODE
+                else
+                {
+                    v = DarkMode() ? 1 : 0;
+                    DwmSetWindowAttribute(hwnd, 20, ref v, 4);                          // DWMWA_USE_IMMERSIVE_DARK_MODE
+                    // SWP_NOSIZE | NOMOVE | NOZORDER | NOACTIVATE | FRAMECHANGED
+                    if (redraw) SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020);
+                }
             }
             catch (DllNotFoundException) { }
             catch (EntryPointNotFoundException) { }
+        }
+
+        // A window that opened while you were in another program: flash its
+        // taskbar button until you switch to it (Windows does not let it come
+        // to the front by itself).
+        public static void Flash(IntPtr hwnd)
+        {
+            if (!IsWindows) return;
+            var f = new FLASHWINFO { hwnd = hwnd, flags = 0x2 | 0xC };              // FLASHW_TRAY | FLASHW_TIMERNOFG
+            f.cbSize = Marshal.SizeOf(f);
+            try { FlashWindowEx(ref f); } catch (EntryPointNotFoundException) { }
         }
 
         static bool DarkMode()
@@ -172,8 +194,11 @@ namespace GtVpn
             else
             {
                 bool fixedSize = w.MinW > 0 && w.MinW == w.MaxW && w.MinH == w.MaxH;
-                FormBorderStyle = fixedSize ? FormBorderStyle.FixedSingle : FormBorderStyle.Sizable;
-                MaximizeBox = !fixedSize;
+                // Frameless: splash screens, and windows that ask for no title
+                // bar (Motif hints). Dialogs have no maximize button, as on Windows.
+                FormBorderStyle = w.Frameless ? FormBorderStyle.None : fixedSize ? FormBorderStyle.FixedSingle : FormBorderStyle.Sizable;
+                MaximizeBox = !fixedSize && !w.Dialog && !w.NoMaximize;
+                MinimizeBox = !w.NoMinimize;
                 if (owner != null) { Owner = owner; ShowInTaskbar = false; MinimizeBox = false; }
                 if (v.AppIcon != null) Icon = v.AppIcon;
                 if (w.MinW > 0 || w.MinH > 0) MinimumSize = Size.Empty; // set after the frame is known
@@ -211,7 +236,24 @@ namespace GtVpn
             finally { Applying = false; }
         }
 
-        protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); Native.StyleFrame(Handle, Win != null && Win.Popup); }
+        protected override void OnHandleCreated(EventArgs e) { base.OnHandleCreated(e); Native.StyleFrame(Handle, Win != null && Win.Popup, false); }
+
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+            if (Win.Popup) return;
+            Native.StyleFrame(Handle, false, true);
+            if (Form.ActiveForm == null) Native.Flash(Handle);
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            base.WndProc(ref m);
+            // WM_SETTINGCHANGE "ImmersiveColorSet": Windows switched between
+            // light and dark mode.
+            if (m.Msg == 0x001A && !Win.Popup && m.LParam != IntPtr.Zero && Marshal.PtrToStringUni(m.LParam) == "ImmersiveColorSet")
+                Native.StyleFrame(Handle, false, true);
+        }
 
         protected override void OnPaintBackground(PaintEventArgs e) { }
 

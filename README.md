@@ -305,7 +305,11 @@ compiler that comes with Windows into `%LOCALAPPDATA%\gtvpn`; nothing is
 downloaded. It talks to the session twice through the container: as a VNC
 client for the pictures (streamed, without a round trip per frame) and as
 the session's window manager (in place of metacity) to learn where each
-window is. Text you copy goes both ways between Windows and the session.
+window is. Text you copy (Ctrl+C, Edit > Copy) goes both ways between
+Windows and the session; text you only select with the mouse stays in the
+session (middle-click pastes it there), so it never replaces what you copied
+in Windows. A window that opens while you are in another program flashes
+its taskbar button, as Windows programs do.
 
 On the test PC this shows a panning layout-like view at 20-33 full
 redraws per second, pixel-exact (6 with `ssh -Y`); the pointer and moving
