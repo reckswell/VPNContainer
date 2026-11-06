@@ -313,6 +313,7 @@ namespace GtVpn
         public bool Ready;                   // placed where the session's window is: from now on, report moves
         public int PlannedX, PlannedY, FrameUsedX, FrameUsedY;   // Mono: where its client area should land, and the frame allowed for
         public bool MeasureFrame;            // Mono: learn the window manager's frame from where it lands
+        public DateTime ShownAt;
         public DateTime LastSent;
         public bool InSizeMove;              // inside Windows' move/size loop (dragging the title bar or a border)
         // A move of the session's window whose pixels are still on their way:
@@ -860,6 +861,10 @@ namespace GtVpn
             if (!Native.IsWindows)
             {
                 if (c.X < -10000 || c.Y < -10000) return;      // Mono's step off the screen while a window maps
+                // Mono's first report of a new window is its frame's place, before
+                // the window manager has framed it: not a move.
+                if ((f.FrameUsedX | f.FrameUsedY) != 0 && x == f.PlannedX - f.FrameUsedX && y == f.PlannedY - f.FrameUsedY
+                    && (DateTime.Now - f.ShownAt).TotalSeconds < 2) return;
                 // Where the window manager put the new window's client area:
                 // its frame, for the windows that come later. (A report at the
                 // frame's own place comes before it is framed: not that one.)
@@ -947,6 +952,7 @@ namespace GtVpn
                     if (nx != gx || ny != gy) Wm.Move(w.Id, nx, ny);
                 }
                 f.Ready = true;
+                f.ShownAt = DateTime.Now;
                 f.Show();
                 Log((w.Popup ? "popup " : "window ") + w.Id.ToString("x") + " \"" + w.Title + "\" " + w.W + "x" + w.H + "+" + w.X + "+" + w.Y
                     + (w.Class.Length > 0 ? " (" + w.Class + ")" : ""));

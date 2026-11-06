@@ -391,6 +391,13 @@ the same session twice:
   signed msrdc). The cookie reaches it through stdin. Under mono the
   viewer's message loop runs without a main form, since Mono's WinForms
   timers wait for the main form to load, and keys come from WM_CHAR.
+  WSLg's window manager places a new window by the size hints Mono writes
+  when it creates it, frame first: the viewer places windows before they
+  exist, learns the frame's size from the first one that lands and keeps
+  it on the session's root (`_GTVPN_FRAME`), so client areas land on the
+  session's coordinates and a restarted viewer moves nothing. Popups are
+  `WS_POPUP` without a caption, which Mono makes override-redirect, so
+  menus and tooltips stay where Cadence puts them.
   The frames are WSLg's (Weston's) rather than Windows 11's.
   `GTVPN_VIEWER` overrides the choice; the state comes from
   `HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy`
