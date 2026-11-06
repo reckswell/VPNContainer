@@ -1,5 +1,6 @@
 # gtvpn: Georgia Tech GlobalProtect inside an isolated container.
-# Use the ./gtvpn wrapper (it fills in .env); plain `docker compose` works too.
+# Use the ./gtvpn wrapper: it fills in .env and passes the settings from
+# gtvpn.toml. Plain `docker compose` works too, but reads only .env.
 name: gtvpn
 
 services:
@@ -59,6 +60,7 @@ services:
     environment:
       HOST_UID: ${HOST_UID:-1000}
       HOST_GID: ${HOST_GID:-1000}
+      GTVPN_PROVIDER: ${GTVPN_PROVIDER:-globalprotect}
       GTVPN_PORTAL: ${GTVPN_PORTAL:-vpn.gatech.edu}
       GTVPN_GATEWAY: ${GTVPN_GATEWAY:-}
       GTVPN_SKIP_PORTAL: ${GTVPN_SKIP_PORTAL:-0}

@@ -77,6 +77,13 @@ die() { printf '\033[31m[gtvpn] %s\033[0m\n' "$*" >&2; exit 1; }
 # lets out of the WAN interface (and only to the VPN control ports).
 as_vpn() { setpriv --regid=gpvpn --clear-groups -- "$@"; }
 
+# The kind of VPN ([vpn] provider in gtvpn.toml). A new kind is added here
+# and in PROVIDERS in host/config.py.
+case ${GTVPN_PROVIDER:-globalprotect} in
+  globalprotect) ;;
+  *) die "VPN provider '${GTVPN_PROVIDER}' is not supported yet (supported: globalprotect)" ;;
+esac
+
 if ip link show "$TUN" >/dev/null 2>&1; then
   say "already connected ($TUN is up). Use 'gtvpn disconnect' first to reconnect."
   exit 0

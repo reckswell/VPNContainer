@@ -1,0 +1,106 @@
+# gtvpn.toml: which VPN the container connects to, and which of your SSH
+# connections go through it. Everything else on this computer, including
+# SSH to anything not listed here, connects directly, as if gtvpn weren't
+# installed.
+#
+# This file is part of the repo (and public on GitHub), so keep passwords
+# and personal details out of it. Your user names go in .env; hosts you'd
+# rather not publish can go in gtvpn.local.toml (same format, not tracked
+# by git): its settings win and its [[hosts]] are added to these.
+#
+# After editing:  ./gtvpn hosts   SSH hosts and routing (container keeps running)
+#                 ./gtvpn up      VPN settings (restarts the container)
+# Check a destination with:  ./gtvpn route <host>
+# A setting here wins over the same GTVPN_* line in .env. A setting that is
+# left out (or commented out) comes from .env, or else the default.
+
+# ---- The VPN ------------------------------------------------------------------
+[vpn]
+# The kind of VPN. "globalprotect" (Palo Alto GlobalProtect) is the only
+# one so far; the field is here so other school/work VPNs can be added
+# later, one container per VPN.
+provider = "globalprotect"
+portal = "vpn.gatech.edu"
+# Sign in at this gateway directly: one password and one Duo code. (Going
+# through the portal first makes GT's gateways ask for both again.)
+skip_portal = true
+gateway = "dc-ext-gw.vpn.gatech.edu"       # or ni-ext-gw.vpn.gatech.edu
+# With skip_portal = false: the gateway by the name the portal gives it.
+gateway_name = "DC Gateway"
+auth = "auto"         # auto | saml | password  (GT: password, then the Duo passcode)
+client = "auto"       # auto | openconnect | gpclient
+# Send a Host Information Profile report. Off: the client's built-in one
+# describes a made-up Windows PC (see docs/DESIGN.md).
+hip = false
+fix_openssl = false   # true for "unsafe legacy renegotiation" errors
+# What the client reports itself as (left out: its own Linux identity).
+# os = "Windows"
+# client_version = "6.2.8-243"
+# Your VPN sign-in name: set GTVPN_USER in .env, so it stays off GitHub.
+# username = ""
+
+# ---- SSH: what goes through the container -----------------------------------------
+[ssh]
+# Through the container: every [[hosts]] entry below (by its name and by
+# its hostname), and any server whose name or address matches one of these
+# patterns. This applies to ssh on this computer and to VS Code Remote-SSH
+# ("Connect to Host..."). Inside the container everything already goes
+# through the VPN. Remove the patterns to send only the listed hosts.
+private = [
+  "*.gatech.edu",     # GT servers by name
+  "128.61.*",         # GT's public address blocks
+  "130.207.*",
+  "143.215.*",
+]
+# Exceptions: names that match a pattern above but should connect directly.
+direct = []
+# VS Code's Remote-SSH list shows each host below as <prefix><name>.
+prefix = "gt-"
+# Your user name on these servers, where a host doesn't set one: set
+# GTVPN_GT_USER in .env (this file is public).
+# user = ""
+
+# One block per server. Each one:
+#   - works inside the container as     ssh <name>    (X11 on, one Duo prompt per 8 h)
+#   - is in VS Code's Remote-SSH list as gt-<name>
+#   - goes through the container, whether you use gt-<name> or its hostname
+# Keys: name, hostname (required); user, port, x11 (default true), and
+# options = { ... } for any other ssh_config option inside the container.
+[[hosts]]
+name = "linlab19"
+hostname = "ece-linlab19.ece.gatech.edu"
+
+# [[hosts]]
+# name = "pace"
+# hostname = "login-ice.pace.gatech.edu"
+# user = "gburdell3"
+#
+# [[hosts]]
+# name = "lab-fpga"
+# hostname = "10.10.20.30"     # a VPN-only address, not matched by the patterns above
+# port = 2222
+# x11 = false
+# options = { ServerAliveInterval = 60 }
+
+# ---- Leak and reachability checks (gtvpn verify) ------------------------------------
+[checks]
+# VPN-side services (host:port) that must be reachable through the tunnel
+# and NOT from this computer directly.
+# probe_targets = ["ece-linlab19.ece.gatech.edu:22"]
+probe_names = ["gatech.edu"]          # names that must resolve through the VPN's DNS
+# egress_url = "https://ifconfig.me/ip"   # compares this computer's and the container's public IP
+
+# ---- Direct internet for Claude Code and dev tools (never through the VPN) ------------
+[direct_egress]
+# false: the container reaches nothing but the VPN.
+enabled = true
+# Exact host names, HTTPS only. GT names are always refused here.
+allow = [
+  "api.anthropic.com", "claude.ai", "platform.claude.com", "console.anthropic.com",
+  "statsig.anthropic.com", "downloads.claude.ai",
+  "github.com", "api.github.com", "codeload.github.com",
+  "objects.githubusercontent.com", "raw.githubusercontent.com",
+  "registry.npmjs.org", "pypi.org", "files.pythonhosted.org",
+]
+# VPN-side names outside *.gatech.edu that must skip the proxy and use the tunnel.
+no_proxy_extra = []

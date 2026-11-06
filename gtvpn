@@ -24,8 +24,49 @@ engine() { "$ENGINE" "$@"; }
 running() { [[ $(engine inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null) == true ]]; }
 need_running() { running || die "container is not running; start it with: ./gtvpn up"; }
 
-# Read KEY=VALUE from .env without executing it.
+# ---- Settings: gtvpn.toml (in the repo), then .env (this computer) ---------
+# gtvpn.toml says which VPN to use and which SSH hosts go through the
+# container. host/config.py checks it and turns it into GTVPN_* values, which
+# win over the same lines in .env and are exported, so docker compose (it
+# prefers the environment to .env) and host/verify-host.sh see them too.
+# gtvpn.local.toml (untracked, optional) is read on top of it.
+CONF=gtvpn.toml; CONF_LOCAL=gtvpn.local.toml
+declare -A CFG=(); CFG_PRIVATE=(); CFG_DIRECT=(); CFG_PREFIX=gt-; CFG_LOADED=0
+cfg_py() { python3 -I "$HERE/host/config.py" "$1" "$HERE/$CONF" "$HERE/$CONF_LOCAL"; }
+cfg_load() {
+  ((CFG_LOADED)) && return 0
+  [[ -f $CONF ]] || { warn "$CONF is missing (get it back with: git checkout $CONF)"; return 1; }
+  command -v python3 >/dev/null || { warn "reading $CONF needs python3 (sudo apt install python3)"; return 1; }
+  local out kind k v
+  out=$(cfg_py records) || return 1
+  while IFS=' ' read -r kind k v; do
+    case $kind in
+      env) CFG[$k]=$v; export "$k=$v" ;;
+      prefix) CFG_PREFIX=$k ;;
+      private) CFG_PRIVATE+=("$k") ;;
+      direct) CFG_DIRECT+=("$k") ;;
+    esac
+  done <<<"$out"
+  CFG_LOADED=1
+}
+# .env lines that gtvpn.toml overrides with a different value.
+cfg_overrides() {
+  local k v l=()
+  for k in "${!CFG[@]}"; do
+    v=$(envfile_get "$k"); [[ -n $v && $v != "${CFG[$k]}" ]] && l+=("$k")
+  done
+  [[ $(envfile_get GTVPN_SSH_VIA_CONTAINER) == 0 ]] && l+=("GTVPN_SSH_VIA_CONTAINER (now [ssh] private)")
+  ((${#l[@]})) || return 0
+  warn "$CONF wins over these lines in .env, which are ignored: ${l[*]}"
+}
+
+# A setting: from gtvpn.toml if it sets it, else KEY=VALUE from .env (read
+# without executing it).
 envget() {
+  if [[ -n ${CFG[$1]+set} ]]; then printf '%s' "${CFG[$1]}"; return; fi
+  envfile_get "$1"
+}
+envfile_get() {
   local k=$1 line v=""
   [[ -f .env ]] || { echo ""; return; }
   line=$(grep -E "^${k}=" .env | tail -1 || true)
@@ -192,6 +233,7 @@ ssh_setup() {
 }
 
 write_ssh_config() {
+  mkdir -p "$SSH_DIR"
   ssh_config_text "$SSH_DIR/id_ed25519" "$SSH_DIR/known_hosts" "$SSH_DIR/cm-%C" > "$SSH_DIR/config"; chmod 600 "$SSH_DIR/config"
   write_win_ssh_config
 }
@@ -213,70 +255,120 @@ write_win_ssh_config() {
   ssh_config_text "$win/id_ed25519" "$win/known_hosts" none > "$dir/config"
 }
 
-# ---- hosts.conf: your GT servers, in standard OpenSSH config syntax --------
-GT_MATCH='*.gatech.edu,10.*,128.61.*,130.207.*,143.215.*'
-# GT names and GT's public address blocks, which this computer reaches only
-# through the container (see ssh_config_text).
-GT_VIA='*.gatech.edu,128.61.*,130.207.*,143.215.*'
-hosts_ensure() {
-  [[ -f hosts.conf ]] && return 0
-  cp hosts.conf.example hosts.conf && say "created hosts.conf (list your GT servers there)"
-}
-# The plain aliases (no wildcards or negations) on its Host lines.
-hosts_aliases() {
+# ---- Your hosts: [[hosts]] and [ssh] in gtvpn.toml --------------------------
+# The container gets them as one standard ssh config, runtime/in/hosts.conf
+# (gtvpn-hosts installs a root-owned copy), so `ssh <name>` works in there.
+# This computer's ssh and VS Code get gt-<name> entries and the routing rules
+# (ssh_config_text).
+HOSTS_OUT=runtime/in/hosts.conf
+# hosts.conf (ssh config syntax) was the host list before gtvpn.toml.
+hosts_conf_note() {
   [[ -f hosts.conf ]] || return 0
-  tr -d '\r' < hosts.conf | awk 'tolower($1)=="host"{for(i=2;i<=NF;i++) print $i}' \
+  local a; a=$(hosts_aliases hosts.conf | tr '\n' ' ')
+  [[ -n $a ]] && warn "hosts.conf is no longer read. Move these hosts to [[hosts]] in $CONF: $a"
+  return 0
+}
+# The plain aliases (no wildcards or negations) on the Host lines of a file.
+hosts_aliases() { # [file]
+  local f=${1:-$HOSTS_OUT}
+  [[ -f $f ]] || return 0
+  tr -d '\r' < "$f" | awk 'tolower($1)=="host"{for(i=2;i<=NF;i++) print $i}' \
     | grep -E '^[A-Za-z0-9._-]+$' | awk '!seen[$0]++' || true
 }
 # "hostname user port" for an alias, as ssh inside the container sees it
-# (user/port are empty when not set and default).
+# (user/port are "-" when not set and default).
 hosts_resolve() { # alias
-  local f u; f=$(mktemp); tr -d '\r' < hosts.conf > "$f"
-  u=$(envget GTVPN_GT_USER)
-  [[ $u =~ ^[A-Za-z0-9._-]+$ ]] && printf '\nMatch host %s\n    User %s\n' "$GT_MATCH" "$u" >> "$f"
-  printf '\nHost *\n    User gtvpn-unset\n' >> "$f"
+  local f; f=$(mktemp)
+  { cat "$HOSTS_OUT"; printf '\nHost *\n    User gtvpn-unset\n'; } > "$f"
   ssh -G -F "$f" "$1" 2>/dev/null | awk '$1=="hostname"{h=$2} $1=="user"{u=$2} $1=="port"{p=$2}
     END{ if (u=="gtvpn-unset") u="-"; if (p=="22") p="-"; if (h!="") print h, u, p }'
   rm -f "$f"
 }
-# Check hosts.conf and hand a copy to the container (runtime/in).
+# Build the hosts file from gtvpn.toml, check it, and hand it to the
+# container (runtime/in). On a mistake the previous file stays.
 hosts_sync() {
-  hosts_ensure || return 1
-  command -v ssh >/dev/null || { warn "no ssh client here; hosts.conf entries won't show in VS Code (sudo apt install openssh-client)"; }
-  local f err; f=$(mktemp); tr -d '\r' < hosts.conf > "$f"
-  if command -v ssh >/dev/null && ! err=$(ssh -G -F "$f" gtvpn-config-check 2>&1 >/dev/null); then
-    rm -f "$f"; warn "hosts.conf has errors: ${err//$f/hosts.conf}"; return 1
+  cfg_load || return 1
+  hosts_conf_note
+  local f err ln who u al; f=$(mktemp)
+  cfg_py ssh-hosts > "$f" || { rm -f "$f"; return 1; }
+  if ! command -v ssh >/dev/null; then
+    warn "no ssh client here; your hosts won't show in VS Code (sudo apt install openssh-client)"
+  elif ! err=$(ssh -G -F "$f" gtvpn-config-check 2>&1 >/dev/null); then
+    # "<file>[:] line N: <problem>" -> the host whose block has line N
+    ln=$(sed -nE "s|^$f:? line ([0-9]+):.*|\1|p" <<<"$err" | head -1)
+    who=$(awk -v n="${ln:-0}" 'NR<=n && $1=="Host"{h=$2} END{print h}' "$f")
+    err=$(grep -v 'terminating' <<<"$err" | sed -E "s|^$f:? line [0-9]+: ||; s|$f:? ?||g" | head -3)
+    warn "$CONF: ${who:+host '$who': }$err"
+    rm -f "$f"; return 1
   fi
-  local u; u=$(envget GTVPN_GT_USER)
+  # Your user name for these hosts, after their own settings (theirs win).
+  u=$(envget GTVPN_GT_USER)
+  if [[ $u =~ ^[A-Za-z0-9._-]+$ ]]; then
+    al=$(hosts_aliases "$f" | tr '\n' ' '); al=${al% }
+    {
+      printf '\n# Added by gtvpn: your user name ([ssh] user or GTVPN_GT_USER), where a host sets none\n'
+      [[ -n $al ]] && printf 'Host %s\n    User %s\n' "$al" "$u"
+      ((${#CFG_PRIVATE[@]})) && printf 'Match host %s\n    User %s\n' "$(IFS=,; echo "${CFG_PRIVATE[*]}")" "$u"
+    } >> "$f"
+  fi
   mkdir -p runtime/in
-  {
-    cat "$f"
-    # Default GT username for the container, after your settings (yours win).
-    [[ $u =~ ^[A-Za-z0-9._-]+$ ]] && printf '\n# Added by gtvpn from GTVPN_GT_USER in .env\nMatch host %s\n    User %s\n' "$GT_MATCH" "$u"
-  } > runtime/in/hosts.conf
-  rm -f "$f"
-  chmod 644 runtime/in/hosts.conf 2>/dev/null || true
+  cat "$f" > "$HOSTS_OUT"; rm -f "$f"
+  chmod 644 "$HOSTS_OUT" 2>/dev/null || true
 }
 cmd_hosts() {
-  hosts_sync || die "fix hosts.conf and run ./gtvpn hosts again (nothing was changed)"
+  hosts_sync || die "fix $CONF and run ./gtvpn hosts again (nothing was changed)"
+  cfg_overrides
   write_ssh_config
-  if running; then engine exec -u root "$NAME" gtvpn-hosts >/dev/null || die "the container refused hosts.conf (see above)"; fi
+  if running; then engine exec -u root "$NAME" gtvpn-hosts >/dev/null || die "the container refused the hosts from $CONF (see above)"; fi
   local a h u p n=0
   while read -r a; do
     read -r h u p < <(hosts_resolve "$a") || continue
     [[ $u == - ]] && u=""; [[ $p == - ]] && p=""
-    printf '  %-12s -> %s%s%s   (container: ssh %s   VS Code: gt-%s)\n' "$a" "${u:+$u@}" "$h" "${p:+:$p}" "$a" "$a"
+    printf '  %-12s -> %s%s%s   (container: ssh %s   VS Code: %s%s)\n' "$a" "${u:+$u@}" "$h" "${p:+:$p}" "$a" "$CFG_PREFIX" "$a"
     n=$((n+1))
   done < <(hosts_aliases)
-  if (( n )); then say "$n host(s) from hosts.conf are ready"; else say "hosts.conf has no hosts yet; add yours and run ./gtvpn hosts again"; fi
+  if (( n )); then say "$n host(s) from $CONF are ready"; else say "$CONF lists no [[hosts]] yet; add yours and run ./gtvpn hosts again"; fi
+  if ((${#CFG_PRIVATE[@]})); then
+    say "also through the container: anything matching ${CFG_PRIVATE[*]}${CFG_DIRECT[*]:+ (except ${CFG_DIRECT[*]})}"
+  fi
+  say "everything else connects directly. Check one with: ./gtvpn route <host>"
 }
 
+# Which way ssh (and VS Code Remote-SSH) on this computer reaches a host.
+# (GTVPN_SSH_CONFIG: another ssh config file to ask, for the tests.)
+cmd_route() {
+  (($#)) || die "usage: ./gtvpn route <host> [<host> ...]"
+  command -v ssh >/dev/null || die "no ssh client here (sudo apt install openssh-client)"
+  local t o h j
+  for t in "$@"; do
+    [[ $t =~ ^([A-Za-z0-9._-]+@)?[A-Za-z0-9._-]+$ ]] || die "not a host name: $t"
+    o=$(ssh ${GTVPN_SSH_CONFIG:+-F "$GTVPN_SSH_CONFIG"} -G "$t" 2>/dev/null </dev/null) || { warn "ssh could not read its config for $t"; continue; }
+    h=$(awk '$1=="hostname"{print $2; exit}' <<<"$o")
+    j=$(awk '$1=="proxyjump"{print $2; exit}' <<<"$o")
+    if [[ $j == gtvpn ]]; then printf '  %-30s %sthrough the container%s  (to %s)\n' "$t" "$c_g" "$c_0" "$h"
+    elif [[ -n $j ]]; then printf '  %-30s through %s, set in your own ssh config, not by gtvpn  (to %s)\n' "$t" "$j" "$h"
+    else printf '  %-30s direct, not through the container  (to %s)\n' "$t" "$h"
+    fi
+  done
+}
+
+# The lines every entry routed through the container gets.
+jump_lines() { # controlpath|none
+  echo "    ProxyJump gtvpn"
+  if [[ $1 != none ]]; then
+    echo "    ControlMaster auto"
+    echo "    ControlPath $1"
+    echo "    ControlPersist 8h"
+  fi
+  echo "    ServerAliveInterval 30"
+}
 ssh_config_text() { # identity known_hosts controlpath|none
-  local id=$1 kh=$2 cm=$3 port user hosts pair alias fq
+  local id=$1 kh=$2 cm=$3 port user hosts pair alias fq pre=$CFG_PREFIX
   port=$(envget GTVPN_SSH_PORT); port=${port:-2222}
   user=$(envget GTVPN_GT_USER); hosts=$(envget GTVPN_SSH_HOSTS)
   {
-    echo "# Managed by gtvpn ($HERE). Do not edit: list your hosts in hosts.conf, then run: gtvpn hosts"
+    echo "# Managed by gtvpn ($HERE). Do not edit: list your hosts in $CONF, then run: gtvpn hosts"
+    echo "# Only what is listed below goes through the container. Anything else connects directly."
     echo "Host gtvpn"
     echo "    HostName 127.0.0.1"
     echo "    Port $port"
@@ -288,60 +380,58 @@ ssh_config_text() { # identity known_hosts controlpath|none
     echo "    ForwardAgent no"
     echo "    ForwardX11 no"
     echo "    ServerAliveInterval 30"
-    local seen=" " h u p
-    if command -v ssh >/dev/null; then
+    local seen=" " h u p r routes=()
+    if command -v ssh >/dev/null && [[ -f $HOSTS_OUT ]]; then
       while read -r alias; do
         read -r h u p < <(hosts_resolve "$alias") || continue
         [[ $h =~ ^[A-Za-z0-9._-]+$ && $u =~ ^([A-Za-z0-9._-]+|-)$ && $p =~ ^([0-9]+|-)$ ]] || continue
         seen+="$alias "
+        routes+=("$h $u $p")
         echo
-        echo "# '$alias' from hosts.conf, reached THROUGH the container's tunnel"
-        echo "Host gt-$alias"
+        echo "# '$alias' from $CONF, reached THROUGH the container's tunnel"
+        echo "Host $pre$alias"
         echo "    HostName $h"
         [[ $u != - ]] && echo "    User $u"
         [[ $p != - ]] && echo "    Port $p"
-        echo "    ProxyJump gtvpn"
-        if [[ $cm != none ]]; then
-          echo "    ControlMaster auto"
-          echo "    ControlPath $cm"
-          echo "    ControlPersist 8h"
-        fi
-        echo "    ServerAliveInterval 30"
+        jump_lines "$cm"
       done < <(hosts_aliases)
     fi
-    for pair in $hosts; do
+    for pair in $hosts; do  # GTVPN_SSH_HOSTS in .env, the oldest way to list hosts
       alias=${pair%%=*}; fq=${pair#*=}
-      [[ -n $alias && -n $fq && $alias != "$pair" ]] || continue
+      [[ $alias =~ ^[A-Za-z0-9._-]+$ && $fq =~ ^[A-Za-z0-9._-]+$ && $alias != "$pair" ]] || continue
       [[ $seen == *" $alias "* ]] && continue
+      [[ $user =~ ^[A-Za-z0-9._-]+$ ]] && u=$user || u=-
+      routes+=("$fq $u -")
       echo
-      echo "# GT host '$alias' reached THROUGH the container's tunnel"
-      echo "Host gt-$alias"
+      echo "# GT host '$alias' (GTVPN_SSH_HOSTS) reached THROUGH the container's tunnel"
+      echo "Host $pre$alias"
       echo "    HostName $fq"
-      [[ -n $user ]] && echo "    User $user"
-      echo "    ProxyJump gtvpn"
-      if [[ $cm != none ]]; then
-        echo "    ControlMaster auto"
-        echo "    ControlPath $cm"
-        echo "    ControlPersist 8h"
-      fi
-      echo "    ServerAliveInterval 30"
+      [[ $u != - ]] && echo "    User $u"
+      jump_lines "$cm"
     done
-    # Every other GT server, typed by name or GT address (VS Code Remote-SSH
-    # "Connect to Host", or ssh here), also goes through the container, so
-    # this computer never connects to GT itself. 10.* is left out: it is
-    # also used by home and other private networks.
-    if [[ $(envget GTVPN_SSH_VIA_CONTAINER) != 0 ]]; then
+    # The same servers typed by their own name or address (VS Code's
+    # "Connect to Host...", or ssh here).
+    seen=" "
+    for r in "${routes[@]}"; do
+      read -r h u p <<<"$r"
+      [[ $seen == *" $h "* ]] && continue
+      seen+="$h "
       echo
-      echo "# Any other GT server (by name or GT address): also THROUGH the container's tunnel"
-      echo "Match host $GT_VIA"
-      echo "    ProxyJump gtvpn"
+      echo "# $h by its own name: also THROUGH the container"
+      echo "Match host $h"
+      [[ $u != - ]] && echo "    User $u"
+      [[ $p != - ]] && echo "    Port $p"
+      jump_lines "$cm"
+    done
+    # Any other server that matches the [ssh] private patterns.
+    if ((${#CFG_PRIVATE[@]})); then
+      local pats d; pats=$(IFS=,; echo "${CFG_PRIVATE[*]}")
+      for d in "${CFG_DIRECT[@]}"; do pats+=",!$d"; done
+      echo
+      echo "# Any other server matching [ssh] private in $CONF: also THROUGH the container"
+      echo "Match host $pats"
       [[ $user =~ ^[A-Za-z0-9._-]+$ ]] && echo "    User $user"
-      if [[ $cm != none ]]; then
-        echo "    ControlMaster auto"
-        echo "    ControlPath $cm"
-        echo "    ControlPersist 8h"
-      fi
-      echo "    ServerAliveInterval 30"
+      jump_lines "$cm"
     fi
   }
 }
@@ -428,7 +518,7 @@ cmd_code() {
 cmd_setup() {
   command -v "$ENGINE" >/dev/null || die "$ENGINE is not installed (see README: Install)"
   [[ -e /dev/net/tun ]] || warn "/dev/net/tun missing on this machine (sudo modprobe tun)"
-  [[ -f .env ]] || { cp .env.example .env; say "created .env (edit it to add your GT hosts)"; }
+  [[ -f .env ]] || { cp .env.example .env; say "created .env (your user names go there; your hosts go in $CONF)"; }
   envset HOST_UID "$(id -u)"; envset HOST_GID "$(id -g)"
   [[ $(id -u) != 0 ]] || die "run gtvpn as your normal user, not root"
   x11_detect
@@ -442,7 +532,8 @@ cmd_setup() {
 
 cmd_up() {
   [[ -f .env ]] || cmd_setup
-  hosts_sync || warn "starting without your hosts.conf changes; fix it, then run: ./gtvpn hosts"
+  hosts_sync || warn "starting with the previous hosts; fix $CONF, then run: ./gtvpn hosts"
+  cfg_overrides
   x11_detect; x11_cookie; write_ssh_config
   local b=--build; [[ " $* " == *" --no-build "* ]] && b=""
   compose up -d $b "$@"
@@ -548,7 +639,8 @@ ${c_b}gtvpn${c_0} - Georgia Tech GlobalProtect in an isolated container
   verify           full leak/reachability checks, container AND host side
   watch [secs]     re-run all checks forever, alert on any failure
   shell            bash in the container as 'dev'
-  hosts            apply hosts.conf (your GT servers) to the container and VS Code
+  hosts            apply gtvpn.toml's hosts and routing to the container and VS Code
+  route <host>     say whether ssh/VS Code reach a host through the container or directly
   ssh <alias|host> ssh to a GT host from inside the container (X11 on)
   code [path]      open VS Code in the container (Dev Containers attach, as dev)
   code --ssh [path]  the same over Remote-SSH instead
@@ -568,6 +660,12 @@ EOF
 # Sourcing (tests) defines the functions without running a command.
 [[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
 cmd=${1:-help}; shift || true
+# Commands that use gtvpn.toml's settings stop on a mistake in it, before
+# anything is changed.
+case $cmd in
+  setup|up|connect|hosts|ssh-config|verify|host-verify|watch)
+    cfg_load || die "fix $CONF, then run ./gtvpn $cmd again (nothing was changed)" ;;
+esac
 case $cmd in
   setup) cmd_setup ;;
   up) cmd_up "$@" ;;
@@ -592,7 +690,9 @@ case $cmd in
     engine exec -u root "$NAME" sh -c 'for f in connect gpclient; do [ -s /var/log/gtvpn/$f.log ] || continue; echo "--- $f.log"; tail -n 50 /var/log/gtvpn/$f.log | sed "s/\x1b\[[0-9;]*[A-Za-z]//g; s/\r//g"; done' || true ;;
   callback) cmd_callback "$@" ;;
   hosts) cmd_hosts ;;
-  ssh-config) ssh_config_text "${1:-$SSH_DIR/id_ed25519}" "${2:-$SSH_DIR/known_hosts}" "${3:-$SSH_DIR/cm-%C}" ;;
+  route) cmd_route "$@" ;;
+  ssh-config) hosts_sync >/dev/null || true
+    ssh_config_text "${1:-$SSH_DIR/id_ed25519}" "${2:-$SSH_DIR/known_hosts}" "${3:-$SSH_DIR/cm-%C}" ;;
   hostkey) pin_hostkey >/dev/null 2>&1 || true; cut -d' ' -f1,2 runtime/out/ssh_host_ed25519_key.pub ;;
   authorize) # add a public key (stdin) that may log in to the container, e.g. from Windows
     IFS= read -r k; [[ $k =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-[a-z0-9-]+|sk-[a-z0-9@.-]+)\ [A-Za-z0-9+/=]+ ]] || die "not an ssh public key"

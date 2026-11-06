@@ -214,7 +214,7 @@ run_full() {
     if [[ $(route_dev "$ip") != "$TUN" ]]; then emit FAIL T5 "$h ($ip) is NOT routed through the tunnel"; continue; fi
     must_work T5 "dev -> $h:$p ($ip) reachable through tunnel" -- asdev nc -z -n -w 3 "$ip" "$p"
   done
-  [[ -z ${GTVPN_PROBE_TARGETS:-} ]] && emit SKIP T5 "set GTVPN_PROBE_TARGETS in .env (e.g. your Cadence server:22) to test reachability"
+  [[ -z ${GTVPN_PROBE_TARGETS:-} ]] && emit SKIP T5 "set [checks] probe_targets in gtvpn.toml (e.g. your Cadence server:22) to test reachability"
 
   # The VPN gateway itself is reachable over the WAN: only the VPN client may use it.
   local gwip
