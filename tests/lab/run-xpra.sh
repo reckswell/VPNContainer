@@ -14,9 +14,9 @@ FILES+=(-f tests/lab/compose.lab.yaml -f tests/lab/compose.xpra.yaml)
 DC() { docker compose -p gtvpn-lab "${FILES[@]}" "$@"; }
 FAILED=0; ok(){ printf '\033[32mPASS\033[0m %s\n' "$*"; }; bad(){ printf '\033[31mFAIL\033[0m %s\n' "$*"; FAILED=1; }
 check(){ local d=$1; shift; if "$@"; then ok "$d"; else bad "$d"; fi; }
-VOL=gtvpn-lab-xpra; D=:78; XA=$(mktemp); KEYDIR=$(mktemp -d)
+VOL=gtvpn-lab-xpra; D=:78; XA=$(mktemp); KEYDIR=$(mktemp -d); XPID=
 cleanup(){ [[ ${KEEP:-0} == 1 ]] && return; docker rm -f gtvpn-lab-viewer >/dev/null 2>&1; DC down -v --remove-orphans >/dev/null 2>&1
-  kill "$XPID" 2>/dev/null; rm -rf "$XA" "$KEYDIR" runtime/in/xauth runtime/in/hosts.conf; }
+  [[ -n $XPID ]] && kill "$XPID" 2>/dev/null; rm -rf "$XA" "$KEYDIR" runtime/in/xauth runtime/in/hosts.conf; }
 trap cleanup EXIT
 
 docker build -q --network "$BNET" --build-arg BASE_IMAGE="$BASE" -t gtvpn:local image >/dev/null || exit 1
@@ -32,14 +32,19 @@ if [[ ${LAB_XPRA_REINSTALL:-0} == 1 ]] || ! docker run --rm -v "$VOL:/x" --entry
   CA=(); for v in SSL_CERT_FILE CURL_CA_BUNDLE; do [[ -n ${!v:-} && -f ${!v} ]] && { CA=(-v "${!v}:/ca.crt:ro" -e SSL_CERT_FILE=/ca.crt -e CURL_CA_BUNDLE=/ca.crt -e MAMBA_SSL_VERIFY=/ca.crt); break; }; done
   docker run --rm --network host -e HTTPS_PROXY="${HTTPS_PROXY:-}" -e https_proxy="${https_proxy:-}" "${CA[@]}" \
     -v "$VOL:/home/gtuser/.local/gtvpn-xpra" -v "$PWD/image/rootfs/usr/local/share/gtvpn/xpra:/src:ro" --entrypoint sh lab/ocserv -c "
-      useradd -m -u $GTUID gtuser >/dev/null 2>&1; chown $GTUID /home/gtuser/.local/gtvpn-xpra
+      useradd -m -u $GTUID gtuser >/dev/null 2>&1; chown $GTUID /home/gtuser /home/gtuser/.local /home/gtuser/.local/gtvpn-xpra
       su gtuser -c 'cp /src/xpra-linux-64.lock ~/.local/gtvpn-xpra/xpra.lock && sh -s -- install < /src/remote.sh'" > "$KEYDIR/install.log" 2>&1
   check "remote.sh installs xpra on a fresh GT account (no root)" grep -q '^installed v6\.2' "$KEYDIR/install.log"
   grep -q '^installed v6\.2' "$KEYDIR/install.log" || { tail -20 "$KEYDIR/install.log"; exit 1; }
 else echo "INFO xpra already installed in volume $VOL (LAB_XPRA_REINSTALL=1 to redo the install test)"; fi
 
-# The "desktop" of this computer, and the ssh key/config the viewer uses
+# The "desktop" of this computer, and the ssh key/config the viewer uses.
+# Its X and ssh clients come from the lab image, so this computer needs only
+# Xvfb and xauth (host network: the cookie is stored under this hostname).
 xauth -f "$XA" add "$D" . "$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')"
+desk(){ docker run --rm --network host -v /tmp/.X11-unix:/tmp/.X11-unix -v "$XA:/xauth:ro" -e XAUTHORITY=/xauth -e DISPLAY="$D" --entrypoint "$1" lab/ocserv "${@:2}"; }
+hssh(){ timeout 20 docker run --rm --network host -v "$KEYDIR:/k:ro" --entrypoint ssh lab/ocserv -F /k/config "$@"; }
+export -f desk hssh; export XA D KEYDIR
 pkill -f "Xvfb $D" 2>/dev/null; Xvfb "$D" -auth "$XA" -nolisten tcp >/dev/null 2>&1 & XPID=$!
 docker run --rm -v "$KEYDIR:/k" --entrypoint ssh-keygen gtvpn:local -q -t ed25519 -N '' -f /k/id >/dev/null
 mkdir -p runtime/in runtime/out; cp "$KEYDIR/id.pub" runtime/in/authorized_keys
@@ -78,7 +83,7 @@ docker run -d --name gtvpn-lab-viewer --network host -v "$VOL:/home/gtuser/.loca
   attach "ssh://gtvpn/$N" --ssh="ssh -F /k/config" --remote-xpra=/home/dev/.gtvpn/xpra/cadence \
   --splash=no --tray=no --notifications=no --speaker=off --microphone=off --webcam=no --opengl=no >/dev/null
 srv "DISPLAY=:$N nohup xlogo -geometry 320x240 -title gtvpn-lab-xlogo >/dev/null 2>&1 &"
-seen(){ for _ in $(seq 40); do XAUTHORITY=$XA xwininfo -display "$D" -root -tree 2>/dev/null | grep -q gtvpn-lab-xlogo && return 0; sleep 0.5; done; return 1; }
+seen(){ for _ in $(seq 30); do desk xwininfo -root -tree 2>/dev/null | grep -q gtvpn-lab-xlogo && return 0; sleep 0.5; done; return 1; }
 check "a window on the server appears on this computer's desktop through the viewer" seen
 check "the viewer's traffic is a channel of the container's connection to the server" \
   bash -c "docker exec gtvpn-lab-ocserv pgrep -u gtuser -f 'xpra _proxy :$N' >/dev/null"
@@ -89,7 +94,7 @@ check "the proxy refuses anything but '_proxy :N'" \
 docker rm -f gtvpn-lab-viewer >/dev/null
 dev 'ssh -O exit cadence' >/dev/null 2>&1; sleep 1
 check "without an open connection the proxy fails at once instead of signing in" \
-  bash -c "timeout 10 ssh -F '$KEYDIR/config' gtvpn '~/.gtvpn/xpra/cadence _proxy :$N' 2>&1 | grep -q 'no open connection'"
+  bash -c "hssh gtvpn '~/.gtvpn/xpra/cadence _proxy $N' 2>&1 | grep -q 'no open connection'"
 check "the session (and its window) survived the viewer and the connection closing" \
   bash -c "dev 'ssh -o BatchMode=yes cadence true' && dev 'gtvpn-xpra cadence display' | grep -qx 'display=:$N' && srv 'xwininfo -display :$N -root -tree | grep -q gtvpn-lab-xlogo'"
 check "status lists the open window" bash -c "dev 'gtvpn-xpra cadence status' | grep -q 'window: gtvpn-lab-xlogo'"

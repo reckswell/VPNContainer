@@ -243,6 +243,43 @@ where the portal would issue a real cookie.
     cookie in your `~/.Xauthority` is required, the same exposure as any
     `ssh -Y` session.
 
+### xpra sessions (`gtvpn xpra`)
+
+X11 over ssh is slow for Virtuoso (Qt5 sends full-window pictures, every
+request crosses the tunnel; numbers in [PERFORMANCE.md](PERFORMANCE.md)).
+`gtvpn xpra <host>` moves the X server to the GT host instead:
+
+- **Server side** (`share/gtvpn/xpra/remote.sh`, run with `/bin/sh -s` over
+  the shared connection, since login shells may be tcsh): xpra 6.2 from
+  conda-forge, installed by micromamba into `~/.local/gtvpn-xpra` from a
+  pinned explicit lock file (MD5 per package; micromamba's own tarball is
+  pinned by SHA-256). No root, no system packages beyond Xvfb, curl and
+  bzip2, which GT's RHEL 8 servers have. `xpra seamless` runs Xvfb on a
+  display picked per user (100 + uid mod 200, skipping used ones). Sockets
+  live in `~/.xpra`, not only `/run/user/<uid>`, which systemd deletes when
+  the user's last login ends: the session must stay reachable after the
+  tunnel drops. No TCP, HTTP, mDNS, audio, printing, file transfer or
+  `start-new-commands`: the only way in is the user's own Unix socket.
+- **Transport:** the viewer on the computer runs `ssh gtvpn` (the
+  container's key-only loopback sshd, the same one VS Code uses) with
+  `--remote-xpra=~/.gtvpn/xpra/<host>`, a link to `gtvpn-xpra-proxy`. The
+  proxy takes the host from its own name, accepts only `_proxy :N`, and
+  execs `ssh` as a client
+  of the container's shared connection (`ControlMaster no`, `BatchMode`)
+  running `xpra _proxy :N` on the server, which bridges stdin/stdout to
+  the session's socket. So the computer still never talks to GT itself,
+  nothing new listens anywhere, and with no open connection the proxy
+  fails at once instead of prompting for a password behind the viewer.
+- **Sign-in:** `gtvpn xpra` runs `gtvpn-xpra start` with a terminal, so a
+  missing connection is opened the usual way (`ssh true` with
+  `ControlPersist`, one Duo prompt), exactly like `gtvpn display`.
+- **Lifetime:** the session is independent of every connection; `stop`
+  refuses while windows are open (Virtuoso would lose unsaved work) unless
+  `--force`. A failed start kills the Xvfb that xpra leaves behind for
+  crash recovery.
+- **Not taken:** X2Go and NX need root packages on the server; VNC shows a
+  whole desktop in one window; the xpra HTML5 client is a browser tab.
+
 ## SSH hosts (`hosts.conf`)
 
 One file in standard OpenSSH syntax lists your GT servers, and both sides

@@ -21,6 +21,7 @@
 # extra Duo prompt, no port opened anywhere): the viewer reaches the session
 # with `ssh gtvpn` (key-only, loopback), which runs gtvpn-xpra-proxy here.
 set -uo pipefail
+umask 077   # ~/.gtvpn/xpra: the viewer runs what the links there point to
 host=${1:-}; action=${2:-start}
 usage() { echo "usage: gtvpn-xpra <host> [install|start|display|status|stop [--force]]" >&2; exit 2; }
 die() { printf 'gtvpn xpra: %s\n' "$*" >&2; exit 1; }
@@ -62,7 +63,7 @@ case $action in
     printf '%s\n' "$out" | grep -v '^display='
     d=$(printf '%s\n' "$out" | sed -n 's/^display=//p')
     [[ $d =~ ^:[0-9]+$ ]] || die "the server reported no display"
-    mkdir -p "$links" && ln -sfn /usr/local/bin/gtvpn-xpra-proxy "$links/$host"
+    mkdir -p "$links" && chmod 700 "$HOME/.gtvpn" "$links" && ln -sfn /usr/local/bin/gtvpn-xpra-proxy "$links/$host"
     echo "display=$d" ;;
   display) connected || exit 1; remote display ;;
   status) connected || { echo "no open connection to $host"; exit 1; }; remote status ;;

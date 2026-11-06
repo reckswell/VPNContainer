@@ -454,14 +454,29 @@ cmd_watch() {
 # Linux. It reaches the session through `ssh gtvpn`, which runs the host's
 # link to gtvpn-xpra-proxy in the container, over the container's shared
 # connection to the server.
-XPRA_WIN_DIRS=("/mnt/c/Program Files/Xpra" "/mnt/c/Program Files (x86)/Xpra")
 xpra_viewer_cmd() { # the viewer program, or nothing
-  local d
+  local v d l; v=$(envget GTVPN_XPRA_VIEWER)
+  if [[ -n $v ]]; then [[ -x $v || -f $v ]] && { printf '%s\n' "$v"; return 0; }; return 1; fi
   if is_wsl; then
-    for d in "${XPRA_WIN_DIRS[@]}"; do [[ -f $d/Xpra.exe ]] && { printf '%s\n' "$d/Xpra.exe"; return 0; }; done
+    # The installer (winget) puts it in Program Files; the portable zip
+    # from xpra.org goes wherever you unpack it, e.g. %LOCALAPPDATA%\Programs\Xpra.
+    l=$(win_env LOCALAPPDATA) && l=$(wslpath -u "$l" 2>/dev/null)
+    for d in "/mnt/c/Program Files/Xpra" "/mnt/c/Program Files (x86)/Xpra" ${l:+"$l/Programs/Xpra"}; do
+      [[ -f $d/Xpra.exe ]] && { printf '%s\n' "$d/Xpra.exe"; return 0; }
+    done
     return 1
   fi
   command -v xpra
+}
+# On Windows, offer to install the viewer with winget (Windows asks for
+# admin approval). Returns 1 when it is still missing.
+xpra_install_viewer() {
+  local id=xpra-org.xpra
+  is_wsl && [[ -t 0 ]] || return 1
+  printf 'The xpra viewer for Windows is not installed. Install it now with winget (%s)? [Y/n] ' "$id"
+  local r; read -r r; [[ -z $r || $r == [Yy]* ]] || return 1
+  (cd /mnt/c && cmd.exe /c winget install -e --id "$id" --accept-package-agreements --accept-source-agreements) || return 1
+  xpra_viewer_cmd >/dev/null
 }
 xpra_viewer_args() { # display host
   local extra; extra=$(envget GTVPN_XPRA_VIEWER_ARGS)
@@ -476,16 +491,16 @@ xpra_viewer_args() { # display host
     $extra
 }
 xpra_attach() { # display host
-  local exe; exe=$(xpra_viewer_cmd) || {
-    if is_wsl; then die "the xpra viewer for Windows is not installed. Install it with: winget install -e --id Xpra-org.Xpra   (or from https://xpra.org), then run: gtvpn xpra $2 attach"
+  local exe; exe=$(xpra_viewer_cmd) || { xpra_install_viewer && exe=$(xpra_viewer_cmd); } || {
+    if is_wsl; then die "the xpra viewer for Windows is not installed. Install it with: winget install -e --id xpra-org.xpra   (or from https://xpra.org), then run: gtvpn xpra $2 attach"
     else die "xpra is not installed here. Install xpra 6 (https://github.com/Xpra-org/xpra/wiki/Download), then run: gtvpn xpra $2 attach"; fi
   }
   local -a a; mapfile -t a < <(xpra_viewer_args "$1" "$2")
   if is_wsl; then
-    # Detached from this terminal, as a normal Windows program. None of
-    # the arguments contain spaces or quotes (host and display are checked).
-    local w; w=$(wslpath -w "$exe")
-    powershell.exe -NoProfile -Command "Start-Process -FilePath '${w//\'/\'\'}' -ArgumentList '${a[*]}'" >/dev/null 2>&1 \
+    # Detached from this terminal, as a normal Windows program. Windows
+    # splits the argument string at spaces (host and display have none).
+    local w j; w=$(wslpath -w "$exe"); j="${a[*]}"
+    powershell.exe -NoProfile -Command "Start-Process -FilePath '${w//\'/\'\'}' -ArgumentList '${j//\'/\'\'}'" >/dev/null 2>&1 \
       || die "could not start the xpra viewer ($w)"
   else
     setsid -f "$exe" "${a[@]}" >/dev/null 2>&1 < /dev/null || die "could not start the xpra viewer"

@@ -66,9 +66,15 @@ install)
   live >/dev/null && die "a session is running; stop it first (gtvpn xpra <host> stop)"
   rm -rf "$P/env"
   say "Installing xpra 6.2 and its libraries (about 300 MB download, 850 MB on disk; 1 to 3 minutes)"
-  MAMBA_ROOT_PREFIX=$P/mamba "$P/mm/bin/micromamba" create -y -q -p "$P/env" --file "$P/xpra.lock" \
-    || die "the package installation failed (see above)"
-  MAMBA_ROOT_PREFIX=$P/mamba "$P/mm/bin/micromamba" clean -a -y -q >/dev/null 2>&1; rm -rf "$P/mamba/pkgs"
+  mkdir -p "$P/log" "$P/home"
+  # Everything micromamba keeps (package cache, its list of environments,
+  # which would otherwise go to ~/.conda) stays in $P, and your own
+  # .condarc/.mambarc are not read: the lock file says exactly what to get.
+  HOME=$P/home MAMBA_ROOT_PREFIX=$P/mamba "$P/mm/bin/micromamba" create --no-rc -y -p "$P/env" --file "$P/xpra.lock" \
+    >"$P/log/install.log" 2>&1 \
+    || { grep -v -E '^ *(\+|Linking|Downloading|Extracting)' "$P/log/install.log" | tail -n 25 >&2
+         die "the package installation failed (log: $P/log/install.log)"; }
+  rm -rf "$P/mamba" "$P/home"
   v=$("$X" --version 2>/dev/null) || die "xpra was installed but does not start"
   say "installed ${v#xpra }" ;;
 
