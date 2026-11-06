@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# gtvpn-xpra: a persistent xpra session on a GT server, for smooth Cadence
+# windows. Run as dev in the container; `gtvpn xpra <host>` on your computer
+# calls it and then opens the viewer.
+#
+#   gtvpn-xpra <host> install        install xpra on <host> (no root needed)
+#   gtvpn-xpra <host> start          start or reuse the session (installs first if needed)
+#   gtvpn-xpra <host> display        the session's display, e.g. :142
+#   gtvpn-xpra <host> status
+#   gtvpn-xpra <host> stop [--force]
+#
+# Why: with ssh -Y every X11 request of Virtuoso crosses the tunnel, and
+# Qt5 (Virtuoso's toolkit) sends whole windows as uncompressed pictures, so
+# a full redraw of a layout window is ~6 MB and takes about 0.2 s at your
+# link's speed. In an xpra session Virtuoso draws on the GT server itself,
+# and only compressed pictures of what changed travel, to a viewer that
+# runs natively on your computer (native windows at your monitor's refresh
+# rate). The session also survives a dropped tunnel.
+#
+# All of it goes over the container's shared connection to <host> (no
+# extra Duo prompt, no port opened anywhere): the viewer reaches the session
+# with `ssh gtvpn` (key-only, loopback), which runs gtvpn-xpra-proxy here.
+set -uo pipefail
+host=${1:-}; action=${2:-start}
+usage() { echo "usage: gtvpn-xpra <host> [install|start|display|status|stop [--force]]" >&2; exit 2; }
+die() { printf 'gtvpn xpra: %s\n' "$*" >&2; exit 1; }
+[[ $host =~ ^[A-Za-z0-9][A-Za-z0-9._@-]*$ ]] || usage
+[[ $(id -un) == dev ]] || die "run it as dev (gtvpn xpra <host> on your computer does that)"
+share=/usr/local/share/gtvpn/xpra
+# The shared connection to <host>, as in ssh_config.d/50-gtvpn.conf.
+# shellcheck disable=SC2088  # ssh expands the ~
+mux=(-o ControlPath='~/.ssh/cm-%C')
+# The viewer finds this host's session through a link named after it.
+links=$HOME/.gtvpn/xpra
+
+connected() { ssh "${mux[@]}" -O check "$host" >/dev/null 2>&1; }
+sign_in() {
+  connected && return 0
+  [[ -t 0 ]] || die "no open connection to $host; run 'gtvpn xpra $host' in a terminal on your computer (it asks for your GT password and Duo once)"
+  echo "Signing in to $host first (your GT password and Duo, as for any ssh there)."
+  ssh "${mux[@]}" -o ControlMaster=auto -o ControlPersist=8h "$host" true || die "could not sign in to $host"
+}
+# Run remote.sh on <host> with ACTION [ARG], over the shared connection.
+remote() {
+  ssh "${mux[@]}" -o ControlMaster=no -o BatchMode=yes -o ForwardX11=no -o LogLevel=error "$host" \
+    "exec /bin/sh -s -- $*" < "$share/remote.sh"
+}
+install() {
+  echo "Installing xpra on $host, in ~/.local/gtvpn-xpra there (no root needed)."
+  ssh "${mux[@]}" -o ControlMaster=no -o BatchMode=yes -o ForwardX11=no -o LogLevel=error "$host" \
+    "exec /bin/sh -c 'umask 077; mkdir -p \"\$HOME/.local/gtvpn-xpra\" && cat > \"\$HOME/.local/gtvpn-xpra/xpra.lock\"'" \
+    < "$share/xpra-linux-64.lock" || die "could not copy the package list to $host"
+  remote install
+}
+
+case $action in
+  install) sign_in; install ;;
+  start)
+    sign_in
+    case $(remote check) in installed*) ;; *) install || exit 1 ;; esac
+    out=$(remote start) || { printf '%s\n' "$out"; exit 1; }
+    printf '%s\n' "$out" | grep -v '^display='
+    d=$(printf '%s\n' "$out" | sed -n 's/^display=//p')
+    [[ $d =~ ^:[0-9]+$ ]] || die "the server reported no display"
+    mkdir -p "$links" && ln -sfn /usr/local/bin/gtvpn-xpra-proxy "$links/$host"
+    echo "display=$d" ;;
+  display) connected || exit 1; remote display ;;
+  status) connected || { echo "no open connection to $host"; exit 1; }; remote status ;;
+  stop) connected || die "no open connection to $host"; remote stop "${3:-}" ;;
+  *) usage ;;
+esac

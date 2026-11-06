@@ -1,0 +1,9 @@
+# xpra lab (run-xpra.sh): the GT server's ~/.local/gtvpn-xpra, installed
+# once by remote.sh into a volume and reused.
+services:
+  ocserv:
+    volumes:
+      - gtvpn-lab-xpra:/home/gtuser/.local/gtvpn-xpra
+volumes:
+  gtvpn-lab-xpra:
+    external: true

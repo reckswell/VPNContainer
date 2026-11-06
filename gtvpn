@@ -448,6 +448,84 @@ cmd_watch() {
   done
 }
 
+# ---- xpra: smooth Cadence windows ------------------------------------------
+# The session runs on the GT server (gtvpn-xpra in the container starts it);
+# the viewer runs natively on this computer: Windows' xpra on WSL, xpra on
+# Linux. It reaches the session through `ssh gtvpn`, which runs the host's
+# link to gtvpn-xpra-proxy in the container, over the container's shared
+# connection to the server.
+XPRA_WIN_DIRS=("/mnt/c/Program Files/Xpra" "/mnt/c/Program Files (x86)/Xpra")
+xpra_viewer_cmd() { # the viewer program, or nothing
+  local d
+  if is_wsl; then
+    for d in "${XPRA_WIN_DIRS[@]}"; do [[ -f $d/Xpra.exe ]] && { printf '%s\n' "$d/Xpra.exe"; return 0; }; done
+    return 1
+  fi
+  command -v xpra
+}
+xpra_viewer_args() { # display host
+  local extra; extra=$(envget GTVPN_XPRA_VIEWER_ARGS)
+  # Tuned for CAD (docs/PERFORMANCE.md): lossless pictures for anything
+  # that stays still (text, thin lines), video only for big areas that
+  # change on every frame (panning, zooming), at the monitor's refresh rate.
+  # shellcheck disable=SC2086
+  printf '%s\n' attach "ssh://gtvpn/${1#:}" --ssh=ssh "--remote-xpra=/home/dev/.gtvpn/xpra/$2" \
+    --splash=no --tray=no --notifications=no --speaker=off --microphone=off --webcam=no \
+    --printing=no --file-transfer=no --open-files=no --open-url=no \
+    --opengl=auto --refresh-rate=auto --min-quality=70 --min-speed=50 --auto-refresh-delay=0.1 \
+    $extra
+}
+xpra_attach() { # display host
+  local exe; exe=$(xpra_viewer_cmd) || {
+    if is_wsl; then die "the xpra viewer for Windows is not installed. Install it with: winget install -e --id Xpra-org.Xpra   (or from https://xpra.org), then run: gtvpn xpra $2 attach"
+    else die "xpra is not installed here. Install xpra 6 (https://github.com/Xpra-org/xpra/wiki/Download), then run: gtvpn xpra $2 attach"; fi
+  }
+  local -a a; mapfile -t a < <(xpra_viewer_args "$1" "$2")
+  if is_wsl; then
+    # Detached from this terminal, as a normal Windows program. None of
+    # the arguments contain spaces or quotes (host and display are checked).
+    local w; w=$(wslpath -w "$exe")
+    powershell.exe -NoProfile -Command "Start-Process -FilePath '${w//\'/\'\'}' -ArgumentList '${a[*]}'" >/dev/null 2>&1 \
+      || die "could not start the xpra viewer ($w)"
+  else
+    setsid -f "$exe" "${a[@]}" >/dev/null 2>&1 < /dev/null || die "could not start the xpra viewer"
+  fi
+  say "viewer opening: Cadence windows from $2 will appear as normal windows here"
+}
+cmd_xpra() {
+  need_running
+  local host=${1:-} action=${2:-start} d
+  [[ $host =~ ^[A-Za-z0-9][A-Za-z0-9._@-]*$ ]] || die "usage: gtvpn xpra <host> [start|attach|detach|status|stop [--force]|install]"
+  case $action in
+    start)
+      # In the terminal (it may ask for the GT password and Duo once), then
+      # ask for the display without one.
+      engine exec -it -u dev -w /home/dev "$NAME" gtvpn-xpra "$host" start || die "could not start the session"
+      d=$(engine exec -u dev "$NAME" gtvpn-xpra "$host" display | tr -d '\r' | sed -n 's/^display=//p')
+      [[ $d =~ ^:[0-9]+$ ]] || die "no display reported by $host"
+      xpra_attach "$d" "$host"
+      cat <<EOF
+Session display on $host: $d (it keeps running if the viewer, VS Code or the tunnel disconnect)
+In a terminal on $host (for example VS Code's), before starting Cadence:
+    export DISPLAY=\$(cat ~/.gtvpn-display)        # bash
+    setenv DISPLAY \`cat ~/.gtvpn-display\`        # tcsh
+Reopen the viewer: gtvpn xpra $host attach. End the session: gtvpn xpra $host stop
+EOF
+      ;;
+    attach)
+      d=$(engine exec -u dev "$NAME" gtvpn-xpra "$host" display | sed -n 's/^display=//p')
+      [[ $d =~ ^:[0-9]+$ ]] || die "no session on $host (or no open connection to it); start one with: gtvpn xpra $host"
+      xpra_attach "$d" "$host" ;;
+    detach)
+      if is_wsl; then taskkill.exe /IM Xpra.exe >/dev/null 2>&1 || true
+      else pkill -f "xpra attach ssh://gtvpn/" || true; fi
+      say "viewer closed; the session on $host keeps running (gtvpn xpra $host attach)" ;;
+    install|status) engine exec -it -u dev -w /home/dev "$NAME" gtvpn-xpra "$host" "$action" ;;
+    stop) engine exec -it -u dev -w /home/dev "$NAME" gtvpn-xpra "$host" stop "${3:-}" ;;
+    *) die "usage: gtvpn xpra <host> [start|attach|detach|status|stop [--force]|install]" ;;
+  esac
+}
+
 usage() {
   cat <<EOF
 ${c_b}gtvpn${c_0} - Georgia Tech GlobalProtect in an isolated container
@@ -470,6 +548,9 @@ ${c_b}gtvpn${c_0} - Georgia Tech GlobalProtect in an isolated container
                    keep an X display open on a GT server for terminals that
                    ssh -Y did not open (VS Code Remote-SSH): Cadence there
                    then needs  export DISPLAY=\$(cat ~/.gtvpn-display)
+  xpra <host> [start|attach|detach|status|stop|install]
+                   smooth Cadence: a persistent xpra session on a GT server,
+                   shown in native windows here (same DISPLAY step as above)
   logs             container + VPN client logs
   callback <url>   (used by the browser link handler)
   rebuild          rebuild the image (updates Claude Code / base packages)
@@ -500,6 +581,7 @@ case $cmd in
       if [ $rc -eq 0 ] || [ $rc -eq 124 ]; then echo "X11 works"; else echo "X11 test failed (xeyes exit $rc)"; exit 1; fi' ;;
   display) need_running; [[ ${1:-} ]] || die "usage: gtvpn display <host> [status|stop]"
     engine exec -it -u dev -w /home/dev "$NAME" bash -lc "gtvpn-display $(printf '%q ' "$@")" ;;
+  xpra) cmd_xpra "$@" ;;
   logs) engine logs --tail 100 "$NAME"
     engine exec -u root "$NAME" sh -c 'for f in connect gpclient; do [ -s /var/log/gtvpn/$f.log ] || continue; echo "--- $f.log"; tail -n 50 /var/log/gtvpn/$f.log | sed "s/\x1b\[[0-9;]*[A-Za-z]//g; s/\r//g"; done' || true ;;
   callback) cmd_callback "$@" ;;
