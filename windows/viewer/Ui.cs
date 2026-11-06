@@ -311,6 +311,8 @@ namespace GtVpn
         readonly Viewer v;
         public bool ClosingFromX, Applying;
         public bool Ready;                   // placed where the session's window is: from now on, report moves
+        public int PlannedX, PlannedY, FrameUsedX, FrameUsedY;   // Mono: where its client area should land, and the frame allowed for
+        public bool MeasureFrame;            // Mono: learn the window manager's frame from where it lands
         public DateTime LastSent;
         public bool InSizeMove;              // inside Windows' move/size loop (dragging the title bar or a border)
         // A move of the session's window whose pixels are still on their way:
@@ -855,6 +857,22 @@ namespace GtVpn
             if (f.Win.Popup || f.WindowState == FormWindowState.Minimized) return;
             var c = f.PointToScreen(Point.Empty);
             int x = c.X - OriginX, y = c.Y - OriginY, w = f.ClientSize.Width, h = f.ClientSize.Height;
+            if (!Native.IsWindows)
+            {
+                if (c.X < -10000 || c.Y < -10000) return;      // Mono's step off the screen while a window maps
+                // Where the window manager put the new window's client area:
+                // its frame, for the windows that come later. (A report at the
+                // frame's own place comes before it is framed: not that one.)
+                if (f.MeasureFrame)
+                {
+                    int fx = x - f.PlannedX + f.FrameUsedX, fy = y - f.PlannedY + f.FrameUsedY;
+                    if (fx >= 0 && fx <= 64 && fy >= 0 && fy <= 96 && fx + fy > 0)
+                    {
+                        f.MeasureFrame = false;
+                        if (fx != Wm.FrameX || fy != Wm.FrameY) { Wm.SaveFrame(fx, fy); Log("window manager's frame: client area at +" + fx + "+" + fy); }
+                    }
+                }
+            }
             // While a window is dragged, Windows moves its picture like any
             // other window's, and the session's window stays where it is until
             // the drag ends: moving it at every step would paint the window from
@@ -905,11 +923,19 @@ namespace GtVpn
                 forms[w.Id] = f;
                 // Mono writes the window's place into its size hints (as given
                 // by the user) when it creates it, and WSLg's window manager
-                // places it by them: there it is placed before it exists.
-                if (!Native.IsWindows) f.Place(gx, gy, gw, gh);
+                // puts the frame there: so it is placed before it exists, with
+                // the frame's size allowed for once it is known.
+                int px = gx, py = gy;
+                if (!Native.IsWindows && !w.Popup && !w.Frameless)
+                {
+                    f.PlannedX = gx; f.PlannedY = gy; f.MeasureFrame = true;
+                    f.FrameUsedX = Math.Max(0, Wm.FrameX); f.FrameUsedY = Math.Max(0, Wm.FrameY);
+                    px -= f.FrameUsedX; py -= f.FrameUsedY;
+                }
+                if (!Native.IsWindows) f.Place(px, py, gw, gh);
                 f.CreateControl();
                 var h = f.Handle;
-                f.Place(gx, gy, gw, gh);
+                f.Place(px, py, gw, gh);
                 if (!w.Popup && Native.IsWindows)
                 {
                     // Record where the native window really is (Windows may

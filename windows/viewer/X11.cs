@@ -236,10 +236,22 @@ namespace GtVpn
              A_NET_SUPPORTED, A_NET_SUPPORTING_WM_CHECK, A_NET_ACTIVE_WINDOW, A_NET_WM_STATE, A_NET_WM_STATE_MAXIMIZED_VERT,
              A_NET_WM_STATE_MAXIMIZED_HORZ, A_NET_WM_STATE_HIDDEN, A_NET_FRAME_EXTENTS, A_NET_REQUEST_FRAME_EXTENTS,
              A_NET_WM_WINDOW_TYPE, A_NET_WM_WINDOW_TYPE_DIALOG, A_NET_CLIENT_LIST, A_NET_MOVERESIZE_WINDOW, A_NET_CLOSE_WINDOW, A_WM_S0,
-             A_MOTIF_WM_HINTS, A_NET_WM_WINDOW_TYPE_SPLASH, A_NET_WM_ICON;
+             A_MOTIF_WM_HINTS, A_NET_WM_WINDOW_TYPE_SPLASH, A_NET_WM_ICON, A_GTVPN_FRAME;
         const uint WM_NAME = 39, WM_TRANSIENT_FOR = 68, WM_NORMAL_HINTS = 40, WM_HINTS = 35, WM_CLASS = 67, ATOM = 4, CARDINAL = 6, WINDOW = 33, STRING = 31;
 
         public Wm(XConn x, IWmSink sink) { this.x = x; this.sink = sink; }
+
+        // Under Mono, where an X window manager on this computer (WSLg's)
+        // puts a new window's frame at the place it asks for: how far in from
+        // the frame its client area is (-1: not measured yet). It is kept on
+        // the session's root window (_GTVPN_FRAME), so a viewer started
+        // again places windows exactly at once.
+        public int FrameX = -1, FrameY = -1;
+        public void SaveFrame(int fx, int fy)
+        {
+            FrameX = fx; FrameY = fy;
+            SetCardinals(x.Root, A_GTVPN_FRAME, CARDINAL, (uint)fx, (uint)fy);
+        }
 
         uint Atom(string name)
         {
@@ -254,7 +266,7 @@ namespace GtVpn
                 "_NET_SUPPORTED", "_NET_SUPPORTING_WM_CHECK", "_NET_ACTIVE_WINDOW", "_NET_WM_STATE", "_NET_WM_STATE_MAXIMIZED_VERT",
                 "_NET_WM_STATE_MAXIMIZED_HORZ", "_NET_WM_STATE_HIDDEN", "_NET_FRAME_EXTENTS", "_NET_REQUEST_FRAME_EXTENTS",
                 "_NET_WM_WINDOW_TYPE", "_NET_WM_WINDOW_TYPE_DIALOG", "_NET_CLIENT_LIST", "_NET_MOVERESIZE_WINDOW", "_NET_CLOSE_WINDOW", "WM_S0",
-                "_MOTIF_WM_HINTS", "_NET_WM_WINDOW_TYPE_SPLASH", "_NET_WM_ICON" };
+                "_MOTIF_WM_HINTS", "_NET_WM_WINDOW_TYPE_SPLASH", "_NET_WM_ICON", "_GTVPN_FRAME" };
             var reqs = new List<Req>();
             foreach (var n in names) { var b = Encoding.ASCII.GetBytes(n); reqs.Add(new Req(16, 0).U16(b.Length).U16(0).Bytes(b)); }
             var res = x.CallAll(reqs);
@@ -266,7 +278,10 @@ namespace GtVpn
             A_NET_ACTIVE_WINDOW = a[k++]; A_NET_WM_STATE = a[k++]; A_NET_WM_STATE_MAXIMIZED_VERT = a[k++]; A_NET_WM_STATE_MAXIMIZED_HORZ = a[k++];
             A_NET_WM_STATE_HIDDEN = a[k++]; A_NET_FRAME_EXTENTS = a[k++]; A_NET_REQUEST_FRAME_EXTENTS = a[k++]; A_NET_WM_WINDOW_TYPE = a[k++];
             A_NET_WM_WINDOW_TYPE_DIALOG = a[k++]; A_NET_CLIENT_LIST = a[k++]; A_NET_MOVERESIZE_WINDOW = a[k++]; A_NET_CLOSE_WINDOW = a[k++]; A_WM_S0 = a[k++];
-            A_MOTIF_WM_HINTS = a[k++]; A_NET_WM_WINDOW_TYPE_SPLASH = a[k++]; A_NET_WM_ICON = a[k++];
+            A_MOTIF_WM_HINTS = a[k++]; A_NET_WM_WINDOW_TYPE_SPLASH = a[k++]; A_NET_WM_ICON = a[k++]; A_GTVPN_FRAME = a[k++];
+            // The frame of this computer's window manager, as an earlier viewer measured it.
+            uint[] fr = PropU32(x.Call(GetProp(x.Root, A_GTVPN_FRAME, CARDINAL)));
+            if (fr.Length == 2 && fr[0] <= 64 && fr[1] <= 96) { FrameX = (int)fr[0]; FrameY = (int)fr[1]; }
 
             // Our own (invisible) window: the WM_S0 owner and EWMH check window.
             me = x.NewId();
