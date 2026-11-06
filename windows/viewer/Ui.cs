@@ -735,9 +735,59 @@ namespace GtVpn
             int vk = m.WParam.ToInt32() & 0xff;
             long lp = m.LParam.ToInt64();
             if (msg == 0x104 && vk == 0x73) { ReleaseAll(); return false; }            // Alt+F4: close the window
+            if (!Native.IsWindows)
+            {
+                if (msg == 0x100 || msg == 0x104)
+                {
+                    if (vk == 0x0d || vk == 0x11 || vk == 0x12) lp &= ~0x01000000L;   // see MonoKeyDown
+                    int r = MonoKeyDown(vk);
+                    if (r == 1) return true;
+                    if (r == 2) return false;          // not filtered, so that TranslateMessage makes its WM_CHAR
+                }
+                else if (msg == 0x102 || msg == 0x106) { MonoChar(m.WParam.ToInt32()); return true; }
+            }
             if (msg == 0x100 || msg == 0x104) { SendKeyDown(vk, (int)((lp >> 16) & 0xff), (lp & 0x01000000) != 0); return true; }
             if (msg == 0x101 || msg == 0x105) { SendKeyUp(vk); return true; }
             return true;                                                              // WM_CHAR etc.: handled as keys
+        }
+
+        // Mono (Linux, e.g. through WSLg) has no ToUnicodeEx: it sends each
+        // key press as WM_KEYDOWN, and TranslateMessage makes a WM_CHAR with
+        // the character of the keyboard layout for a character key. Such a key
+        // goes to the session as that character's keysym when the WM_CHAR
+        // arrives; with Ctrl or Alt it goes at once as the unshifted letter or
+        // digit (Control_L + c), as X programs expect. Other keys go as KeySym
+        // has them, except that Mono marks Return, Ctrl and Alt as extended
+        // keys too: they go as Return, Control_L and Alt_L.
+        int pendingVk = -1;
+
+        // 0: not a character key; 1: sent; 2: wait for its WM_CHAR.
+        int MonoKeyDown(int vk)
+        {
+            pendingVk = -1;
+            if (Keys2.KeySym(vk, 0, false) != 0) return 0;
+            var mods = Control.ModifierKeys & (Keys.Control | Keys.Alt);
+            if (mods != 0 && mods != (Keys.Control | Keys.Alt) && ((vk >= 0x41 && vk <= 0x5a) || (vk >= 0x30 && vk <= 0x39)))
+            {
+                uint ks;
+                if (!keysDown.TryGetValue(vk, out ks))
+                    keysDown[vk] = ks = vk >= 0x41 && (Control.ModifierKeys & Keys.Shift) == 0 ? (uint)(vk + 0x20) : (uint)vk;
+                try { Rfb.Key(ks, true); } catch (IOException) { }
+                return 1;
+            }
+            pendingVk = vk;
+            return 2;
+        }
+
+        void MonoChar(int wp)
+        {
+            int k = pendingVk; pendingVk = -1;
+            char c = (char)(wp & 0xffff);
+            if (k < 0 || c < 0x20 || c == 0x7f) return;
+            uint ks;
+            if (!keysDown.TryGetValue(k, out ks)) keysDown[k] = ks = c < 0x100 ? c : 0x01000000u | c;
+            if (Debug) Log("key " + k.ToString("x") + " char " + ((int)c).ToString("x") + " -> keysym " + ks.ToString("x"));
+            try { Rfb.Key(ks, true); } catch (IOException) { }
         }
 
         void SendKeyDown(int vk, int scan, bool ext)

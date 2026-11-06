@@ -61,16 +61,8 @@ namespace GtVpn
             }
             if (vk >= 0x60 && vk <= 0x69) return 0xffb0u + (uint)(vk - 0x60);   // KP_0..KP_9
             if (vk >= 0x70 && vk <= 0x87) return 0xffbeu + (uint)(vk - 0x70);   // F1..F24
-            if (!Native.IsWindows)
-            {
-                // Mono (for testing): letters, digits and space only.
-                bool shift = (Control.ModifierKeys & Keys.Shift) != 0;
-                if (vk >= 0x41 && vk <= 0x5a) return (uint)(shift ? vk : vk + 0x20);
-                if (vk >= 0x30 && vk <= 0x39 && !shift) return (uint)vk;
-                if (vk == 0xbe) return 0x2e;                                    // period
-                if (vk == 0xbd) return shift ? 0x5fu : 0x2du;                   // underscore / minus
-                return 0;
-            }
+            // Mono: a character key's keysym comes from its WM_CHAR (Viewer.PreFilterMessage).
+            if (!Native.IsWindows) return 0;
             // Character keys: the character with Shift and Caps Lock but without
             // Ctrl and Alt, so Ctrl+C arrives as Control_L + c, as X programs expect.
             var st = new byte[256];
@@ -179,7 +171,12 @@ namespace GtVpn
                 MessageBox.Show("Could not connect to the session: " + e.Message, "gtvpn viewer");
                 return 1;
             }
-            Application.Run(v);
+            // Mono runs WinForms timers only once the main form has loaded,
+            // and this window is never shown: as the main form, its timers
+            // would never tick and its message loop would spin, using a whole
+            // core. So under Mono the loop runs without a main form (Quit ends it).
+            if (Native.IsWindows) Application.Run(v);
+            else Application.Run(new ApplicationContext());
             return 0;
         }
     }

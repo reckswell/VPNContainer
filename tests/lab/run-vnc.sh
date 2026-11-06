@@ -176,12 +176,19 @@ pts = [(x + 2 + (w - 4) * i // 9, y + 2 + (h - 4) * j // 9) for i in range(10) f
 same = sum(all(abs(a - c) <= 24 for a, c in zip(s(*p), d(*p))) for p in pts)
 print(same, 'of', len(pts), 'sample points match'); sys.exit(0 if same >= 90 else 1)
 PY
+  # Mono's WinForms timers only tick once the main form has loaded; a
+  # viewer that never shows its main form spun its message loop at 100%.
+  idle(){ local p a b; p=$(pgrep -f -- "$KEYDIR/viewer.exe" | head -1); [[ -n $p ]] || return 1
+    a=$(awk '{print $14 + $15}' "/proc/$p/stat"); sleep 3; b=$(awk '{print $14 + $15}' "/proc/$p/stat")
+    echo "viewer CPU ticks in 3 s: $((b - a))"; (( b - a < 60 )); }
+  export -f idle
+  check "the viewer idles while nothing changes (under 20% of a core)" idle
   read -r EX EY EW EH <<<"$(geom gtvpn-lab-xev)"
-  desk xdotool mousemove $((EX + EW / 2)) $((EY + EH / 2)) sleep 0.3 click 1 sleep 0.5 type --delay 50 gtvpn >/dev/null 2>&1
+  desk xdotool mousemove $((EX + EW / 2)) $((EY + EH / 2)) sleep 0.3 click 1 sleep 0.5 type --delay 50 'gtvpn(1)' >/dev/null 2>&1
   # The letters of the KeyPress events that xev in the session saw.
   keys(){ srv 'cat /tmp/gtvpn-lab-xev.log' | awk '/^KeyPress/{k=1} /^KeyRelease/{k=0} k && /keysym/{match($0, /keysym 0x[0-9a-f]+, [^)]*/); t=substr($0, RSTART, RLENGTH); sub(/.*, /, "", t); printf "%s", t; k=0}'; }
-  typed(){ for _ in $(seq 10); do [[ $(keys) == *gtvpn* ]] && return 0; sleep 0.5; done; echo "keys seen: $(keys); clicks: $(srv 'grep -c ButtonPress /tmp/gtvpn-lab-xev.log')"; return 1; }
-  check "clicks and typing reach the program in the session" typed
+  typed(){ for _ in $(seq 10); do [[ $(keys) == *gtvpn*parenleft1*parenright* ]] && return 0; sleep 0.5; done; echo "keys seen: $(keys); clicks: $(srv 'grep -c ButtonPress /tmp/gtvpn-lab-xev.log')"; return 1; }
+  check "clicks and typing (with shifted characters) reach the program in the session" typed
   pkill -f -- "$KEYDIR/viewer.exe"; sleep 1
   check "after the viewer, wm (as attach does, for the TigerVNC viewer) brings metacity back" \
     bash -c "dev 'gtvpn-vnc cadence wm' | grep -q 'window manager restarted' && on_srv 'pgrep -u gtuser -x metacity' >/dev/null"
