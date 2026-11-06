@@ -242,12 +242,35 @@ leaves `~/.gtvpn-display` (from `gtvpn display`) alone.
 
 | | |
 |---|---|
+| `gtvpn vnc <host> windows` | the session's windows as windows of their own here (Windows) |
 | `gtvpn vnc <host> attach` | reopen the viewer, e.g. after closing it or after the tunnel came back |
 | `gtvpn vnc <host> status` | the session and the programs in it |
 | `gtvpn vnc <host> stop` | end the session (refuses while programs have windows open; `--force` closes them without saving) |
 
 Closing the viewer window only closes the view; everything keeps running on
 the server.
+
+#### Each Cadence window as a window of its own (Windows)
+
+```
+gtvpn vnc ece-linlab19.ece.gatech.edu windows
+```
+
+uses the same session, but instead of one desktop in a viewer window, every
+window of the session (the CIW, the Library Manager, layout and schematic
+windows, their dialogs) appears on your desktop as a window of its own, with
+Windows 11's own title bar and frame, snapping, the taskbar and Alt+Tab.
+Menus, tooltips and pop-ups appear where Cadence draws them. It is gtvpn's
+own small viewer (`windows/viewer`, C#), built on first use with the C#
+compiler that comes with Windows into `%LOCALAPPDATA%\gtvpn`; nothing is
+downloaded. It talks to the session twice through the container: as a VNC
+client for the pictures (streamed, without a round trip per frame) and as
+the session's window manager (in place of metacity) to learn where each
+window is. Text you copy goes both ways between Windows and the session.
+
+To switch back to the desktop view, close the viewer (its icon in the
+notification area, "Quit") and run `gtvpn vnc <host> attach`: metacity comes
+back. Its log is `%TEMP%\gtvpn-viewer.log`.
 
 ### Claude Code for future projects
 
@@ -324,6 +347,7 @@ image/                        Dockerfile + in-container scripts
   rootfs/usr/local/bin/       gtvpn-verify (container-side checks)
 host/verify-host.sh           host-side checks
 windows/Setup-GtVpn.ps1       Windows setup
+windows/viewer/               gtvpn vnc <host> windows: the viewer (C#, built on first use)
 vscode/                       VS Code settings + Dev Containers attach config
 tests/lab/                    end-to-end lab with a real tunnel (see below)
 docs/DESIGN.md                design, threat model, alternatives
@@ -341,7 +365,8 @@ tests/lab/run-lab.sh   # split + full tunnel: leaks, crash, tampering, SSH jump,
 tests/lab/run-x11.sh   # remote X app → ssh over tunnel → container → host display
 tests/lab/run-cli.sh   # the real ./gtvpn flow incl. SSO hand-off via the link handler
 tests/lab/run-perms.sh # image built from a Windows-drive checkout (all files 0777) is still safe
-tests/lab/run-vnc.sh   # gtvpn vnc: session with the server's own Xvnc, viewer through the container, cleanup
+tests/lab/run-vnc.sh   # gtvpn vnc: session with the server's own Xvnc, viewer through the container,
+                       # gtvpn's own viewer (with mono, if installed), cleanup
 ```
 
 The one piece the lab cannot do is GT's real portal and Duo. The first

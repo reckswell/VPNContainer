@@ -618,10 +618,10 @@ Reopen the windows: gtvpn vnc $host windows. End the session: gtvpn vnc $host st
 EOF
       ;;
     attach)
-      # Title bars inside the desktop again if gtvpn's viewer was the window manager.
-      engine exec -u dev "$NAME" gtvpn-vnc "$host" start >/dev/null 2>&1 || true
       p=$(vnc_session "$host" port)
       [[ $p =~ ^[0-9]+$ ]] || die "no session on $host (or no open connection to it); start one with: gtvpn vnc $host"
+      # Title bars inside the desktop again if gtvpn's own viewer was the window manager.
+      engine exec -u dev "$NAME" gtvpn-vnc "$host" wm >/dev/null 2>&1 || true
       vnc_attach "$p" "$host" ;;
     status) engine exec -it -u dev -w /home/dev "$NAME" gtvpn-vnc "$host" status ;;
     stop) engine exec -it -u dev -w /home/dev "$NAME" gtvpn-vnc "$host" stop "${3:-}" ;;

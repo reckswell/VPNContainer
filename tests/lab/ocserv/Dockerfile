@@ -7,7 +7,7 @@ FROM ${BASE_IMAGE}
 RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       ocserv gnutls-bin dnsmasq iproute2 netcat-openbsd ca-certificates \
       openssh-server xauth x11-utils tcsh \
-      tigervnc-standalone-server tigervnc-viewer metacity x11-apps && rm -rf /var/lib/apt/lists/*
+      tigervnc-standalone-server tigervnc-viewer metacity x11-apps xdotool && rm -rf /var/lib/apt/lists/*
 COPY start.sh /start.sh
 RUN chmod +x /start.sh
 ENTRYPOINT ["/start.sh"]

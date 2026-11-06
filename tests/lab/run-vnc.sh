@@ -79,6 +79,8 @@ check "the X display itself needs the cookie" \
   bash -c "! srv 'XAUTHORITY=/dev/null xdpyinfo -display :$N >/dev/null 2>&1'"
 check "the container's 127.0.0.1:$P is forwarded to it (VNC greeting)" \
   bash -c "dev 'exec 3<>/dev/tcp/127.0.0.1/$P; head -c 12 <&3' | grep -q '^RFB 003\.00'"
+check "port checks (connections that end at the greeting) do not shut the viewer out" \
+  bash -c "for i in 1 2 3 4 5 6 7 8; do dev 'exec 3<>/dev/tcp/127.0.0.1/$P; head -c 12 <&3' >/dev/null; done; dev 'exec 3<>/dev/tcp/127.0.0.1/$P; head -c 12 <&3' | grep -q '^RFB 003\.008'"
 check "the forward lives in the shared connection (no ssh left running for it)" \
   bash -c "! docker exec gtvpn pgrep -u dev -f -- '-L 127\.0\.0\.1:$P:' >/dev/null"
 
@@ -120,6 +122,70 @@ check "with a tcsh login shell, beside another user's session, it gets its own d
   bash -c "[[ -n '$N2' && '$N2' != '$N1' ]] && srv 'DISPLAY=$N2 xdpyinfo >/dev/null' gtcsh"
 [[ -n $N2 ]] || echo "$OUT2"
 dev 'gtvpn-vnc gtcsh@10.66.0.1 stop' >/dev/null 2>&1; dev 'gtvpn-vnc cadence stop' >/dev/null 2>&1
+# gtvpn's own viewer (windows/viewer; run here with mono): it takes over from
+# metacity as the session's window manager and shows every window of the
+# session as a window of its own on this computer's desktop, at the same
+# place, with input going back through VNC.
+if command -v mono >/dev/null && command -v mcs >/dev/null; then
+  OUT=$(dev 'gtvpn-vnc cadence windows' 2>&1)
+  NW=$(sed -n 's/^display=:\([0-9]*\)$/\1/p' <<<"$OUT"); PW=$((15900 + ${NW:-0})); QW=$((16300 + ${NW:-0}))
+  check "windows: a session without metacity, and its X display forwarded too (port $QW)" \
+    bash -c "[[ -n '$NW' ]] && grep -qx 'xport=$QW' <<<\"\$1\" && ! on_srv 'pgrep -u gtuser -x metacity' >/dev/null" _ "$OUT"
+  [[ -n $NW ]] || echo "$OUT"
+  CK=$(dev 'gtvpn-vnc cadence cookie' | sed -n 's/^cookie=//p')
+  check "cookie gives the session's X cookie" bash -c "[[ '$CK' =~ ^[0-9a-f]{32}$ ]] && srv 'xauth list :$NW' | grep -q '$CK'"
+  docker run -d --name gtvpn-lab-fwd --network host -v "$KEYDIR:/k:ro" --entrypoint ssh lab/ocserv \
+    -F /k/config -N -o ExitOnForwardFailure=yes -L "127.0.0.1:$PW:127.0.0.1:$PW" -L "127.0.0.1:$QW:127.0.0.1:$QW" gtvpn >/dev/null
+  mcs -langversion:5 -optimize+ -target:winexe -out:"$KEYDIR/viewer.exe" -r:System.Windows.Forms.dll -r:System.Drawing.dll windows/viewer/*.cs >/dev/null \
+    || bad "the viewer builds"
+  sleep 1
+  GTVPN_X_COOKIE=$CK DISPLAY=$D XAUTHORITY=$XA TMPDIR=$KEYDIR setsid -f mono "$KEYDIR/viewer.exe" \
+    --vnc "127.0.0.1:$PW" --x11 "127.0.0.1:$QW" --label lab >/dev/null 2>&1 </dev/null
+  srv "DISPLAY=:$NW nohup xlogo -geometry 400x300 -title gtvpn-lab-xlogo >/dev/null 2>&1 &"
+  srv "DISPLAY=:$NW nohup xev -geometry 300x200 -name gtvpn-lab-xev >/tmp/gtvpn-lab-xev.log 2>&1 &"
+  shown(){ for _ in $(seq 30); do desk xwininfo -root -tree 2>/dev/null | grep -q "\"$1\"" && return 0; sleep 0.5; done; tail -5 "$KEYDIR/gtvpn-viewer.log"; return 1; }
+  export -f shown; export KEYDIR D XA
+  check "each window of the session appears as a window of its own here" bash -c "shown gtvpn-lab-xlogo && shown gtvpn-lab-xev"
+  check "the viewer is the session's window manager now" \
+    bash -c "id=\$(srv \"xprop -display :$NW -root _NET_SUPPORTING_WM_CHECK\" | sed -n 's/.*# //p'); srv \"xprop -display :$NW -id \$id _NET_WM_NAME\" | grep -q gtvpn"
+  # Same pixels: sample the xlogo window in the session and on this desktop.
+  geom(){ srv "xwininfo -display :$NW -name $1" | awk '/Absolute upper-left X/{x=$NF} /Absolute upper-left Y/{y=$NF} /Width/{w=$NF} /Height/{h=$NF} END{print x, y, w, h}'; }
+  read -r LX LY LW LH <<<"$(geom gtvpn-lab-xlogo)"
+  sleep 2
+  srv "xwd -display :$NW -root -silent" > "$KEYDIR/s.xwd"; desk xwd -root -silent > "$KEYDIR/d.xwd"
+  check "the native window shows the session's picture (same pixels at the same place)" \
+    python3 - "$KEYDIR/s.xwd" "$KEYDIR/d.xwd" "$LX" "$LY" "$LW" "$LH" <<'PY'
+import struct, sys
+def load(p):
+    b = open(p, 'rb').read(); h = struct.unpack('>25I', b[:100])
+    off = h[0] + h[19] * 12; bpl = h[12]; little = h[7] == 0
+    def px(x, y):
+        v = b[off + y * bpl + x * 4: off + y * bpl + x * 4 + 4]
+        v = struct.unpack('<I' if little else '>I', v)[0]
+        return (v >> 16) & 255, (v >> 8) & 255, v & 255
+    return px
+s, d = load(sys.argv[1]), load(sys.argv[2]); x, y, w, h = map(int, sys.argv[3:7])
+pts = [(x + 2 + (w - 4) * i // 9, y + 2 + (h - 4) * j // 9) for i in range(10) for j in range(10)]
+same = sum(all(abs(a - c) <= 24 for a, c in zip(s(*p), d(*p))) for p in pts)
+print(same, 'of', len(pts), 'sample points match'); sys.exit(0 if same >= 90 else 1)
+PY
+  read -r EX EY EW EH <<<"$(geom gtvpn-lab-xev)"
+  desk xdotool mousemove $((EX + EW / 2)) $((EY + EH / 2)) sleep 0.3 click 1 sleep 0.5 type --delay 50 gtvpn >/dev/null 2>&1
+  # The letters of the KeyPress events that xev in the session saw.
+  keys(){ srv 'cat /tmp/gtvpn-lab-xev.log' | awk '/^KeyPress/{k=1} /^KeyRelease/{k=0} k && /keysym/{match($0, /keysym 0x[0-9a-f]+, [^)]*/); t=substr($0, RSTART, RLENGTH); sub(/.*, /, "", t); printf "%s", t; k=0}'; }
+  typed(){ for _ in $(seq 10); do [[ $(keys) == *gtvpn* ]] && return 0; sleep 0.5; done; echo "keys seen: $(keys); clicks: $(srv 'grep -c ButtonPress /tmp/gtvpn-lab-xev.log')"; return 1; }
+  check "clicks and typing reach the program in the session" typed
+  pkill -f -- "$KEYDIR/viewer.exe"; sleep 1
+  check "after the viewer, wm (as attach does, for the TigerVNC viewer) brings metacity back" \
+    bash -c "dev 'gtvpn-vnc cadence wm' | grep -q 'window manager restarted' && on_srv 'pgrep -u gtuser -x metacity' >/dev/null"
+  check "and wm leaves a running window manager alone" \
+    bash -c "[[ -z \$(dev 'gtvpn-vnc cadence wm') && \$(on_srv 'pgrep -u gtuser -xc metacity') == 1 ]]"
+  docker rm -f gtvpn-lab-fwd >/dev/null
+  check "stop also closes the X display's forward" \
+    bash -c "dev 'gtvpn-vnc cadence stop --force' >/dev/null && ! dev '(exec 3<>/dev/tcp/127.0.0.1/$QW)' 2>/dev/null"
+else
+  echo "SKIP gtvpn's own viewer (needs mono and mcs here)"
+fi
 # The host CLI, as on a Linux computer: ./gtvpn vnc with a terminal (script),
 # its ssh gtvpn forward, and a stand-in viewer that records its options and
 # reads the VNC greeting through the forwards.
@@ -148,6 +214,14 @@ cli vnc cadence attach >/dev/null; sleep 2
 check "attach reopens the viewer and reuses that forward" \
   bash -c "[[ \$(grep -c 'RFB 003' $KEYDIR/viewer-greeting) == 2 && \$(pgrep -fc -- '-L 127.0.0.1:$PC:127.0.0.1:$PC [g]tvpn') == 1 ]]"
 check "gtvpn vnc status shows it" bash -c "cli vnc cadence status | grep -q 'session :$NC is running'"
+if command -v mono >/dev/null && command -v mcs >/dev/null; then
+  srv "DISPLAY=:$NC nohup xlogo -title gtvpn-lab-xlogo2 >/dev/null 2>&1 &"
+  OUT=$(DISPLAY=$D XAUTHORITY=$XA XDG_CACHE_HOME=$KEYDIR/cache TMPDIR=$KEYDIR cli vnc cadence windows)
+  check "gtvpn vnc windows (host CLI) builds the viewer and shows the session's windows here" \
+    bash -c "grep -q 'appears here as a window of its own' <<<\"\$1\" && shown gtvpn-lab-xlogo2" _ "$OUT"
+  grep -q 'appears here as a window of its own' <<<"$OUT" || echo "$OUT"
+  pkill -f -- "$KEYDIR/cache/gtvpn/gtvpn-viewer.exe"; srv 'pkill -x xlogo'; sleep 1
+fi
 check "gtvpn vnc stop ends it" bash -c "cli vnc cadence stop | grep -q 'stopped session :$NC'"
 check "attach without a session says so" bash -c "cli vnc cadence attach | grep -q 'no session on cadence'"
 check "a bad host name is refused" bash -c "cli vnc 'a;b' | grep -q 'usage: gtvpn vnc'"

@@ -31,6 +31,7 @@ namespace GtVpn
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int ToUnicodeEx(uint vk, uint scan, byte[] state, StringBuilder buf, int n, uint flags, IntPtr layout);
         [DllImport("user32.dll")] public static extern IntPtr CreateIconIndirect(ref ICONINFO info);
         [DllImport("dwmapi.dll")] public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+        [DllImport("user32.dll")] public static extern bool AddClipboardFormatListener(IntPtr hwnd);
 
         // Windows 11 frames: dark title bars when the system is in dark mode,
         // and square corners for menus and other popups (their content is
@@ -296,9 +297,18 @@ namespace GtVpn
             tray.Text = ("gtvpn viewer: " + Label).Substring(0, Math.Min(63, ("gtvpn viewer: " + Label).Length));
         }
 
-        public void Quit(string why)
+        public void Quit(string why) { Quit(why, false); }
+
+        bool quitting;
+
+        public void Quit(string why, bool tell)
         {
+            if (quitting) return;   // closing one connection closes the other too
+            quitting = true;
             Log("quit: " + why);
+            if (tell && Native.IsWindows)
+                MessageBox.Show("The connection to the session closed (" + why + ").\n\nCadence keeps running on the server. " +
+                    "Reopen its windows with:  gtvpn vnc <host> windows", "gtvpn viewer: " + Label, MessageBoxButtons.OK, MessageBoxIcon.Information);
             tray.Visible = false;
             try { if (X != null) X.Close(); } catch { }
             try { if (Rfb != null) Rfb.Close(); } catch { }
@@ -490,7 +500,15 @@ namespace GtVpn
         // ---- native window events ---------------------------------------------
         XForm focused;
 
-        public void FormActivated(XForm f) { focused = f; Wm.Focus(f.Win.Id, f.Win); }
+        // The session's stacking follows Windows': where two windows overlap,
+        // the framebuffer holds only the upper one's pixels, so the window in
+        // front here must be in front there too (with its dialogs above it).
+        public void FormActivated(XForm f)
+        {
+            focused = f;
+            Wm.Focus(f.Win.Id, f.Win);
+            foreach (var o in f.OwnedForms) { var xf = o as XForm; if (xf != null && xf.Visible) Wm.Raise(xf.Win.Id); }
+        }
 
         public void Deactivated()
         {
@@ -511,7 +529,16 @@ namespace GtVpn
             int x = c.X - OriginX, y = c.Y - OriginY, w = f.ClientSize.Width, h = f.ClientSize.Height;
             if (x == f.Win.X && y == f.Win.Y && w == f.Win.W && h == f.Win.H) return;
             f.Win.X = x; f.Win.Y = y; f.Win.W = w; f.Win.H = h;
-            if (w == f.XRect.Width && h == f.XRect.Height) Wm.Move(f.Win.Id, x, y);
+            if (w == f.XRect.Width && h == f.XRect.Height)
+            {
+                // A move: the window keeps showing what it shows (Windows moves
+                // its picture), and from now on it takes the framebuffer's
+                // updates at the new place, where Xvnc copies the session's
+                // window. Waiting for the session to confirm the move would
+                // show the uncovered spot for a frame.
+                f.XRect = new Rectangle(x, y, w, h);
+                Wm.Move(f.Win.Id, x, y);
+            }
             else Wm.Configure(f.Win.Id, x, y, w, h);
             Wm.SetMaximized(f.Win.Id, f.WindowState == FormWindowState.Maximized);
         }
@@ -602,7 +629,36 @@ namespace GtVpn
             });
         }
 
-        public void OnClosed(string why) { Ui(delegate { Quit(why); }); }
+        public void OnClosed(string why) { Ui(delegate { Quit(why, true); }); }
+
+        // ---- clipboard: Windows <-> the session (text) ------------------------
+        string fromSession;
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            if (Native.IsWindows) Native.AddClipboardFormatListener(Handle);
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            base.WndProc(ref m);
+            if (m.Msg != 0x031D || Rfb == null) return;                 // WM_CLIPBOARDUPDATE
+            string t = null;
+            try { if (Clipboard.ContainsText()) t = Clipboard.GetText(); } catch (ExternalException) { }
+            if (string.IsNullOrEmpty(t) || t == fromSession) return;
+            try { Rfb.CutText(t); } catch (IOException) { }
+        }
+
+        public void OnCutText(string text)
+        {
+            Ui(delegate
+            {
+                if (string.IsNullOrEmpty(text)) return;
+                fromSession = text;
+                try { Clipboard.SetText(text); } catch (ExternalException) { }
+            });
+        }
 
         public void Replaced() { Ui(delegate { Quit("another window manager took over the session"); }); }
     }

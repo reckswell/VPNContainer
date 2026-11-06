@@ -10,6 +10,7 @@
 #                                   (no window manager there: the viewer is one);
 #                                   also forward the session's X display: xport=Q
 #   gtvpn-vnc <host> cookie         cookie=HEX, the session's X cookie (for that viewer)
+#   gtvpn-vnc <host> wm             metacity again in the session, if that viewer has quit
 #   gtvpn-vnc <host> status
 #   gtvpn-vnc <host> stop [--force]
 #
@@ -29,7 +30,7 @@
 set -uo pipefail
 umask 077
 host=${1:-}; action=${2:-start}
-usage() { echo "usage: gtvpn-vnc <host> [start|display|windows|cookie|status|stop [--force]]" >&2; exit 2; }
+usage() { echo "usage: gtvpn-vnc <host> [start|display|windows|cookie|wm|status|stop [--force]]" >&2; exit 2; }
 die() { printf 'gtvpn vnc: %s\n' "$*" >&2; exit 1; }
 [[ $host =~ ^[A-Za-z0-9][A-Za-z0-9._@-]*$ ]] || usage
 [[ $(id -un) == dev ]] || die "run it as dev (gtvpn vnc <host> on your computer does that)"
@@ -102,6 +103,7 @@ case $action in
     d=$(printf '%s\n' "$out" | sed -n 's/^display=//p')
     xforward "$d" || exit 1 ;;
   cookie) connected || exit 1; remote cookie ;;
+  wm) connected || exit 1; remote wm ;;
   status) connected || { echo "no open connection to $host"; exit 1; }; remote status ;;
   stop)
     connected || die "no open connection to $host"

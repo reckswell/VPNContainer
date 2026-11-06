@@ -111,7 +111,7 @@ namespace GtVpn
                     int rev = 0;
                     for (int b = 0; b < len; b++) if ((code & (1 << b)) != 0) rev |= 1 << (len - 1 - b);
                     for (int fill = rev; fill < (1 << Huff.FAST); fill += 1 << len)
-                        h.Fast[fill] = (len << 16) | h.Symbol[index];
+                        h.Fast[fill] = (len << 16) | (ushort)h.Symbol[index];
                 }
                 code <<= 1;
             }

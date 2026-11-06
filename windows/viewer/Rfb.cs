@@ -41,6 +41,7 @@ namespace GtVpn
         public event Action<int, int> Resized;          // receive thread
         public event Action<CursorShape> CursorChanged; // receive thread
         public event Action<string> Closed;             // receive thread
+        public event Action<string> CutTextReceived;    // receive thread: the session's clipboard
 
         public int JpegQuality = 8, CompressLevel = 1;
         public bool ServerCanResize;
@@ -61,6 +62,8 @@ namespace GtVpn
             ns = tcp.GetStream();
             string ver = Encoding.ASCII.GetString(Read(12));
             if (!ver.StartsWith("RFB 003.")) throw new IOException("not a VNC server: " + ver.Trim());
+            // Xvnc answers in version 3.3 only to turn a connection away.
+            if (ver == "RFB 003.003\n" && ReadU32() == 0) throw new IOException("the VNC server refused: " + ReadString());
             Write(Encoding.ASCII.GetBytes("RFB 003.008\n"));
             int n = ReadU8();
             if (n == 0) throw new IOException("the VNC server refused: " + ReadString());
@@ -161,7 +164,9 @@ namespace GtVpn
                         case 3:
                             Read(3);
                             int len = (int)ReadU32();
-                            if (len < 0) Read(-len); else Read(len);               // clipboard: not used yet
+                            if (len < 0) { Read(-len); break; }                   // extended clipboard: not asked for
+                            string text = Encoding.GetEncoding(28591).GetString(Read(len));
+                            var ct = CutTextReceived; if (ct != null) ct(text.Replace("\n", "\r\n"));
                             break;
                         case 150:
                             // The server can push updates without a request per

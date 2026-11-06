@@ -9,6 +9,8 @@
 #                    manager runs, unless nowm (gtvpn's own viewer for
 #                    Windows is the window manager then)
 #   cookie           "cookie=HEX": the session's X cookie, for that viewer
+#   wm               start the window manager again if none runs (after that
+#                    viewer quit), for the VNC viewer's title bars
 #   display          the same two lines for the running session (exit 1: none)
 #   status           the session and the programs showing windows in it
 #   stop [--force]   end it (refuses while programs other than the window
@@ -108,11 +110,14 @@ start)
     xauth -q -f "$XA" add ":$n" . "$cookie" 2>/dev/null || die "could not add the display's cookie to $XA"
     # -rfbport -1: no TCP port at all (the default would open 5900+N on this
     # server, which other users could reach). The desktop starts at 1920x1080
-    # and follows the viewer's window size (-AcceptSetDesktopSize).
+    # and follows the viewer's window size (-AcceptSetDesktopSize). Xvnc counts
+    # every connection that ends before signing in (gtvpn's checks that a
+    # forward is open) as a failed attempt and shuts everyone out after 5;
+    # only you can reach the socket, so that blacklist is off.
     XDG_CACHE_HOME="$D/cache" XDG_CONFIG_HOME="$D/config" XDG_DATA_HOME="$D/data" \
       setsid nohup Xvnc ":$n" -auth "$XA" -nolisten tcp \
       -rfbunixpath "$SOCK" -rfbunixmode 0600 -rfbport -1 -localhost -interface 127.0.0.1 -SecurityTypes None \
-      -geometry 1920x1080 -depth 24 -dpi 96 -FrameRate 180 -AlwaysShared -AcceptSetDesktopSize=1 \
+      -geometry 1920x1080 -depth 24 -dpi 96 -FrameRate 180 -AlwaysShared -AcceptSetDesktopSize=1 -UseBlacklist=0 \
       >"$D/xvnc.log" 2>&1 </dev/null &
     say "$n" > "$D/display"
     i=0; until [ -S "$SOCK" ] && DISPLAY=":$n" xdpyinfo >/dev/null 2>&1; do
@@ -127,6 +132,11 @@ start)
 display)
   n=$(live) || exit 1
   report "$n" ;;
+
+wm)
+  n=$(live) || exit 1
+  wm_running "$n" && exit 0
+  if start_wm "$n"; then say "window manager restarted"; else say "note: no window manager started (log: $D/wm.log)"; fi ;;
 
 cookie)
   n=$(live) || exit 1

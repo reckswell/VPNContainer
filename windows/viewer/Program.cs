@@ -138,6 +138,7 @@ namespace GtVpn
                 rfb.Updated += v.OnUpdated;
                 rfb.Resized += v.OnResized;
                 rfb.CursorChanged += v.OnCursor;
+                rfb.CutTextReceived += v.OnCutText;
                 rfb.Closed += delegate(string why) { v.OnClosed("VNC: " + why); };
                 var h = v.Handle;   // the UI thread's window exists before events arrive
                 rfb.Connect(vh, vp);

@@ -527,6 +527,8 @@ namespace GtVpn
 
         public void Lower(uint w) { x.Do(new Req(12).U32(w).U16(64).U16(0).U32(1)); }
 
+        public void Raise(uint w) { x.Do(new Req(12).U32(w).U16(64).U16(0).U32(0)); }
+
         public void Close(uint w)
         {
             XWin xw; bool known;
