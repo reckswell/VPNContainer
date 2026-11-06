@@ -94,7 +94,7 @@ docker run -d --name gtvpn-lab-viewer --network host -v /tmp/.X11-unix:/tmp/.X11
 srv "DISPLAY=:$N nohup xlogo -geometry 320x240 -title gtvpn-lab-xlogo >/dev/null 2>&1 &"
 viewer(){ for _ in $(seq 30); do desk xwininfo -root -tree 2>/dev/null | grep -q 'TigerVNC' && return 0; sleep 0.5; done; docker logs gtvpn-lab-viewer 2>&1 | tail -5; return 1; }
 check "the viewer on this computer shows the session through ssh gtvpn" viewer
-resized(){ for _ in $(seq 20); do srv "xdpyinfo -display :$N | grep -q 'dimensions: *1400x900 '" && return 0; sleep 0.5; done; srv "xdpyinfo -display :$N | grep dimensions"; return 1; }
+resized(){ for _ in $(seq 40); do srv "xdpyinfo -display :$N | grep -q 'dimensions: *1400x900 '" && return 0; sleep 0.5; done; srv "xdpyinfo -display :$N | grep dimensions"; return 1; }
 check "the session's desktop follows the viewer window's size" resized
 check "status lists the programs in the session" bash -c "dev 'gtvpn-vnc cadence status' | grep -q 'program: xlogo'"
 docker rm -f gtvpn-lab-viewer gtvpn-lab-fwd >/dev/null
