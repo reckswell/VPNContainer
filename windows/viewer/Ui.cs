@@ -74,35 +74,48 @@ namespace GtVpn
         [StructLayout(LayoutKind.Sequential, Pack = 4)] struct PropKey { public Guid Fmt; public uint Pid; }
         [DllImport("shell32.dll")] static extern int SHGetPropertyStoreForWindow(IntPtr hwnd, ref Guid iid, [MarshalAs(UnmanagedType.Interface)] out IPropertyStore store);
 
+        // The button's name is the relaunch display name (else Windows shows
+        // the viewer's file name); it needs a relaunch command beside it,
+        // which is never used, as pinning is off.
         public static void SetAppId(IntPtr hwnd, string program)
         {
             if (!IsWindows) return;
             var id = new StringBuilder("GtVpn.X.");
             foreach (char c in program) if (id.Length < 100 && (char.IsLetterOrDigit(c) || c == '-' || c == '.')) id.Append(c < 128 ? c : '_');
             IPropertyStore ps = null;
-            IntPtr pv = Marshal.AllocCoTaskMem(24), str = IntPtr.Zero;
+            IntPtr pv = Marshal.AllocCoTaskMem(24);
             try
             {
                 var iid = new Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99");
                 if (SHGetPropertyStoreForWindow(hwnd, ref iid, out ps) != 0 || ps == null) return;
-                var fmt = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3");      // PKEY_AppUserModel_*
+                var k = new PropKey { Fmt = new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3") };   // PKEY_AppUserModel_*
                 for (int i = 0; i < 24; i++) Marshal.WriteByte(pv, i, 0);
                 Marshal.WriteInt16(pv, 0, 11); Marshal.WriteInt16(pv, 8, -1);        // VT_BOOL true
-                var k = new PropKey { Fmt = fmt, Pid = 9 };                          // PreventPinning (before the ID)
-                ps.SetValue(ref k, pv);
-                str = Marshal.StringToCoTaskMemUni(id.ToString());
-                for (int i = 0; i < 24; i++) Marshal.WriteByte(pv, i, 0);
-                Marshal.WriteInt16(pv, 0, 31); Marshal.WriteIntPtr(pv, 8, str);      // VT_LPWSTR
-                k.Pid = 5;                                                           // ID
-                ps.SetValue(ref k, pv);
+                k.Pid = 9; ps.SetValue(ref k, pv);                                   // PreventPinning
+                // These before the ID, which makes the taskbar read them.
+                SetString(ps, k, 2, "\"" + Application.ExecutablePath + "\"", pv);   // RelaunchCommand
+                SetString(ps, k, 4, program, pv);                                    // RelaunchDisplayNameResource
+                SetString(ps, k, 5, id.ToString(), pv);                              // ID
             }
             catch (Exception) { }
             finally
             {
                 if (ps != null) Marshal.ReleaseComObject(ps);
-                if (str != IntPtr.Zero) Marshal.FreeCoTaskMem(str);
                 Marshal.FreeCoTaskMem(pv);
             }
+        }
+
+        static void SetString(IPropertyStore ps, PropKey k, uint pid, string value, IntPtr pv)
+        {
+            IntPtr str = Marshal.StringToCoTaskMemUni(value);
+            try
+            {
+                for (int i = 0; i < 24; i++) Marshal.WriteByte(pv, i, 0);
+                Marshal.WriteInt16(pv, 0, 31); Marshal.WriteIntPtr(pv, 8, str);      // VT_LPWSTR
+                k.Pid = pid;
+                ps.SetValue(ref k, pv);
+            }
+            finally { Marshal.FreeCoTaskMem(str); }
         }
 
         // A window's own icon from _NET_WM_ICON (width, height, ARGB pixels,
