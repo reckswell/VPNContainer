@@ -216,6 +216,32 @@ where the portal would issue a real cookie.
 - Inside the container, `ssh <alias>` uses `ForwardX11Trusted yes`,
   compression and connection multiplexing, so there is one Duo prompt per
   host for 8 hours.
+- **VS Code Remote-SSH windows** run ssh on the computer (Windows OpenSSH
+  through `ProxyJump gtvpn`), and VS Code only passes the computer's own
+  `DISPLAY` along. The computer has no X server for GT, so those terminals
+  get none. Rather than add an X server on Windows (another listener on
+  the computer, plus restarting VS Code's server on the GT host),
+  `gtvpn display <host>` (`gtvpn-display` in the container) keeps a
+  background `ssh -Y -tt` session from the container on that host. sshd
+  gives it a display (`localhost:N`, cookie in the shared
+  `~/.Xauthority`), and the session writes the name to `~/.gtvpn-display`,
+  so the VS Code terminal sets `DISPLAY` from it. The windows then take the
+  same path as any container X11: tunnel, container, WSLg or Xwayland.
+  - It is a client of the container's shared connection (`ControlMaster
+    no`, same `ControlPath`), so it needs no extra Duo prompt when one is
+    open and `stop` never closes that connection. With none open it signs
+    in once with `ssh true` and `ControlPersist`, so the connection it
+    leaves behind is the usual shared one, not owned by the bridge.
+  - The server side runs `/bin/sh` explicitly (GT login shells may be
+    tcsh) and waits in `sleep & wait` under a hang-up trap. Its pty is what
+    makes cleanup reliable: when the session ends for any reason (`stop`,
+    `ssh -O exit`, the master dying), sshd closes the pty, the shell gets
+    `SIGHUP`, removes `~/.gtvpn-display` if it still names its display, and
+    kills its sleep. Without a pty a `sleep` would outlive the session on
+    GT's server.
+  - Anyone else on the GT host can reach `localhost:N`, but sshd's fake
+    cookie in your `~/.Xauthority` is required, the same exposure as any
+    `ssh -Y` session.
 
 ## SSH hosts (`hosts.conf`)
 
@@ -324,7 +350,10 @@ Three layers, run continuously by `gtvpn watch`:
    allow-listed API, a fake GT ssh server and an Xvfb "host display". It
    runs all of the above plus host→container→GT ProxyJump, SSH auth
    hardening, kill -9 of the client, firewall tampering (watchdog), and the
-   Cadence path (remote X app → ssh over tunnel → container → host X).
+   Cadence path (remote X app → ssh over tunnel → container → host X),
+   including `gtvpn-display` for bash and tcsh accounts: another session on
+   the server draws through it, and stop or the connection ending leaves
+   nothing on the server.
    `run-cli.sh` drives the real host CLI, including a planted-symlink
    attack on `runtime/out` and hostile sign-in addresses. `run-perms.sh`
    builds the image from an all-0777 copy, as from a Windows drive.

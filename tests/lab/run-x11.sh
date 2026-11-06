@@ -52,6 +52,29 @@ check "ssh connection multiplexing is active (one Duo prompt per host)" dev "ssh
 printf 'Host labx\n    HostName 10.66.0.1\n    User gtuser\n' > runtime/in/hosts.conf
 check "hosts.conf alias reaches the GT server and X11 works on a fresh connection" \
   bash -c "docker exec gtvpn gtvpn-hosts >/dev/null && docker exec -u dev gtvpn bash -lc \"ssh -o BatchMode=yes -o ControlPath=none labx 'xdpyinfo >/dev/null'\""
+# Display bridge (gtvpn display): a terminal on the GT server that ssh -Y did
+# not open, like VS Code Remote-SSH from the computer, still reaches the
+# desktop. "On the server" here is docker exec into the server container.
+srv(){ docker exec -u "$1" -e HOME="/home/$1" gtvpn-lab-ocserv sh -c "$2"; }
+# Within 5 s: no ~/.gtvpn-display and no waiting sleep left for user $1
+gone(){ for _ in $(seq 10); do srv "$1" '! test -e ~/.gtvpn-display' && ! docker exec gtvpn-lab-ocserv pgrep -u "$1" -x sleep >/dev/null && return 0; sleep 0.5; done; return 1; }
+export -f dev srv gone
+docker exec gtvpn cat /home/dev/.ssh/id_ed25519.pub | docker exec -i gtvpn-lab-ocserv sh -c 'cat > /etc/ssh/lab_keys/gtcsh; chmod 644 /etc/ssh/lab_keys/gtcsh'
+check "gtvpn-display opens a display on the GT server, over the existing connection" \
+  bash -c "dev 'gtvpn-display cadence' | grep -q '^X display open on cadence: localhost:'"
+check "a separate session on the server draws on the desktop with ~/.gtvpn-display" \
+  srv gtuser 'DISPLAY=$(cat ~/.gtvpn-display) xdpyinfo >/dev/null'
+check "status reports the display, and a second start keeps the same one" \
+  bash -c "a=\$(dev 'gtvpn-display cadence status') && b=\$(dev 'gtvpn-display cadence') && [[ \$a == 'open on cadence: DISPLAY=localhost:'* && \$a == \"\$b\" ]]"
+check "while open, it waits on the server as one idle process" \
+  bash -c "[[ \$(docker exec gtvpn-lab-ocserv pgrep -u gtuser -x sleep | wc -l) == 1 ]]"
+check "stop removes ~/.gtvpn-display and leaves nothing running on the server" \
+  bash -c "dev 'gtvpn-display cadence stop' >/dev/null && gone gtuser"
+check "stop leaves the shared connection open (no new Duo prompt)" dev "ssh -O check cadence 2>&1 | grep -qi running"
+check "with a tcsh login shell and no open connection, it signs in and opens a display" \
+  bash -c "dev 'gtvpn-display gtcsh@10.66.0.1' | grep -q '^X display open on gtcsh@10.66.0.1: localhost:' && srv gtcsh 'DISPLAY=\$(cat ~/.gtvpn-display) xdpyinfo >/dev/null'"
+check "when the connection itself ends, the server side cleans up too" \
+  bash -c "dev 'ssh -O exit gtcsh@10.66.0.1' 2>/dev/null; gone gtcsh && ! dev 'gtvpn-display gtcsh@10.66.0.1 status' >/dev/null"
 docker exec gtvpn pkill -9 openconnect; sleep 2
 check "after tunnel death the GT server is unreachable" bash -c "! docker exec -u dev gtvpn bash -lc 'ssh -o BatchMode=yes -o ControlPath=none -o ConnectTimeout=4 cadence true' 2>/dev/null"
 exit $FAILED

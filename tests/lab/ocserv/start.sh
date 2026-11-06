@@ -43,6 +43,9 @@ dnsmasq --no-resolv --listen-address=10.66.0.1 --bind-interfaces --no-hosts \
 # A "GT Linux server" with sshd + X11 forwarding (stand-in for the Cadence host)
 id gtuser >/dev/null 2>&1 || useradd -m -s /bin/bash gtuser
 usermod -p '*' gtuser
+# Many GT accounts log in to tcsh
+id gtcsh >/dev/null 2>&1 || useradd -m -s /usr/bin/tcsh gtcsh
+usermod -p '*' gtcsh
 mkdir -p /run/sshd /etc/ssh/lab_keys; ssh-keygen -A >/dev/null
 cat > /etc/ssh/sshd_lab.conf <<SSHD
 ListenAddress 10.66.0.1

@@ -466,6 +466,10 @@ ${c_b}gtvpn${c_0} - Georgia Tech GlobalProtect in an isolated container
   code --ssh [path]  the same over Remote-SSH instead
   claude [args]    run Claude Code inside the container
   x11test          show a test window (xeyes) from the container
+  display <host> [status|stop]
+                   keep an X display open on a GT server for terminals that
+                   ssh -Y did not open (VS Code Remote-SSH): Cadence there
+                   then needs  export DISPLAY=\$(cat ~/.gtvpn-display)
   logs             container + VPN client logs
   callback <url>   (used by the browser link handler)
   rebuild          rebuild the image (updates Claude Code / base packages)
@@ -489,7 +493,13 @@ case $cmd in
   ssh) need_running; engine exec -it -u dev -w /home/dev "$NAME" bash -lc "ssh $(printf '%q ' "$@")" ;;
   claude) need_running; engine exec -it -u dev -w "${GTVPN_WORKDIR:-/home/dev}" "$NAME" bash -lc "claude $(printf '%q ' "$@")" ;;
   code) cmd_code "$@" ;;
-  x11test) need_running; engine exec -u dev "$NAME" bash -lc 'echo "DISPLAY=$DISPLAY"; timeout 20 xeyes || { echo "X11 test failed"; exit 1; }' ;;
+  x11test) need_running # xeyes still open after 10 s (timeout's 124) means it worked
+    engine exec -u dev "$NAME" bash -lc 'echo "DISPLAY=$DISPLAY"
+      xdpyinfo >/dev/null 2>&1 || { echo "X11 test failed: the container cannot reach your X display"; exit 1; }
+      echo "showing xeyes for 10 seconds"; timeout 10 xeyes; rc=$?
+      if [ $rc -eq 0 ] || [ $rc -eq 124 ]; then echo "X11 works"; else echo "X11 test failed (xeyes exit $rc)"; exit 1; fi' ;;
+  display) need_running; [[ ${1:-} ]] || die "usage: gtvpn display <host> [status|stop]"
+    engine exec -it -u dev -w /home/dev "$NAME" bash -lc "gtvpn-display $(printf '%q ' "$@")" ;;
   logs) engine logs --tail 100 "$NAME"
     engine exec -u root "$NAME" sh -c 'for f in connect gpclient; do [ -s /var/log/gtvpn/$f.log ] || continue; echo "--- $f.log"; tail -n 50 /var/log/gtvpn/$f.log | sed "s/\x1b\[[0-9;]*[A-Za-z]//g; s/\r//g"; done' || true ;;
   callback) cmd_callback "$@" ;;

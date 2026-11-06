@@ -138,9 +138,10 @@ browser and a *globalprotectcallback* link hands the result back.)
   your computer, even from a container window; this jump is how it reaches
   GT from inside the container.) Names under `*.gatech.edu` and GT's
   address blocks are covered; for your own `~/.ssh/config` aliases that
-  point at GT, add `ProxyJump gtvpn` or list them in `hosts.conf`. To start
-  Cadence, use a `gtvpn code` window and run `ssh cadence` in its terminal,
-  because that is the path with X11.
+  point at GT, add `ProxyJump gtvpn` or list them in `hosts.conf`. These
+  windows' terminals have no X display of their own; see
+  [Cadence](#cadence-virtuoso--vivado-x11) for the one command that gives
+  them one.
 - Add [vscode/settings-snippet.jsonc](vscode/settings-snippet.jsonc) to
   your user settings. The container cannot reach VS Code's download servers
   (by design), so VS Code downloads its server and extensions on your
@@ -158,6 +159,42 @@ compression and connection sharing (one Duo prompt per host for 8 h).
 Test it with `./gtvpn x11test` (shows xeyes from the container). On
 Ubuntu, `gtvpn up` refreshes the Xwayland cookie each time. On Windows,
 WSLg needs nothing at all.
+
+Two ways to start Cadence:
+
+- **From a container terminal** (`gtvpn code` or `gtvpn shell`): `ssh -Y
+  ece-linlab19.ece.gatech.edu` (or your `hosts.conf` alias), then start
+  Cadence there.
+- **From a VS Code Remote-SSH window on the GT server.** VS Code runs
+  Remote-SSH from your computer, which has no X server for GT, so its
+  terminals have no `DISPLAY` and Cadence fails with an X display error.
+  Open a display for them once on your computer:
+
+  ```
+  gtvpn display ece-linlab19.ece.gatech.edu
+  ```
+
+  That keeps an `ssh -Y` session from the container open in the background
+  (it reuses the container's connection to that server if there is one,
+  otherwise it asks for your GT password and Duo) and writes the display it
+  got to `~/.gtvpn-display` on the server. Then, in the VS Code terminal:
+
+  ```
+  export DISPLAY=$(cat ~/.gtvpn-display)    # bash
+  setenv DISPLAY `cat ~/.gtvpn-display`     # tcsh
+  ```
+
+  and start Cadence as usual. The windows come through the container to
+  your desktop, like any other X11 from GT. `gtvpn display <host> status`
+  shows it and `gtvpn display <host> stop` closes it. It also ends when the
+  tunnel drops or the container stops; run it again after `gtvpn connect`.
+  To pick it up in every new terminal, add the matching line to `~/.bashrc`
+  or `~/.cshrc` on the GT server:
+
+  ```
+  [ -z "$DISPLAY" ] && [ -r ~/.gtvpn-display ] && export DISPLAY=$(cat ~/.gtvpn-display)   # ~/.bashrc
+  if (! $?DISPLAY && -r ~/.gtvpn-display) setenv DISPLAY "`cat ~/.gtvpn-display`"          # ~/.cshrc
+  ```
 
 ### Claude Code for future projects
 
@@ -210,6 +247,8 @@ What is checked (details in [docs/DESIGN.md](docs/DESIGN.md#verification-recursi
 | The connect window closed before you could read the error | `gtvpn logs` shows the last sign-in transcript (passwords are never in it) |
 | No windows on Ubuntu | Run `./gtvpn up` from a desktop terminal (it needs `$DISPLAY`); `sudo apt install xauth` |
 | No windows on Windows | `ls /mnt/wslg/.X11-unix` in Ubuntu should show `X0`. If not: `wsl --update`, then `wsl --shutdown`. Then `gtvpn down && gtvpn up` and `gtvpn x11test` |
+| Cadence in a VS Code Remote-SSH terminal: "X Window Display Initialization failure", or `echo $DISPLAY` is empty | Those terminals have no X display. Run `gtvpn display <that server>` on your computer, then `export DISPLAY=$(cat ~/.gtvpn-display)` in the terminal ([Cadence](#cadence-virtuoso--vivado-x11)) |
+| `gtvpn display` worked before, but now Cadence says "Can't open display" | The display closed with the tunnel or the container. Run `gtvpn display <server>` again; the number may change, so re-run the `export` too |
 | `ssh gtvpn` says "Could not resolve hostname" in Git Bash | Git Bash's own ssh can't read the Windows config. Use PowerShell or VS Code, which use Windows' OpenSSH |
 | `gtvpn code` opens a window as root, or VS Code asks which container | Install the Dev Containers extension (`ms-vscode-remote.remote-containers`), open VS Code once, then run `gtvpn setup` again to install the attach config |
 | VS Code hangs installing the server | Add `"remote.SSH.localServerDownload": "always"` |
