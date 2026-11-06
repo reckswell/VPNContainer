@@ -418,7 +418,11 @@ read it:
   that a jump cannot reach the internet or LAN.
 - **Also possible: Remote-SSH to `gtvpn`** (`127.0.0.1:2222`, key-only, host
   key pinned by `gtvpn setup`). With `remote.SSH.localServerDownload:
-  always`, VS Code downloads its server on the host and copies it in.
+  auto`, the container's own download of VS Code's server is rejected at
+  once by the firewall, and VS Code falls back to downloading it on the
+  host and copying it in (over SFTP, which the container's sshd has). Not
+  `always`: that also copies the server into GT servers, and on those
+  with SFTP turned off (ece-linlab19) the install then waits forever.
 
 ## Direct egress for Claude Code
 

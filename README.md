@@ -376,7 +376,7 @@ What is checked (details in [docs/DESIGN.md](docs/DESIGN.md#verification-recursi
 | `gtvpn display` worked before, but now Cadence says "Can't open display" | The display closed with the tunnel or the container. Run `gtvpn display <server>` again; the number may change, so re-run the `export` too |
 | `ssh gtvpn` says "Could not resolve hostname" in Git Bash | Git Bash's own ssh can't read the Windows config. Use PowerShell or VS Code, which use Windows' OpenSSH |
 | `gtvpn code` opens a window as root, or VS Code asks which container | Install the Dev Containers extension (`ms-vscode-remote.remote-containers`), open VS Code once, then run `gtvpn setup` again to install the attach config |
-| VS Code hangs installing the server | Add `"remote.SSH.localServerDownload": "always"` |
+| VS Code hangs at "Opening Remote..." on a GT server; its Remote - SSH log ends with "Copying file to remote" and "subsystem request failed" | Set `"remote.SSH.localServerDownload": "auto"` (not `"always"`): some GT servers, like ece-linlab19, have SFTP turned off, so VS Code cannot copy its server in; with `auto` they download it themselves. Then reload the window |
 | A host is missing from VS Code's list | Run `gtvpn hosts`, then reopen the Remote-SSH list. Only plain names on `Host` lines become entries (`Host *.example` is a pattern, not a host) |
 | A dev tool can't download something | Add its exact hostname to `GTVPN_DIRECT_ALLOW`, then `./gtvpn down && ./gtvpn up` |
 | `git@github.com` (port 22) fails | Use HTTPS remotes; the direct path is HTTPS-only |
