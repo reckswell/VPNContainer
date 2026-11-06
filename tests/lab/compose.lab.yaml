@@ -1,53 +1,53 @@
 # Test lab: replaces the GT portal with a local ocserv gateway on the same
 # Docker network. Usage: tests/lab/run-lab.sh
 services:
-  gtvpn:
-    image: lab/gtvpn-client
+  vpncontainer:
+    image: lab/vpncontainer-client
     build: !reset null
     environment:
-      GTVPN_PORTAL: ocserv
-      GTVPN_CONTROL_ALLOW_CIDRS: "172.30.66.10/32 172.30.66.20/32 172.30.66.40/32"
-      GTVPN_DIRECT_ALLOW: "api.fake-anthropic.test"
-      GTVPN_SKIP_CONTROL: 0
-      GTVPN_PROBE_TARGETS: "internal.gt.test:2200 10.66.0.1:2200"
-      GTVPN_PROBE_NAMES: "internal.gt.test"
+      VPNCONTAINER_PORTAL: ocserv
+      VPNCONTAINER_CONTROL_ALLOW_CIDRS: "172.30.66.10/32 172.30.66.20/32 172.30.66.40/32"
+      VPNCONTAINER_DIRECT_ALLOW: "api.fake-anthropic.test"
+      VPNCONTAINER_SKIP_CONTROL: 0
+      VPNCONTAINER_PROBE_TARGETS: "internal.gt.test:2200 10.66.0.1:2200"
+      VPNCONTAINER_PROBE_NAMES: "internal.gt.test"
       LAB_PIN: ${LAB_PIN:-}
-      GTVPN_WATCHDOG_INTERVAL: 3
+      VPNCONTAINER_WATCHDOG_INTERVAL: 3
     networks:
-      gtvpn_net:
+      vpncontainer_net:
         ipv4_address: 172.30.66.2
     depends_on: [ocserv]
   ocserv:
     image: lab/ocserv
-    container_name: gtvpn-lab-ocserv
+    container_name: vpncontainer-lab-ocserv
     environment:
       MODE: ${LAB_MODE:-split}
     cap_add: [NET_ADMIN]
     devices: [/dev/net/tun:/dev/net/tun]
     networks:
-      gtvpn_net:
+      vpncontainer_net:
         ipv4_address: 172.30.66.10
   fakeapi:
     image: python:3.12-alpine
-    container_name: gtvpn-lab-fakeapi
+    container_name: vpncontainer-lab-fakeapi
     command: ["python", "-u", "/srv/serve.py"]
     volumes: ["./tests/lab/fakeapi:/srv:ro"]
     networks:
-      gtvpn_net:
+      vpncontainer_net:
         ipv4_address: 172.30.66.20
         aliases: [api.fake-anthropic.test]
   fakegw:
     # A GlobalProtect gateway's sign-in only (password, then a Duo-style
     # challenge), for the gateway-only sign-in test.
     image: python:3.12-alpine
-    container_name: gtvpn-lab-fakegw
+    container_name: vpncontainer-lab-fakegw
     command: ["python", "-u", "/srv/srv.py", "/certs/cert.pem", "/certs/key.pem", "443"]
     volumes: ["./tests/lab/fakegw:/srv:ro", "${LAB_FAKEGW_CERTS:-./tests/lab/fakegw}:/certs:ro"]
     networks:
-      gtvpn_net:
+      vpncontainer_net:
         ipv4_address: 172.30.66.40
 networks:
-  gtvpn_net:
+  vpncontainer_net:
     ipam:
       config:
         - subnet: 172.30.66.0/24

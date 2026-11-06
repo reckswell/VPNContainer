@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# gtvpn-firewall: fail-closed kill-switch for the container's network namespace.
+# vpncontainer-firewall: fail-closed kill-switch for the container's network namespace.
 #
-#   gtvpn-firewall apply     install the ruleset (run once, at container start)
-#   gtvpn-firewall check     exit 0 iff the live ruleset is exactly what apply installed
-#   gtvpn-firewall show      print rules with packet counters
+#   vpncontainer-firewall apply     install the ruleset (run once, at container start)
+#   vpncontainer-firewall check     exit 0 iff the live ruleset is exactly what apply installed
+#   vpncontainer-firewall show      print rules with packet counters
 #
 # Model (IPv4; IPv6 is disabled and fully dropped):
 #   * Default policy DROP on INPUT, OUTPUT and FORWARD.
@@ -19,7 +19,7 @@
 #     Nothing on the tunnel side can open connections into the container.
 set -euo pipefail
 
-STATE=/run/gtvpn
+STATE=/run/vpncontainer
 SHA_FILE=$STATE/fw.sha
 WAN_FILE=$STATE/wan_if
 GW_FILE=$STATE/wan_gw
@@ -27,23 +27,23 @@ GPVPN_GID=$(getent group gpvpn | cut -d: -f3)
 EGRESS_GID=$(getent group gtegress | cut -d: -f3)
 # Optional allow-listed direct path (Claude Code, GitHub, ...) that bypasses
 # the GT tunnel. Only the local filtering proxy (group gtegress) may use it.
-DIRECT=${GTVPN_DIRECT_EGRESS:-1}
+DIRECT=${VPNCONTAINER_DIRECT_EGRESS:-1}
 EGRESS_MARK=0x1a6
 EGRESS_TABLE=166
 
-SSH_PORT=${GTVPN_SSHD_PORT:-2222}
-CTRL_TCP=${GTVPN_CONTROL_TCP_PORTS:-443}
-CTRL_UDP=${GTVPN_CONTROL_UDP_PORTS:-4501}
-BLOCK_PRIVATE=${GTVPN_BLOCK_PRIVATE:-1}
+SSH_PORT=${VPNCONTAINER_SSHD_PORT:-2222}
+CTRL_TCP=${VPNCONTAINER_CONTROL_TCP_PORTS:-443}
+CTRL_UDP=${VPNCONTAINER_CONTROL_UDP_PORTS:-4501}
+BLOCK_PRIVATE=${VPNCONTAINER_BLOCK_PRIVATE:-1}
 # Space-separated CIDRs that the VPN client may reach on the WAN even though
 # they are private (only needed for test labs / on-prem portals).
-CTRL_ALLOW=${GTVPN_CONTROL_ALLOW_CIDRS:-}
+CTRL_ALLOW=${VPNCONTAINER_CONTROL_ALLOW_CIDRS:-}
 PRIVATE_NETS="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16 224.0.0.0/4 240.0.0.0/4"
 
 ipt()  { iptables  -w 5 "$@"; }
 ipt6() { ip6tables -w 5 "$@"; }
 
-log() { printf '[gtvpn-firewall] %s\n' "$*" >&2; }
+log() { printf '[vpncontainer-firewall] %s\n' "$*" >&2; }
 
 wan_if() {
   if [[ -s $WAN_FILE ]]; then cat "$WAN_FILE"; return; fi
@@ -75,9 +75,9 @@ apply() {
   ipt -P INPUT DROP; ipt -P OUTPUT DROP; ipt -P FORWARD DROP
   ipt -F; ipt -X
 
-  ipt -N GTVPN_BLOCKED
-  ipt -A GTVPN_BLOCKED -p tcp -j REJECT --reject-with tcp-reset
-  ipt -A GTVPN_BLOCKED -j REJECT --reject-with icmp-admin-prohibited
+  ipt -N VPNCONTAINER_BLOCKED
+  ipt -A VPNCONTAINER_BLOCKED -p tcp -j REJECT --reject-with tcp-reset
+  ipt -A VPNCONTAINER_BLOCKED -j REJECT --reject-with icmp-admin-prohibited
 
   # INPUT
   ipt -A INPUT -i lo -j ACCEPT
@@ -89,7 +89,7 @@ apply() {
   # OUTPUT: loopback (Docker DNS reserved for the VPN client)
   ipt -A OUTPUT -o lo -d 127.0.0.11 -m owner --uid-owner 0 --gid-owner "$GPVPN_GID" -j ACCEPT
   [[ $DIRECT == 1 ]] && ipt -A OUTPUT -o lo -d 127.0.0.11 -m owner --gid-owner "$EGRESS_GID" -j ACCEPT
-  ipt -A OUTPUT -o lo -d 127.0.0.11 -j GTVPN_BLOCKED
+  ipt -A OUTPUT -o lo -d 127.0.0.11 -j VPNCONTAINER_BLOCKED
   ipt -A OUTPUT -o lo -j ACCEPT
   ipt -A OUTPUT -m conntrack --ctstate INVALID -j DROP
   ipt -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
@@ -98,14 +98,14 @@ apply() {
   ipt -A OUTPUT -o tun+ -j ACCEPT
 
   # OUTPUT: WAN, VPN client only
-  ipt -N GTVPN_CTRL
+  ipt -N VPNCONTAINER_CTRL
   local c p
-  for c in $CTRL_ALLOW; do ipt -A GTVPN_CTRL -d "$c" -j RETURN; done
+  for c in $CTRL_ALLOW; do ipt -A VPNCONTAINER_CTRL -d "$c" -j RETURN; done
   if [[ $BLOCK_PRIVATE == 1 ]]; then
-    for c in $PRIVATE_NETS; do ipt -A GTVPN_CTRL -d "$c" -j GTVPN_BLOCKED; done
+    for c in $PRIVATE_NETS; do ipt -A VPNCONTAINER_CTRL -d "$c" -j VPNCONTAINER_BLOCKED; done
   fi
-  ipt -A GTVPN_CTRL -j RETURN
-  ipt -A OUTPUT -o "$WAN" -m owner --uid-owner 0 --gid-owner "$GPVPN_GID" -j GTVPN_CTRL
+  ipt -A VPNCONTAINER_CTRL -j RETURN
+  ipt -A OUTPUT -o "$WAN" -m owner --uid-owner 0 --gid-owner "$GPVPN_GID" -j VPNCONTAINER_CTRL
   for p in ${CTRL_TCP//,/ }; do
     ipt -A OUTPUT -o "$WAN" -p tcp --dport "$p" -m owner --uid-owner 0 --gid-owner "$GPVPN_GID" -m conntrack --ctstate NEW -j ACCEPT
   done
@@ -115,12 +115,12 @@ apply() {
 
   # OUTPUT: WAN, allow-listed direct egress proxy only (TCP 443).
   if [[ $DIRECT == 1 ]]; then
-    ipt -A OUTPUT -o "$WAN" -m owner --gid-owner "$EGRESS_GID" -j GTVPN_CTRL
+    ipt -A OUTPUT -o "$WAN" -m owner --gid-owner "$EGRESS_GID" -j VPNCONTAINER_CTRL
     ipt -A OUTPUT -o "$WAN" -p tcp --dport 443 -m owner --gid-owner "$EGRESS_GID" -m conntrack --ctstate NEW -j ACCEPT
   fi
 
   # Everything else is a leak attempt: count and reject (fast failure).
-  ipt -A OUTPUT -j GTVPN_BLOCKED
+  ipt -A OUTPUT -j VPNCONTAINER_BLOCKED
 
   # FORWARD: the container never routes for anyone.
   ipt -A FORWARD -j DROP

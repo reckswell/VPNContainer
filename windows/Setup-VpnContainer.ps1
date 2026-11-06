@@ -1,26 +1,26 @@
 <#
 .SYNOPSIS
-  One-time Windows setup for gtvpn (Georgia Tech GlobalProtect in an isolated container).
+  One-time Windows setup for vpncontainer (Georgia Tech GlobalProtect in an isolated container).
 
 .DESCRIPTION
-  gtvpn runs inside WSL2 (Ubuntu 24.04) with Docker Engine, and uses WSLg as
+  vpncontainer runs inside WSL2 (Ubuntu 24.04) with Docker Engine, and uses WSLg as
   the X server so Cadence Virtuoso / Vivado windows appear on your Windows
   desktop with no extra X server. This script:
 
     1. checks WSL2 + WSLg and the distro,
     2. optionally sets WSL resource limits (.wslconfig),
-    3. runs `./gtvpn setup` inside WSL,
+    3. runs `./vpncontainer setup` inside WSL,
     4. creates a Windows SSH key and authorizes it in the container,
-    5. writes %USERPROFILE%\.ssh\gtvpn\config (+ Include) for ssh and your
+    5. writes %USERPROFILE%\.ssh\vpncontainer\config (+ Include) for ssh and your
        gt-<alias> hosts, and installs VS Code's Dev Containers extension so
-       `gtvpn code` opens VS Code inside the container (through Docker),
+       `vpncontainer code` opens VS Code inside the container (through Docker),
     6. registers the globalprotectcallback: link handler so the browser
        hands the GT sign-in straight back to the container,
-    7. installs a `gtvpn` command for PowerShell / cmd.
+    7. installs a `vpncontainer` command for PowerShell / cmd.
 
   Run it from PowerShell in the repo folder (no admin needed). The repo can
   live in a Windows folder such as Documents\Projects, or in your WSL home:
-    powershell -ExecutionPolicy Bypass -File .\windows\Setup-GtVpn.ps1
+    powershell -ExecutionPolicy Bypass -File .\windows\Setup-VpnContainer.ps1
 
 .PARAMETER Distro      WSL distro name (see `wsl -l -v`). Default: Ubuntu-24.04,
                        else Ubuntu.
@@ -36,8 +36,8 @@ param(
   [int]$Processors = 0
 )
 $ErrorActionPreference = "Stop"
-function Say($m)  { Write-Host "[gtvpn] $m" -ForegroundColor Cyan }
-function Warn($m) { Write-Host "[gtvpn] $m" -ForegroundColor Yellow }
+function Say($m)  { Write-Host "[vpncontainer] $m" -ForegroundColor Cyan }
+function Warn($m) { Write-Host "[vpncontainer] $m" -ForegroundColor Yellow }
 function InWsl([string]$cmd) {
   $out = & wsl.exe -d $Distro -- bash -lc $cmd
   if ($LASTEXITCODE -ne 0) { throw "WSL command failed: $cmd" }
@@ -86,43 +86,54 @@ if (-not $RepoPath) {
   }
 }
 $quoted = if ($RepoPath -like '~/*') { '"$HOME"/' + "'" + $RepoPath.Substring(2) + "'" } else { "'" + $RepoPath + "'" }
-$repo = InWsl "cd $quoted 2>/dev/null && test -x ./gtvpn -o -f ./gtvpn && pwd"
-if (-not $repo) { throw "gtvpn repo not found at $RepoPath inside $Distro. Pass -RepoPath, or run this script from the repo's windows folder." }
+$repo = InWsl "cd $quoted 2>/dev/null && test -x ./vpncontainer -o -f ./vpncontainer && pwd"
+if (-not $repo) { throw "vpncontainer repo not found at $RepoPath inside $Distro. Pass -RepoPath, or run this script from the repo's windows folder." }
 Say "repo: $repo (in $Distro)"
 $hasDocker = InWsl "docker info >/dev/null 2>&1 && echo yes || echo no"
 if ($hasDocker -ne "yes") { Warn "Docker does not answer inside $Distro. With Docker Desktop: Settings > Resources > WSL integration > turn on '$Distro'. Without it: install Docker Engine in WSL (see README)." }
-InWsl "cd '$repo' && ./gtvpn setup" | Write-Host
+InWsl "cd '$repo' && ./vpncontainer setup" | Write-Host
 
 # 4. Windows SSH key, authorized in the container ---------------------------
-$sshDir = Join-Path $env:USERPROFILE ".ssh\gtvpn"
+$sshDir = Join-Path $env:USERPROFILE ".ssh\vpncontainer"
+$oldSshDir = Join-Path $env:USERPROFILE ".ssh\gtvpn"   # its name before the rename
+if ((Test-Path $oldSshDir) -and -not (Test-Path $sshDir)) {
+  try { Move-Item -LiteralPath $oldSshDir -Destination $sshDir; Say "moved $oldSshDir to $sshDir" }
+  catch { Warn "could not rename $oldSshDir ($_); still using it"; $sshDir = $oldSshDir }
+}
 New-Item -ItemType Directory -Force -Path $sshDir | Out-Null
 $key = Join-Path $sshDir "id_ed25519"
 if (-not (Test-Path $key)) {
   if (-not (Get-Command ssh-keygen.exe -ErrorAction SilentlyContinue)) { throw "OpenSSH client missing: Settings > Apps > Optional features > OpenSSH Client" }
   # Empty passphrase: how "" reaches a native exe differs between PowerShell versions.
   $modern = ($PSVersionTable.PSVersion.Major -ge 7) -and ($PSNativeCommandArgumentPassing -and $PSNativeCommandArgumentPassing -ne 'Legacy')
-  if ($modern) { & ssh-keygen.exe -q -t ed25519 -N "" -C "gtvpn-windows" -f $key }
-  else         { & ssh-keygen.exe -q -t ed25519 -N '""' -C "gtvpn-windows" -f $key }
+  if ($modern) { & ssh-keygen.exe -q -t ed25519 -N "" -C "vpncontainer-windows" -f $key }
+  else         { & ssh-keygen.exe -q -t ed25519 -N '""' -C "vpncontainer-windows" -f $key }
 }
 $pub = (Get-Content "$key.pub" -Raw).Trim()
-$pub | & wsl.exe -d $Distro -- bash -lc "cd '$repo' && ./gtvpn authorize" | Write-Host
+$pub | & wsl.exe -d $Distro -- bash -lc "cd '$repo' && ./vpncontainer authorize" | Write-Host
 
 # 5. SSH config for VS Code Remote-SSH on Windows ---------------------------
 #    (Windows OpenSSH has no ControlMaster, hence "none".)
 $idWin = ($key -replace '\\','/')
 $khWin = ((Join-Path $sshDir "known_hosts") -replace '\\','/')
-$cfgText = InWsl "cd '$repo' && ./gtvpn ssh-config '$idWin' '$khWin' none"
+$cfgText = InWsl "cd '$repo' && ./vpncontainer ssh-config '$idWin' '$khWin' none"
 Set-Content -Path (Join-Path $sshDir "config") -Value $cfgText -Encoding ascii
 $userCfg = Join-Path $env:USERPROFILE ".ssh\config"
 $include = "Include $($sshDir -replace '\\','/')/config"
-$existing = if (Test-Path $userCfg) { Get-Content $userCfg -Raw } else { "" }
+[string]$existing = if (Test-Path $userCfg) { Get-Content $userCfg -Raw } else { "" }
+$oldInclude = "Include $($oldSshDir -replace '\\','/')/config"
+if ($oldInclude -ne $include -and $existing.Contains($oldInclude)) {
+  $existing = $existing.Replace($oldInclude, $include)
+  Set-Content -Path $userCfg -Value $existing -Encoding ascii -NoNewline
+  Say "changed '$oldInclude' to '$include' in $userCfg"
+}
 if ($existing -notmatch [regex]::Escape($include)) {
   Set-Content -Path $userCfg -Value ($include + "`r`n`r`n" + $existing) -Encoding ascii
   Say "added '$include' to $userCfg"
 }
 
 # VS Code: Dev Containers attaches to the container through Docker Desktop.
-# (`gtvpn setup` above installed its attach config: log in as dev.)
+# (`vpncontainer setup` above installed its attach config: log in as dev.)
 if (Get-Command code -ErrorAction SilentlyContinue) {
   $exts = & code --list-extensions 2>$null
   if ($exts -notcontains "ms-vscode-remote.remote-containers") {
@@ -133,20 +144,26 @@ if (Get-Command code -ErrorAction SilentlyContinue) {
 # 6. globalprotectcallback: link handler -> container -----------------------
 $base = "HKCU:\Software\Classes\globalprotectcallback"
 if (Test-Path "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Classes\globalprotectcallback") {
-  Warn "The official GlobalProtect app also handles globalprotectcallback: links. The per-user gtvpn handler takes precedence for you. Keep the official app disconnected/uninstalled or it will route ALL Windows traffic to GT."
+  Warn "The official GlobalProtect app also handles globalprotectcallback: links. The per-user vpncontainer handler takes precedence for you. Keep the official app disconnected/uninstalled or it will route ALL Windows traffic to GT."
 }
 New-Item -Force -Path $base | Out-Null
-Set-ItemProperty -Path $base -Name "(default)" -Value "URL:GlobalProtect sign-in (gtvpn)"
+Set-ItemProperty -Path $base -Name "(default)" -Value "URL:GlobalProtect sign-in (vpncontainer)"
 Set-ItemProperty -Path $base -Name "URL Protocol" -Value ""
 New-Item -Force -Path "$base\shell\open\command" | Out-Null
 $wsl = Join-Path $env:WINDIR "System32\wsl.exe"
-Set-ItemProperty -Path "$base\shell\open\command" -Name "(default)" -Value "`"$wsl`" -d $Distro -e `"$repo/gtvpn`" callback `"%1`""
+Set-ItemProperty -Path "$base\shell\open\command" -Name "(default)" -Value "`"$wsl`" -d $Distro -e `"$repo/vpncontainer`" callback `"%1`""
 Say "registered the globalprotectcallback: link handler"
 
-# 7. gtvpn command for PowerShell/cmd --------------------------------------
-$bin = Join-Path $env:LOCALAPPDATA "gtvpn\bin"
+# 7. vpncontainer command for PowerShell/cmd -------------------------------
+$bin = Join-Path $env:LOCALAPPDATA "vpncontainer\bin"
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
-Set-Content -Path (Join-Path $bin "gtvpn.cmd") -Encoding ascii -Value "@`"$wsl`" -d $Distro --cd `"$repo`" -e `"$repo/gtvpn`" %*"
+$cmdFile = Join-Path $bin "vpncontainer.cmd"
+Set-Content -Path $cmdFile -Encoding ascii -Value "@`"$wsl`" -d $Distro --cd `"$repo`" -e `"$repo/vpncontainer`" %*"
+# The gtvpn command from before the rename says so, then runs this one.
+$oldCmd = Join-Path $env:LOCALAPPDATA "gtvpn\bin\gtvpn.cmd"
+if (Test-Path $oldCmd) {
+  Set-Content -Path $oldCmd -Encoding ascii -Value @("@echo [vpncontainer] gtvpn is now called vpncontainer 1>&2", "@`"$cmdFile`" %*")
+}
 $path = [Environment]::GetEnvironmentVariable("Path", "User")
 if ($path -notlike "*$bin*") {
   [Environment]::SetEnvironmentVariable("Path", "$path;$bin", "User")
@@ -155,13 +172,13 @@ if ($path -notlike "*$bin*") {
 
 # Pin the container's SSH host key for Windows ssh (after the first `up`).
 try {
-  InWsl "cd '$repo' && ./gtvpn up" | Write-Host
-  $hk = InWsl "cd '$repo' && ./gtvpn hostkey"
-  $port = (InWsl "cd '$repo' && grep -E '^GTVPN_SSH_PORT=' .env | cut -d= -f2") ; if (-not $port) { $port = 2222 }
+  InWsl "cd '$repo' && ./vpncontainer up" | Write-Host
+  $hk = InWsl "cd '$repo' && ./vpncontainer hostkey"
+  $port = (InWsl "cd '$repo' && grep -E '^VPNCONTAINER_SSH_PORT=' .env | cut -d= -f2") ; if (-not $port) { $port = 2222 }
   Set-Content -Path (Join-Path $sshDir "known_hosts") -Value "[127.0.0.1]:$port $hk" -Encoding ascii
-} catch { Warn "Could not start the container yet ($_). Run 'gtvpn up' later, then re-run this script to pin the host key." }
+} catch { Warn "Could not start the container yet ($_). Run 'vpncontainer up' later, then re-run this script to pin the host key." }
 
 Say "Done. Next:"
-Write-Host "   gtvpn connect          # GT username, GT password, then the Duo passcode; the tunnel starts"
-Write-Host "   gtvpn code             # VS Code inside the container (Dev Containers)"
+Write-Host "   vpncontainer connect          # GT username, GT password, then the Duo passcode; the tunnel starts"
+Write-Host "   vpncontainer code             # VS Code inside the container (Dev Containers)"
 Write-Host "   In that terminal: ssh <alias>  then run virtuoso (windows appear via WSLg)"

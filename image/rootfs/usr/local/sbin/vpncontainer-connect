@@ -1,56 +1,56 @@
 #!/usr/bin/env bash
-# gtvpn-connect: sign in to the GlobalProtect portal and bring the tunnel up.
+# vpncontainer-connect: sign in to the GlobalProtect portal and bring the tunnel up.
 #
 # SSO (SAML + Duo) flow, for portals that use it:
 #   1. gpauth asks the portal for the SAML login URL.
 #   2. The URL is handed to the host (runtime/out/login.url); the host-side
-#      `gtvpn connect` opens it in your normal browser. You log in with
+#      `vpncontainer connect` opens it in your normal browser. You log in with
 #      GT credentials + Duo there.
 #   3. At the end the browser is sent to a "globalprotectcallback:..." link.
-#      If the gtvpn link handler is installed it is delivered straight back
+#      If the vpncontainer link handler is installed it is delivered straight back
 #      into this container; otherwise copy it and paste it here.
 #   4. gpclient uses the resulting cookie to connect. The tunnel lives only
 #      in this container's network namespace.
 #
 # Password flow, which is what Georgia Tech uses: OpenConnect prompts in this
 # terminal for your GT password, then the Duo passcode (the 6-digit code shown
-# in Duo Mobile). gtvpn-prompts labels each prompt [PASSWORD] or [DUO CODE].
+# in Duo Mobile). vpncontainer-prompts labels each prompt [PASSWORD] or [DUO CODE].
 #
-# Saved password (gtvpn-login.conf on your computer): `gtvpn connect` first
-# runs `gtvpn-connect --stash`, which takes the GT username and password on
-# stdin and keeps them in root-only memory (/run/gtvpn/secret, a tmpfs) for
+# Saved password (vpncontainer-login.conf on your computer): `vpncontainer connect` first
+# runs `vpncontainer-connect --stash`, which takes the GT username and password on
+# stdin and keeps them in root-only memory (/run/vpncontainer/secret, a tmpfs) for
 # up to two minutes. The sign-in then takes them from there, deletes them,
 # and asks only for the Duo code. If GT refuses the saved password, this
-# stops after that one try and exits 3, and `gtvpn connect` stops using it
+# stops after that one try and exits 3, and `vpncontainer connect` stops using it
 # until you change the file: a wrong saved password must not lock your
 # account by being retried.
 set -euo pipefail
-[[ $(id -u) == 0 ]] || { echo "run as root: docker exec -it -u root gtvpn gtvpn-connect" >&2; exit 1; }
+[[ $(id -u) == 0 ]] || { echo "run as root: docker exec -it -u root vpncontainer vpncontainer-connect" >&2; exit 1; }
 
-SECRET=/run/gtvpn/secret
+SECRET=/run/vpncontainer/secret
 STASH=$SECRET/signin
 if [[ ${1:-} == --stash ]]; then
   # Never on disk: only on the tmpfs that compose.yaml mounts here.
   [[ $(stat -f -c %T "$SECRET" 2>/dev/null) == tmpfs && ! -L $SECRET ]] \
-    || { echo "[gtvpn] this container has no root-only memory for a saved password; restart it (gtvpn down && gtvpn up) to use one" >&2; exit 2; }
+    || { echo "[vpncontainer] this container has no root-only memory for a saved password; restart it (vpncontainer down && vpncontainer up) to use one" >&2; exit 2; }
   chmod 700 "$SECRET"
   IFS= read -r u || true; IFS= read -r p || true
   u=${u%$'\r'}; p=${p%$'\r'}
   rm -f "$STASH"
   [[ -n $p ]] || exit 0
-  [[ $u =~ ^[A-Za-z0-9._-]{1,64}$ ]] || { echo "[gtvpn] a saved password needs your GT username too (letters, digits, . _ -)" >&2; exit 2; }
+  [[ $u =~ ^[A-Za-z0-9._-]{1,64}$ ]] || { echo "[vpncontainer] a saved password needs your GT username too (letters, digits, . _ -)" >&2; exit 2; }
   (umask 077; printf '%s\n%s\n' "$u" "$p" >"$STASH.tmp") && mv -f "$STASH.tmp" "$STASH"
   exit 0
 fi
 
 # Keep a transcript of this sign-in (what the terminal showed), so an error
-# is not lost when the window closes: /var/log/gtvpn/connect.log, root-only,
-# replaced each time (`gtvpn logs` shows it). `script` records output only,
+# is not lost when the window closes: /var/log/vpncontainer/connect.log, root-only,
+# replaced each time (`vpncontainer logs` shows it). `script` records output only,
 # and the password and Duo prompts do not echo, so neither is in it.
-TRANSCRIPT=/var/log/gtvpn/connect.log
-if [[ -z ${GTVPN_IN_TRANSCRIPT:-} && -t 0 && -t 1 ]] && command -v script >/dev/null; then
+TRANSCRIPT=/var/log/vpncontainer/connect.log
+if [[ -z ${VPNCONTAINER_IN_TRANSCRIPT:-} && -t 0 && -t 1 ]] && command -v script >/dev/null; then
   rm -f "$TRANSCRIPT"; install -m 0600 /dev/null "$TRANSCRIPT"
-  SHELL=/bin/bash GTVPN_IN_TRANSCRIPT=1 exec script -qefc "$(printf '%q ' "$0" "$@")" "$TRANSCRIPT"
+  SHELL=/bin/bash VPNCONTAINER_IN_TRANSCRIPT=1 exec script -qefc "$(printf '%q ' "$0" "$@")" "$TRANSCRIPT"
 fi
 
 # Take a stashed sign-in (see --stash above) and delete it right away, so it
@@ -63,56 +63,63 @@ if [[ -f $STASH && ! -L $STASH ]]; then
 fi
 rm -f "$STASH" "$STASH.tmp"
 
-PORTAL=${GTVPN_PORTAL:-vpn.gatech.edu}
-AUTH=${GTVPN_AUTH:-auto}
-OUT=/run/gtvpn/out
-CB=/run/gtvpn/callback
-TUN=${GTVPN_TUN_IF:-tun0}
-LOGIN_TIMEOUT=${GTVPN_LOGIN_TIMEOUT:-300}
-LOG=/var/log/gtvpn/gpclient.log
+PORTAL=${VPNCONTAINER_PORTAL:-vpn.gatech.edu}
+AUTH=${VPNCONTAINER_AUTH:-auto}
+OUT=/run/vpncontainer/out
+CB=/run/vpncontainer/callback
+TUN=${VPNCONTAINER_TUN_IF:-tun0}
+LOGIN_TIMEOUT=${VPNCONTAINER_LOGIN_TIMEOUT:-300}
+LOG=/var/log/vpncontainer/gpclient.log
 
-say() { printf '\033[1m[gtvpn]\033[0m %s\n' "$*"; }
-die() { printf '\033[31m[gtvpn] %s\033[0m\n' "$*" >&2; exit 1; }
+say() { printf '\033[1m[vpncontainer]\033[0m %s\n' "$*"; }
+die() { printf '\033[31m[vpncontainer] %s\033[0m\n' "$*" >&2; exit 1; }
 # Run as root with primary group gpvpn: the only identity the kill-switch
 # lets out of the WAN interface (and only to the VPN control ports).
 as_vpn() { setpriv --regid=gpvpn --clear-groups -- "$@"; }
 
+# The kind of VPN ([vpn] provider in vpncontainer.toml). A new kind is added here
+# and in PROVIDERS in host/config.py.
+case ${VPNCONTAINER_PROVIDER:-globalprotect} in
+  globalprotect) ;;
+  *) die "VPN provider '${VPNCONTAINER_PROVIDER}' is not supported yet (supported: globalprotect)" ;;
+esac
+
 if ip link show "$TUN" >/dev/null 2>&1; then
-  say "already connected ($TUN is up). Use 'gtvpn disconnect' first to reconnect."
+  say "already connected ($TUN is up). Use 'vpncontainer disconnect' first to reconnect."
   exit 0
 fi
-/usr/local/sbin/gtvpn-firewall check >/dev/null || die "kill-switch is not intact; refusing to connect"
+/usr/local/sbin/vpncontainer-firewall check >/dev/null || die "kill-switch is not intact; refusing to connect"
 # Clear any half-dead previous session (stale client, missing default route).
-/usr/local/sbin/gtvpn-disconnect >/dev/null 2>&1 || true
+/usr/local/sbin/vpncontainer-disconnect >/dev/null 2>&1 || true
 
 # gpclient takes --fix-openssl before the subcommand (gpauth takes it anywhere).
 gp_global=()
-[[ ${GTVPN_FIX_OPENSSL:-0} == 1 ]] && gp_global+=(--fix-openssl)
+[[ ${VPNCONTAINER_FIX_OPENSSL:-0} == 1 ]] && gp_global+=(--fix-openssl)
 common=(-i "$TUN" --disable-ipv6)
-# GTVPN_SKIP_PORTAL=1: sign in at the gateway itself (GTVPN_GATEWAY). GT's
+# VPNCONTAINER_SKIP_PORTAL=1: sign in at the gateway itself (VPNCONTAINER_GATEWAY). GT's
 # gateways run their own password + Duo sign-in even after the portal, so
 # this asks for one password and one Duo code instead of two of each. (Also
 # gpclient 3.2.0 understands GT's Duo challenge only at a gateway: at the
 # portal it reads it as "No gateways found", then "gateway does not exist".)
 SERVER=$PORTAL
-if [[ ${GTVPN_SKIP_PORTAL:-0} == 1 ]]; then
-  [[ -n ${GTVPN_GATEWAY:-} ]] || die "GTVPN_SKIP_PORTAL=1 needs GTVPN_GATEWAY (e.g. dc-ext-gw.vpn.gatech.edu)"
-  [[ $GTVPN_GATEWAY =~ ^[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$ ]] || die "GTVPN_GATEWAY must be a host name, e.g. dc-ext-gw.vpn.gatech.edu"
-  SERVER=$GTVPN_GATEWAY; common+=(--as-gateway)
-elif [[ -n ${GTVPN_GATEWAY:-} ]]; then common+=(-g "$GTVPN_GATEWAY")
+if [[ ${VPNCONTAINER_SKIP_PORTAL:-0} == 1 ]]; then
+  [[ -n ${VPNCONTAINER_GATEWAY:-} ]] || die "VPNCONTAINER_SKIP_PORTAL=1 needs VPNCONTAINER_GATEWAY (e.g. dc-ext-gw.vpn.gatech.edu)"
+  [[ $VPNCONTAINER_GATEWAY =~ ^[A-Za-z0-9][A-Za-z0-9.-]*(:[0-9]{1,5})?$ ]] || die "VPNCONTAINER_GATEWAY must be a host name, e.g. dc-ext-gw.vpn.gatech.edu"
+  SERVER=$VPNCONTAINER_GATEWAY; common+=(--as-gateway)
+elif [[ -n ${VPNCONTAINER_GATEWAY:-} ]]; then common+=(-g "$VPNCONTAINER_GATEWAY")
 else common+=(--auto-gateway)
 fi
-[[ ${GTVPN_HIP:-0} == 1 ]] && common+=(--hip)
-[[ -n ${GTVPN_OS:-} ]] && common+=(--os "$GTVPN_OS")
-[[ -n ${GTVPN_CLIENT_VERSION:-} ]] && common+=(--client-version "$GTVPN_CLIENT_VERSION")
+[[ ${VPNCONTAINER_HIP:-0} == 1 ]] && common+=(--hip)
+[[ -n ${VPNCONTAINER_OS:-} ]] && common+=(--os "$VPNCONTAINER_OS")
+[[ -n ${VPNCONTAINER_CLIENT_VERSION:-} ]] && common+=(--client-version "$VPNCONTAINER_CLIENT_VERSION")
 # shellcheck disable=SC2206
-[[ -n ${GTVPN_CLIENT_ARGS:-} ]] && common+=($GTVPN_CLIENT_ARGS)
+[[ -n ${VPNCONTAINER_CLIENT_ARGS:-} ]] && common+=($VPNCONTAINER_CLIENT_ARGS)
 auth_args=()
 # shellcheck disable=SC2206
-[[ -n ${GTVPN_AUTH_ARGS:-} ]] && auth_args+=($GTVPN_AUTH_ARGS)
-[[ ${GTVPN_FIX_OPENSSL:-0} == 1 ]] && auth_args+=(--fix-openssl)
-[[ -n ${GTVPN_OS:-} ]] && auth_args+=(--os "$GTVPN_OS")
-[[ -n ${GTVPN_CLIENT_VERSION:-} ]] && auth_args+=(--client-version "$GTVPN_CLIENT_VERSION")
+[[ -n ${VPNCONTAINER_AUTH_ARGS:-} ]] && auth_args+=($VPNCONTAINER_AUTH_ARGS)
+[[ ${VPNCONTAINER_FIX_OPENSSL:-0} == 1 ]] && auth_args+=(--fix-openssl)
+[[ -n ${VPNCONTAINER_OS:-} ]] && auth_args+=(--os "$VPNCONTAINER_OS")
+[[ -n ${VPNCONTAINER_CLIENT_VERSION:-} ]] && auth_args+=(--client-version "$VPNCONTAINER_CLIENT_VERSION")
 
 # ---- detect auth method -----------------------------------------------------
 if [[ $AUTH == auto ]]; then
@@ -133,9 +140,9 @@ rm -f "$LOG"; install -m 0600 /dev/null "$LOG"
 # Which client does password sign-ins: OpenConnect by default. GT's portal
 # answers the password with a Duo challenge, which OpenConnect handles at the
 # portal (like the official app); gpclient 3.2.0 does not.
-CLIENT=${GTVPN_CLIENT:-auto}
+CLIENT=${VPNCONTAINER_CLIENT:-auto}
 [[ $CLIENT == auto ]] && { [[ $AUTH == password ]] && CLIENT=openconnect || CLIENT=gpclient; }
-[[ $CLIENT == openconnect && $AUTH != password ]] && die "GTVPN_CLIENT=openconnect supports password sign-in only (GTVPN_AUTH=password)"
+[[ $CLIENT == openconnect && $AUTH != password ]] && die "VPNCONTAINER_CLIENT=openconnect supports password sign-in only (VPNCONTAINER_AUTH=password)"
 
 if [[ -n $saved_pw && ! ( $AUTH == password && $CLIENT == openconnect ) ]]; then
   say "the saved password works only with the OpenConnect password sign-in (GT's); not using it here"
@@ -144,30 +151,30 @@ fi
 if [[ $AUTH == password && $CLIENT == openconnect ]]; then
   # 1) Sign in interactively. Through the portal: password, then the Duo
   #    challenge, then the gateway, which at GT runs its own password + Duo
-  #    sign-in again. GTVPN_SKIP_PORTAL=1 signs in at the gateway only: one
+  #    sign-in again. VPNCONTAINER_SKIP_PORTAL=1 signs in at the gateway only: one
   #    password and one Duo code. --authenticate prints only the session
   #    details on stdout; prompts go to the terminal.
   # 2) Start the tunnel in the background from that cookie (no prompts).
-  case ${GTVPN_OS:-Linux} in Windows) ocos=win ;; Mac) ocos=mac-intel ;; *) ocos=linux-64 ;; esac
-  oc=(--protocol="${GTVPN_OC_PROTOCOL:-gp}" --os="$ocos")
-  [[ -n ${GTVPN_CLIENT_VERSION:-} ]] && oc+=(--version-string "$GTVPN_CLIENT_VERSION")
-  [[ ${GTVPN_HIP:-0} == 1 ]] && oc+=(--csd-wrapper /usr/libexec/openconnect/hipreport.sh)
+  case ${VPNCONTAINER_OS:-Linux} in Windows) ocos=win ;; Mac) ocos=mac-intel ;; *) ocos=linux-64 ;; esac
+  oc=(--protocol="${VPNCONTAINER_OC_PROTOCOL:-gp}" --os="$ocos")
+  [[ -n ${VPNCONTAINER_CLIENT_VERSION:-} ]] && oc+=(--version-string "$VPNCONTAINER_CLIENT_VERSION")
+  [[ ${VPNCONTAINER_HIP:-0} == 1 ]] && oc+=(--csd-wrapper /usr/libexec/openconnect/hipreport.sh)
   # shellcheck disable=SC2206
-  [[ -n ${GTVPN_OC_ARGS:-} ]] && oc+=($GTVPN_OC_ARGS)
+  [[ -n ${VPNCONTAINER_OC_ARGS:-} ]] && oc+=($VPNCONTAINER_OC_ARGS)
   ocauth=() prompts=()
-  user=${saved_user:-${GTVPN_USER:-}}
+  user=${saved_user:-${VPNCONTAINER_USER:-}}
   [[ -n $user ]] && ocauth+=(-u "$user")
   if [[ $SERVER != "$PORTAL" ]]; then
     ocauth+=(--usergroup=gateway); prompts+=(--gateway-only)
   else
     # The gateway by its portal label, e.g. "DC Gateway" (else you are asked).
-    [[ -n ${GTVPN_GATEWAY_NAME:-} ]] && ocauth+=(--authgroup "$GTVPN_GATEWAY_NAME")
+    [[ -n ${VPNCONTAINER_GATEWAY_NAME:-} ]] && ocauth+=(--authgroup "$VPNCONTAINER_GATEWAY_NAME")
   fi
   # shellcheck disable=SC2206
-  [[ -n ${GTVPN_OC_AUTH_ARGS:-} ]] && ocauth+=($GTVPN_OC_AUTH_ARGS)
+  [[ -n ${VPNCONTAINER_OC_AUTH_ARGS:-} ]] && ocauth+=($VPNCONTAINER_OC_AUTH_ARGS)
   if [[ -n $saved_pw ]]; then
     say "signing in at $SERVER as $user, in this order:"
-    printf '   %b\n' "\033[1;36m[PASSWORD]\033[0m your saved GT password (gtvpn-login.conf): nothing to type" \
+    printf '   %b\n' "\033[1;36m[PASSWORD]\033[0m your saved GT password (vpncontainer-login.conf): nothing to type" \
       "\033[1;35m[DUO CODE]\033[0m the 6-digit code shown in Duo Mobile at that moment (hidden as you type)"
   else
     say "signing in at $SERVER, in this order (the password and the Duo code are hidden as you type):"
@@ -181,7 +188,7 @@ if [[ $AUTH == password && $CLIENT == openconnect ]]; then
   else
     printf '   %s\n' "then the tunnel starts"
   fi
-  # gtvpn-prompts relabels each prompt and ends the sign-in if the gateway
+  # vpncontainer-prompts relabels each prompt and ends the sign-in if the gateway
   # refuses it. Its stdout stays on this capture so $(...) waits for it.
   status=$SECRET/status; rm -f "$status"
   if [[ -n $saved_pw ]]; then
@@ -206,7 +213,7 @@ if [[ $AUTH == password && $CLIENT == openconnect ]]; then
     [[ -n $tty_state ]] && stty -echo 2>/dev/null || true
     rc=0
     info=$(as_vpn openconnect "${oc[@]}" "${ocauth[@]}" --timestamp --authenticate "$SERVER" \
-             2> >(/usr/local/sbin/gtvpn-prompts "${prompts[@]}") <"$feed") || rc=$?
+             2> >(/usr/local/sbin/vpncontainer-prompts "${prompts[@]}") <"$feed") || rc=$?
     endrelay; trap - EXIT; exec {kbd}<&-
     if (( rc )); then
       # 3: GT refused the saved password itself (before any Duo code).
@@ -215,7 +222,7 @@ if [[ $AUTH == password && $CLIENT == openconnect ]]; then
     fi
   else
     info=$(as_vpn openconnect "${oc[@]}" "${ocauth[@]}" --timestamp --authenticate "$SERVER" \
-             2> >(/usr/local/sbin/gtvpn-prompts "${prompts[@]}")) || die "sign-in failed (see above)"
+             2> >(/usr/local/sbin/vpncontainer-prompts "${prompts[@]}")) || die "sign-in failed (see above)"
   fi
   declare -A sess=()
   while IFS= read -r line; do
@@ -228,7 +235,7 @@ if [[ $AUTH == password && $CLIENT == openconnect ]]; then
   say "signed in; starting tunnel to ${sess[CONNECT_URL]#https://}"
   ocrun=(--cookie-on-stdin --servercert "${sess[FINGERPRINT]}" -i "$TUN"
          --script /usr/libexec/gpclient/vpnc-script --disable-ipv6
-         --background --pid-file /run/gtvpn/openconnect.pid)
+         --background --pid-file /run/vpncontainer/openconnect.pid)
   [[ -n ${sess[RESOLVE]:-} ]] && ocrun+=(--resolve "${sess[RESOLVE]}")
   # New session: no controlling terminal, so closing the window cannot hang it up.
   printf '%s\n' "${sess[COOKIE]}" | as_vpn setsid --wait openconnect "${oc[@]}" "${ocrun[@]}" "${sess[CONNECT_URL]}" >>"$LOG" 2>&1 \
@@ -236,10 +243,10 @@ if [[ $AUTH == password && $CLIENT == openconnect ]]; then
   unset 'sess[COOKIE]'
 elif [[ $AUTH == password ]]; then
   say "password sign-in: your GT password, then at the second prompt the 6-digit Duo passcode (not your password)"
-  as_vpn gpclient "${gp_global[@]}" connect "$SERVER" ${GTVPN_USER:+-u "$GTVPN_USER"} "${common[@]}" \
+  as_vpn gpclient "${gp_global[@]}" connect "$SERVER" ${VPNCONTAINER_USER:+-u "$VPNCONTAINER_USER"} "${common[@]}" \
     --background --log-file "$LOG"
 else
-  work=$(mktemp -d /run/gtvpn/auth.XXXXXX); chmod 700 "$work"
+  work=$(mktemp -d /run/vpncontainer/auth.XXXXXX); chmod 700 "$work"
   cleanup() {
     exec 3>&- 2>/dev/null || true
     [[ -n ${reader:-} ]] && kill "$reader" 2>/dev/null || true
@@ -269,12 +276,12 @@ else
   loc=$(curl -sS -m 10 -o "$work/page" -w '%{redirect_url}' "$url" || true)
   umask 022
   if [[ -n $loc ]]; then
-    printf '%s\n' "$loc" | /usr/local/sbin/gtvpn-outwrite login.url
+    printf '%s\n' "$loc" | /usr/local/sbin/vpncontainer-outwrite login.url
     esc=${loc//&/&amp;}; esc=${esc//\"/&quot;}
-    printf '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=%s"><title>GT VPN sign-in</title><a href="%s">Continue to sign-in</a>\n' "$esc" "$esc" | /usr/local/sbin/gtvpn-outwrite login.html
+    printf '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=%s"><title>GT VPN sign-in</title><a href="%s">Continue to sign-in</a>\n' "$esc" "$esc" | /usr/local/sbin/vpncontainer-outwrite login.html
   elif grep -qi '<form' "$work/page"; then
-    /usr/local/sbin/gtvpn-outwrite login.html < "$work/page"
-    printf 'file:login.html\n' | /usr/local/sbin/gtvpn-outwrite login.url
+    /usr/local/sbin/vpncontainer-outwrite login.html < "$work/page"
+    printf 'file:login.html\n' | /usr/local/sbin/vpncontainer-outwrite login.url
   else
     die "unexpected response from gpauth's login server"
   fi
@@ -282,7 +289,7 @@ else
   say "Sign in with your GT account + Duo in the browser window that opens."
   [[ -n $loc ]] && say "If no browser opens, visit:" && printf '\n  %s\n\n' "$loc"
   say "When done, the browser hands back a 'globalprotectcallback:' link. With the"
-  say "gtvpn link handler installed this is automatic; otherwise copy that link"
+  say "vpncontainer link handler installed this is automatic; otherwise copy that link"
   say "(Firefox: from the address bar; Chrome/Edge: from the 'Open xdg-open?'/"
   say "'Open app?' prompt or DevTools > Network) and paste it here, then Enter."
 
@@ -326,4 +333,4 @@ done
 ip -4 addr show "$TUN" 2>/dev/null | grep -q inet || { tail -30 "$LOG" >&2; die "tunnel did not come up (log: $LOG)"; }
 say "tunnel is up: $(ip -4 -o addr show "$TUN" | awk '{print $4}')"
 echo
-/usr/local/bin/gtvpn-verify --full || say "verification reported problems (see above)"
+/usr/local/bin/vpncontainer-verify --full || say "verification reported problems (see above)"

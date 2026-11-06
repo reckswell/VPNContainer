@@ -1,34 +1,34 @@
 <#
 .SYNOPSIS
   GT VPN in one go: set up the first time, start Docker Desktop if needed,
-  bring up the gtvpn container and sign in with gtvpn-login.conf, so you
+  bring up the vpncontainer container and sign in with vpncontainer-login.conf, so you
   type only the Duo code.
 
 .DESCRIPTION
-  Start-GtVpn.cmd in the repo folder runs this script (double-click it).
+  Start-VpnContainer.cmd in the repo folder runs this script (double-click it).
   Everything it uses is in this repo. Steps:
     1. starts Docker Desktop if Docker does not answer, and waits for it,
-    2. the first time (no .env or no gtvpn command yet), runs
-       windows\Setup-GtVpn.ps1,
+    2. the first time (no .env or no vpncontainer command yet), runs
+       windows\Setup-VpnContainer.ps1,
     3. keeps your saved password encrypted: a plain-text password in
-       gtvpn-login.conf becomes password_dpapi (readable only by your Windows
+       vpncontainer-login.conf becomes password_dpapi (readable only by your Windows
        account on this PC) and the plain line is emptied,
-    4. runs `gtvpn connect` in WSL: it starts the container if needed, hands
+    4. runs `vpncontainer connect` in WSL: it starts the container if needed, hands
        the saved username and password to the sign-in through the
        container's root-only memory, and asks you only for the Duo code. If
        GT refuses the saved password it stops after that one try and does
-       not use it again until you change gtvpn-login.conf, so a wrong saved
+       not use it again until you change vpncontainer-login.conf, so a wrong saved
        password cannot lock your GT account.
 
-  gtvpn-login.conf sits next to Start-GtVpn.cmd and is never committed (it
-  is in .gitignore). gtvpn-login.example.conf is its empty template.
+  vpncontainer-login.conf sits next to Start-VpnContainer.cmd and is never committed (it
+  is in .gitignore). vpncontainer-login.example.conf is its empty template.
 
 .PARAMETER SavePassword  Ask for your GT password (hidden), store it in
-                         gtvpn-login.conf encrypted for your Windows account
+                         vpncontainer-login.conf encrypted for your Windows account
                          (DPAPI), then exit.
 .PARAMETER Check         Only report what is set up and running; start
                          nothing and sign in nowhere.
-.PARAMETER Setup         Run windows\Setup-GtVpn.ps1 first even if it ran
+.PARAMETER Setup         Run windows\Setup-VpnContainer.ps1 first even if it ran
                          before.
 #>
 param(
@@ -40,14 +40,22 @@ param(
 )
 $ErrorActionPreference = "Continue"   # native tools report through exit codes
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).ProviderPath
-$Conf = if ($ConfPath) { $ConfPath } else { Join-Path $Repo "gtvpn-login.conf" }
-$Example = Join-Path $Repo "gtvpn-login.example.conf"
+$Conf = if ($ConfPath) { $ConfPath } else { Join-Path $Repo "vpncontainer-login.conf" }
+$Example = Join-Path $Repo "vpncontainer-login.example.conf"
+# Its name before the rename (gtvpn): renamed, keeping its times (which say
+# whether a .refused next to it is still current).
+if (-not $ConfPath) {
+  foreach ($x in @("", ".refused")) {
+    $old = Join-Path $Repo "gtvpn-login.conf$x"
+    if ((Test-Path -LiteralPath $old) -and -not (Test-Path -LiteralPath "$Conf$x")) { Move-Item -LiteralPath $old -Destination "$Conf$x" }
+  }
+}
 
-function Say($m)  { Write-Host "[gtvpn] $m" -ForegroundColor Cyan }
-function Warn($m) { Write-Host "[gtvpn] $m" -ForegroundColor Yellow }
-function Fail($m) { Write-Host "[gtvpn] $m" -ForegroundColor Red; exit 1 }
+function Say($m)  { Write-Host "[vpncontainer] $m" -ForegroundColor Cyan }
+function Warn($m) { Write-Host "[vpncontainer] $m" -ForegroundColor Yellow }
+function Fail($m) { Write-Host "[vpncontainer] $m" -ForegroundColor Red; exit 1 }
 
-# ---- gtvpn-login.conf: key=value lines, # comments (the same rules as ./gtvpn) ----
+# ---- vpncontainer-login.conf: key=value lines, # comments (the same rules as ./vpncontainer) ----
 function Read-Conf {
   $c = @{}
   if (-not (Test-Path -LiteralPath $Conf)) { return $c }
@@ -75,9 +83,14 @@ function Test-Dpapi([string]$Blob) {
 }
 
 # ---- where WSL finds this repo -----------------------------------------------------
-$gtvpnCmd = Join-Path $env:LOCALAPPDATA "gtvpn\bin\gtvpn.cmd"
+$vpncontainerCmd = Join-Path $env:LOCALAPPDATA "vpncontainer\bin\vpncontainer.cmd"
 $distro = ""
-if ((Test-Path $gtvpnCmd) -and ((Get-Content $gtvpnCmd -Raw) -match '-d\s+(\S+)')) { $distro = $Matches[1] }
+# (gtvpn.cmd: the command setup installed before the rename. Only the new
+# one counts as setup done, so the first start after the rename runs setup
+# again, which installs it.)
+foreach ($c in @($vpncontainerCmd, (Join-Path $env:LOCALAPPDATA "gtvpn\bin\gtvpn.cmd"))) {
+  if (-not $distro -and (Test-Path $c) -and ((Get-Content $c -Raw) -match '-d\s+(\S+)')) { $distro = $Matches[1] }
+}
 $wslRepo = $Repo
 if ($Repo -match '^\\\\wsl(\.localhost|\$)\\([^\\]+)\\(.*)$') {
   # The repo is inside a WSL distro: use that distro and its Linux path.
@@ -115,13 +128,19 @@ if ($Check) {
              elseif ($cfg['password_dpapi']) { 'password_dpapi CANNOT be decrypted by this account (run -SavePassword)' }
              else { '(not set: you are asked)' }
   Say "password:  $pwState"
-  if ($dpOk -and $cfg['password']) { Warn "gtvpn-login.conf also has a plain-text password; the encrypted one is used, so you can empty the password= line" }
+  if ($dpOk -and $cfg['password']) { Warn "vpncontainer-login.conf also has a plain-text password; the encrypted one is used, so you can empty the password= line" }
   if ($cfg['password_dpapi'] -and -not $dpOk -and $cfg['password']) { Warn "password_dpapi holds no usable encrypted value; the next start replaces it with one made from password=" }
-  Say "setup:     $(if ((Test-Path $gtvpnCmd) -and (Test-Path (Join-Path $Repo '.env'))) { 'done' } else { 'not yet (the first start runs it)' })"
+  Say "setup:     $(if ((Test-Path $vpncontainerCmd) -and (Test-Path (Join-Path $Repo '.env'))) { 'done' } else { 'not yet (the first start runs it)' })"
   if (Test-Docker) {
-    $st = & $docker inspect -f "{{.State.Running}}" gtvpn 2>$null
-    $tun = if ("$st".Trim() -eq "true") { & $docker exec gtvpn ip link show tun0 2>&1 | Out-Null; if ($LASTEXITCODE -eq 0) { ', tunnel UP' } else { ', no tunnel' } } else { '' }
-    Say "docker:    running; container gtvpn: $(if ("$st".Trim() -eq 'true') { 'running' } elseif ($st) { 'stopped' } else { 'not created' })$tun"
+    $ct = "vpncontainer"
+    $st = & $docker container inspect -f "{{.State.Running}}" $ct 2>$null
+    if (-not $st) {  # the container from before the rename, if it is still there
+      $o = & $docker container inspect -f "{{.State.Running}}" gtvpn 2>$null
+      if ($o) { $ct = "gtvpn"; $st = $o }
+    }
+    $tun = if ("$st".Trim() -eq "true") { & $docker exec $ct ip link show tun0 2>&1 | Out-Null; if ($LASTEXITCODE -eq 0) { ', tunnel UP' } else { ', no tunnel' } } else { '' }
+    $was = if ($ct -eq "gtvpn") { " (from before the rename; the next start without a tunnel replaces it)" } else { "" }
+    Say "docker:    running; container ${ct}$($was): $(if ("$st".Trim() -eq 'true') { 'running' } elseif ($st) { 'stopped' } else { 'not created' })$tun"
   } else { Say "docker:    not running (a start would start Docker Desktop)" }
   exit 0
 }
@@ -151,17 +170,17 @@ while ($true) {
 }
 
 # ---- 2. first-time setup --------------------------------------------------------------------
-if ($Setup -or -not (Test-Path $gtvpnCmd) -or -not (Test-Path (Join-Path $Repo ".env"))) {
-  Say "first-time setup (windows\Setup-GtVpn.ps1)"
-  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "Setup-GtVpn.ps1") -Distro $distro
+if ($Setup -or -not (Test-Path $vpncontainerCmd) -or -not (Test-Path (Join-Path $Repo ".env"))) {
+  Say "first-time setup (windows\Setup-VpnContainer.ps1)"
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot "Setup-VpnContainer.ps1") -Distro $distro
   if ($LASTEXITCODE -ne 0) { Fail "setup failed (see above)" }
 }
 
 # ---- 3. the saved sign-in -------------------------------------------------------------------
 if (-not (Test-Path -LiteralPath $Conf)) {
   Copy-Item -LiteralPath $Example -Destination $Conf
-  Say "created gtvpn-login.conf next to Start-GtVpn.cmd. Put your GT username and password in it"
-  Say "(or run Start-GtVpn.cmd -SavePassword) to type only the Duo code from now on."
+  Say "created vpncontainer-login.conf next to Start-VpnContainer.cmd. Put your GT username and password in it"
+  Say "(or run Start-VpnContainer.cmd -SavePassword) to type only the Duo code from now on."
   $cfg = Read-Conf
 }
 $dpOk = $cfg['password_dpapi'] -and (Test-Dpapi $cfg['password_dpapi'])
@@ -172,18 +191,18 @@ if ($cfg['password'] -and -not $dpOk) {
   Set-ConfValue "password_dpapi" (ConvertFrom-SecureString $s)
   Set-ConfValue "password" ""
   $s = $null; $cfg = Read-Conf
-  Say "encrypted the password in gtvpn-login.conf for your Windows account (password_dpapi); the plain-text line is now empty"
+  Say "encrypted the password in vpncontainer-login.conf for your Windows account (password_dpapi); the plain-text line is now empty"
 } elseif ($cfg['password'] -and $dpOk) {
-  Warn "gtvpn-login.conf has both an encrypted and a plain-text password. The encrypted one is used; you can empty the password= line."
+  Warn "vpncontainer-login.conf has both an encrypted and a plain-text password. The encrypted one is used; you can empty the password= line."
 } elseif ($cfg['password_dpapi'] -and -not $dpOk) {
-  Warn "password_dpapi in gtvpn-login.conf cannot be decrypted by this Windows account, so you will be asked for your password. Fix: Start-GtVpn.cmd -SavePassword"
+  Warn "password_dpapi in vpncontainer-login.conf cannot be decrypted by this Windows account, so you will be asked for your password. Fix: Start-VpnContainer.cmd -SavePassword"
 }
 if (($cfg['password'] -or $cfg['password_dpapi']) -and -not $cfg['username']) {
-  Warn "gtvpn-login.conf has a password but no username= line filled in, so it is not used this time."
+  Warn "vpncontainer-login.conf has a password but no username= line filled in, so it is not used this time."
 }
 
 # ---- 4. sign in -----------------------------------------------------------------------------
-Say "signing in (gtvpn connect)"
-& wsl.exe -d $distro --cd $wslRepo -e bash ./gtvpn connect
-if ($LASTEXITCODE -ne 0) { Fail "the sign-in did not finish (see above); 'gtvpn logs' shows the transcript" }
+Say "signing in (vpncontainer connect)"
+& wsl.exe -d $distro --cd $wslRepo -e bash ./vpncontainer connect
+if ($LASTEXITCODE -ne 0) { Fail "the sign-in did not finish (see above); 'vpncontainer logs' shows the transcript" }
 Say "connected. You can close this window; the tunnel keeps running in the container."

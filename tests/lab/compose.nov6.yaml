@@ -1,5 +1,5 @@
 # Only for kernels built without IPv6 (some CI sandboxes): drop the IPv6 sysctls.
 services:
-  gtvpn:
+  vpncontainer:
     sysctls: !reset
       net.ipv4.conf.all.src_valid_mark: 1

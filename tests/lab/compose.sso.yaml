@@ -1,21 +1,21 @@
 # SSO hand-off test: a fake GlobalProtect portal (prelogin only). Used with
 # compose.lab.yaml by tests/lab/run-sso.sh.
 services:
-  gtvpn:
+  vpncontainer:
     environment:
-      GTVPN_PORTAL: fakeportal.lab.test
-      GTVPN_CONTROL_ALLOW_CIDRS: "172.30.66.10/32 172.30.66.20/32 172.30.66.30/32"
-      GTVPN_AUTH_ARGS: "--ignore-tls-errors"
-      GTVPN_AUTH: saml
+      VPNCONTAINER_PORTAL: fakeportal.lab.test
+      VPNCONTAINER_CONTROL_ALLOW_CIDRS: "172.30.66.10/32 172.30.66.20/32 172.30.66.30/32"
+      VPNCONTAINER_AUTH_ARGS: "--ignore-tls-errors"
+      VPNCONTAINER_AUTH: saml
       # This fake is a portal: sign in there, not at a gateway (the GT
-      # default in .env.example).
-      GTVPN_SKIP_PORTAL: 0
+      # default in vpncontainer.toml).
+      VPNCONTAINER_SKIP_PORTAL: 0
   fakeportal:
     image: python:3.12-alpine
-    container_name: gtvpn-lab-fakeportal
+    container_name: vpncontainer-lab-fakeportal
     command: ["python", "-u", "/srv/srv.py"]
     volumes: ["./tests/lab/fakeportal:/srv:ro"]
     networks:
-      gtvpn_net:
+      vpncontainer_net:
         ipv4_address: 172.30.66.30
         aliases: [fakeportal.lab.test]
