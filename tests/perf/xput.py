@@ -11,9 +11,11 @@ few pixels per frame and waits for the X server after each frame (XSync),
 so the frames/s it prints is what the display path delivers:
 
   * DISPLAY=localhost:N (ssh -Y):  every frame crosses the tunnel;
-  * DISPLAY=:N of a gtvpn xpra session:  frames land in the server's local
-    X server at memory speed, and xpra sends what changed to the viewer at
-    its own rate (see `xpra info`: the per-window "fps" and latency values).
+  * DISPLAY=:N of a gtvpn vnc session:  frames land in the server's own X
+    server at memory speed, and Xvnc sends what changed to the viewer at
+    the rate the link allows (count what reaches the screen separately).
+
+It needs nothing stored on the server:  ssh <host> 'DISPLAY=... python3 - 12 180' < xput.py
 
 It opens one window titled "gtvpn-xput" for the length of the test.
 """

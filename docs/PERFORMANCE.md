@@ -4,12 +4,12 @@ Virtuoso runs on a GT server (for example ece-linlab19) and its windows are
 shown on your computer. This page is about making that display path fast.
 It changes nothing in Cadence.
 
-**Short version:** use `gtvpn xpra <host>` instead of `ssh -Y` for
-Virtuoso. Virtuoso then draws on the GT server itself, and only compressed
-pictures of what changed cross the tunnel, to a viewer that runs natively on
-your computer. The session keeps running when the tunnel or VS Code
-disconnects. Setup and daily use are in the
-[README](../README.md#smoother-cadence-gtvpn-xpra).
+**Short version:** use `gtvpn vnc <host>` instead of `ssh -Y` for
+Virtuoso. Virtuoso then draws on the GT server itself, in a VNC session of
+the server's own TigerVNC (nothing is installed there), and only compressed
+pictures of what changed cross the tunnel, to a viewer on your computer.
+The session keeps running when the tunnel or VS Code disconnects. Setup and
+daily use are in the [README](../README.md#smoother-cadence-gtvpn-vnc).
 
 ## Why Virtuoso is slow over `ssh -Y`
 
@@ -38,20 +38,43 @@ Three things add up, measured from a Windows PC to ece-linlab19:
 On top of that, WSLg shows remote windows through an RDP connection capped
 at 60 frames per second. That cap does not matter while X11 delivers 6.
 
+On the real setup (a Windows PC, ece-linlab19, `ssh -Y` through the
+container and WSLg), `tests/perf/xput.py` delivers 6.2 to 6.3 full
+1600x1000 redraws per second, 158 to 161 ms each: what the lab below
+predicts.
+
 ## Options considered
+
+One rule shapes this: nothing may be installed on the GT server, not even
+in your home folder. So the server side has to be something GT's servers
+already have. ece-linlab19 has TigerVNC's `Xvnc` 1.15, the metacity, mwm
+and mutter window managers, VirtualGL, and FastX 4 (whose service is not
+running).
 
 | Option | Verdict |
 |---|---|
-| `ssh -Y` with compression (the default) | Fine for core-X programs (xterm, older Cadence forms), slow for Qt5 canvases: 6 frames/s in the lab |
+| `ssh -Y` with compression (the default) | Fine for core-X programs (xterm, older Cadence forms), slow for Qt5 canvases: 6 frames/s |
 | Faster ssh cipher (aes128-gcm) | No gain: the link, not encryption, is the limit |
 | WSLg at 144 Hz (`.wslgconfig`) | Raises a ceiling X11 never reaches here; needs `wsl --shutdown`, which also stops Docker Desktop and the tunnel. Not worth it |
 | VcXsrv, X410 or MobaXterm instead of WSLg | The same X11 protocol over the same tunnel, so the same limits, plus an X server listening on your computer |
-| **xpra** (chosen) | X server on the GT server, compressed updates (lossless when still, video while moving), native windows on your computer at its refresh rate, sessions survive disconnects. Installs in your GT home without root |
+| **TigerVNC** (chosen): the server's own `Xvnc` | X server on the GT server, compressed updates (Tight: JPEG while moving, lossless when still), sessions survive disconnects. One desktop in one window, with Linux-style title bars inside |
+| xpra | The best fit otherwise: separate native windows on your computer, video compression while moving. But it is not on GT's servers, and a home-folder install (850 MB) is ruled out |
+| FastX 4 | Installed on ece-linlab19, with native windows; but its server is not running (only port 22 answers), and it needs its own sign-in. Worth asking GT ECE about |
 | X2Go / NoMachine (NX) | Good compression, but the server side must be installed by GT's admins (not on ece-linlab19) |
-| TigerVNC / TurboVNC (+ VirtualGL) | One desktop in one window, not native windows; TurboVNC is not installed there. Measured below as a reference |
+| TurboVNC (+ VirtualGL) | Faster encoder than TigerVNC's, but not installed there |
 | VirtualGL (`vglrun`), installed on ece-linlab19 | Only speeds up OpenGL. Virtuoso's layout canvas is 2D, so it has nothing to accelerate |
-| FastX, ThinLinc | Commercial, server installed by admins |
 | Waypipe | Wayland only; Virtuoso is X11 |
+
+### Window frames
+
+With `ssh -Y`, each Cadence window is a WSLg window, and WSLg's compositor
+(Weston) draws its frame: square corners, Linux-style buttons. WSLg has no
+setting for it (microsoft/wslg issues 530 and 1371). With `gtvpn vnc`, the
+viewer is one ordinary Windows window (Windows 11 title bar, rounded
+corners, snap layouts), and Cadence's windows inside it get metacity's
+frames. Native frames for each Cadence window need a viewer that turns
+remote windows into local ones (xpra or FastX), which needs a server side
+GT does not run today.
 
 ## Measurements
 
@@ -80,18 +103,16 @@ What the numbers say:
   why xterm and old-style forms feel normal while layout views crawl.
 - Anything that draws on the GT server and sends compressed pictures (VNC,
   xpra) is faster for Qt5 canvases.
-- The xpra row is limited by the lab, not by the link. `xpra info` during
-  the pan shows the server encoding a 1600x1000 frame in about 35 ms
-  (WebP, 46 Mpixel/s on the lab's shared CPUs) and the lab's viewer
-  decoding at only 9 Mpixel/s (software, no GPU, the same four virtual
-  CPUs). A desktop PC decodes 10 to 20 times faster and paints with OpenGL,
-  so the real numbers are measured on the real setup (below).
+- The xpra row is limited by the lab, not by the link: `xpra info` showed
+  the server encoding a 1600x1000 frame in about 35 ms and the lab's viewer
+  decoding at only 9 Mpixel/s (software, on the same four shared virtual
+  CPUs). So the numbers that count are measured on the real setup.
 
 Run it yourself:
 
 ```bash
-# xpra for both ends of the lab, from the same package list gtvpn installs on GT
-micromamba create -y -p /tmp/xpra-env --file image/rootfs/usr/local/share/gtvpn/xpra/xpra-linux-64.lock
+# xpra for the lab's xpra rows (only in the lab containers, never on GT)
+micromamba create -y -p /tmp/xpra-env --file tests/perf/xpra-linux-64.lock
 cd tests/perf
 docker build -t perf/lab .
 XENV=/tmp/xpra-env ./lab.sh            # RTT_MS=6 MBIT=113 by default
@@ -100,40 +121,42 @@ XENV=/tmp/xpra-env ./bench.sh          # ONLY=ssh / xpra / vnc / local to pick
 
 On a real setup, `tests/perf/xput.py` (Python 3 and numpy, both on GT's
 servers) does the same kind of full-window redraws on any `DISPLAY` and
-prints the frames per second that display path delivers:
-`python3 xput.py 12 180` in a terminal on the server, once with the `ssh -Y`
-display and once with the xpra session's.
+prints the frames per second that display path delivers. It runs from
+standard input, so nothing is stored on the server; from a container
+terminal:
 
-## How `gtvpn xpra` is built
+```bash
+ssh ece-linlab19.ece.gatech.edu 'DISPLAY=localhost:10.0 python3 - 12 180' < tests/perf/xput.py   # ssh -Y (gtvpn display)
+ssh ece-linlab19.ece.gatech.edu 'DISPLAY=:N python3 - 12 180' < tests/perf/xput.py             # the gtvpn vnc session
+```
 
-- **Server:** `xpra seamless` with an Xvfb display on the GT server, started
-  by `gtvpn-xpra` in the container over its shared connection (one Duo
-  prompt per host for 8 hours, as for `ssh`). xpra 6.2 comes from
-  conda-forge, installed with micromamba into `~/.local/gtvpn-xpra` from a
-  pinned package list (`image/rootfs/usr/local/share/gtvpn/xpra/`), each
-  package checked against its MD5; no root, about 850 MB.
-- **Viewer:** xpra on your computer. On Windows `gtvpn xpra` installs
-  xpra.org's portable build in `%LOCALAPPDATA%\Programs\Xpra` (no admin;
-  the SHA-1 published next to it is checked, and the 200 MB download
-  resumes after a dropped connection, which happened on the first real
-  test). winget only has 6.3, which keeps light title bars in dark mode;
-  6.5 follows the Windows theme. The viewer runs `ssh gtvpn` (the
-  container's key-only, loopback sshd) with `gtvpn-xpra-proxy`, which relays the stream over the
-  container's connection to `xpra _proxy` on the server. Nothing listens on
-  the GT server or your computer, and without an open connection the proxy
-  fails at once instead of signing in.
+For the VNC session, xput.py's number is how fast the server-side X server
+takes frames; what reaches your screen is what the viewer shows, so count
+changes on the screen too (a screen sampler, or the viewer's F8 >
+"Connection info", which shows the measured line speed and encoding).
+
+## How `gtvpn vnc` is built
+
+- **Server:** `Xvnc` (TigerVNC, from the server's own packages) on a
+  private Unix socket, no TCP port, no VNC password (the 0700 folder is the
+  boundary), `-FrameRate 180` (Xvnc sends at most that many updates per
+  second; the default is 60), a 1920x1080 desktop that follows the
+  viewer's window size (`-AcceptSetDesktopSize`), and the server's
+  metacity for title bars and moving windows. Started by `gtvpn-vnc` in
+  the container over its shared connection (one Duo prompt per host for 8
+  hours, as for `ssh`).
+- **Viewer:** TigerVNC's viewer on your computer, which `gtvpn vnc` starts
+  with `-AutoSelect=1` (it measures the line and picks the encoding and
+  picture quality) and `-RemoteResize=1`. Add
+  your own options with `GTVPN_VNC_VIEWER_ARGS` in `.env`, for example
+  `-FullScreen=1`, or `-AutoSelect=0 -PreferredEncoding=Tight
+  -QualityLevel=9` for sharper pictures while panning. On Windows the
+  viewer is TigerVNC's single-file build, downloaded once into
+  `%LOCALAPPDATA%\Programs\TigerVNC` and checked against a pinned SHA-256.
+- **Path:** viewer -> `127.0.0.1:P` on your computer -> `ssh gtvpn` (the
+  container's key-only, loopback sshd) -> the container's `127.0.0.1:P` ->
+  the container's shared ssh connection -> the session's socket on the GT
+  server. Your computer never talks to GT.
 - **Display name:** like `gtvpn display`, the session's display is written
   to `~/.gtvpn-display` on the server, so VS Code terminals set `DISPLAY`
   the same way.
-- **Windows look native:** the viewer's windows are ordinary Windows
-  windows, so Windows draws their frames (Windows 11 title bar, caption
-  buttons, rounded corners, snap layouts), and `--title=@title@` keeps each
-  window's own title instead of adding " on <host>". With `ssh -Y`, WSLg
-  draws a Linux-style frame instead.
-- **Viewer settings** (`gtvpn`, `xpra_viewer_args`): `--min-quality=70`
-  keeps thin lines readable while moving, `--auto-refresh-delay=0.1` sends a
-  lossless picture 0.1 s after a window stops changing, `--refresh-rate=auto`
-  follows your monitor (179 Hz here). Add your own with
-  `GTVPN_XPRA_VIEWER_ARGS` in `.env`, for example `--min-quality=90` for
-  sharper pans on a fast connection or `--video-scaling=off` to never send
-  scaled-down video.

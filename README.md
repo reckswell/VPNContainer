@@ -196,38 +196,38 @@ Two ways to start Cadence:
   if (! $?DISPLAY && -r ~/.gtvpn-display) setenv DISPLAY "`cat ~/.gtvpn-display`"          # ~/.cshrc
   ```
 
-### Smoother Cadence: `gtvpn xpra`
+### Smoother Cadence: `gtvpn vnc`
 
 `ssh -Y` sends every redraw of Virtuoso's windows across the tunnel as an
-uncompressed picture, so panning a layout runs at a few frames per second
-([why, and the measurements](docs/PERFORMANCE.md)). With `gtvpn xpra`,
-Virtuoso draws on the GT server itself, in an xpra session there, and a
-viewer on your computer shows its windows as normal desktop windows, at your
-monitor's refresh rate for everything local (moving, resizing, the mouse).
-Only compressed pictures of what changed travel, through the container like
-everything else. The windows are real Windows windows (Windows 11 title
-bars, rounded corners, snap layouts, light or dark like your other apps),
-not WSLg's Linux-style frames. The session keeps running when VS Code, the
-viewer or the tunnel disconnect, and so does Virtuoso: reattach and carry on.
+uncompressed picture, so panning a layout runs at about 6 frames per second
+([why, and the measurements](docs/PERFORMANCE.md)). With `gtvpn vnc`,
+Virtuoso draws on the GT server itself, in a VNC session there, and only
+compressed pictures of what changed travel, through the container like
+everything else. The session uses the server's own TigerVNC and window
+manager, so **nothing is installed on the GT server**. It keeps running when
+VS Code, the viewer or the tunnel disconnect, and so does Virtuoso: reopen
+the viewer and carry on.
 
-On Windows, the first `gtvpn xpra` offers to download the viewer: xpra.org's
-portable build (200 MB), into `%LOCALAPPDATA%\Programs\Xpra`, no admin
-rights needed, checked against xpra.org's published checksum. (`winget
-install -e --id xpra-org.xpra` works too, but winget has an older version
-whose title bars stay light in dark mode.) On Ubuntu, install xpra 6 from
-https://github.com/Xpra-org/xpra/wiki/Download.
+The trade-off: the session is one desktop, shown in one viewer window on
+your computer, and Cadence's windows inside it have the server's title bars
+(metacity), not Windows ones. Full screen (F8, then "Full screen") makes it
+feel like sitting at a lab machine.
+
+On Windows, the first `gtvpn vnc` offers to download TigerVNC's viewer
+(`vncviewer64-1.15.0.exe`, one 24 MB file from TigerVNC's releases) into
+`%LOCALAPPDATA%\Programs\TigerVNC`, no admin rights needed, checked against
+a pinned SHA-256. On Ubuntu: `sudo apt install tigervnc-viewer`.
 
 On your computer:
 
 ```
-gtvpn xpra ece-linlab19.ece.gatech.edu
+gtvpn vnc ece-linlab19.ece.gatech.edu
 ```
 
-The first time this installs xpra in `~/.local/gtvpn-xpra` on that server
-(no root, about 850 MB, 1 to 3 minutes). It starts the session (or finds
-the running one), opens the viewer, and writes the session's display to
-`~/.gtvpn-display` on the server. In a terminal there (VS Code's, or
-`gtvpn ssh`), start Cadence on it:
+This starts the session on that server (or finds the running one), opens
+the viewer, and writes the session's display to `~/.gtvpn-display` on the
+server. In a terminal there (VS Code's, or `gtvpn ssh`), start Cadence on
+it:
 
 ```
 export DISPLAY=$(cat ~/.gtvpn-display)    # bash
@@ -236,15 +236,17 @@ virtuoso &                                # or your usual start script
 ```
 
 The `~/.bashrc` / `~/.cshrc` lines above pick it up in every terminal. If
-you used `gtvpn display` before, `gtvpn xpra` replaces it: both write
+you used `gtvpn display` before, `gtvpn vnc` replaces it: both write
 `~/.gtvpn-display`, and the last one started wins.
 
 | | |
 |---|---|
-| `gtvpn xpra <host> attach` | reopen the viewer, e.g. after the tunnel came back |
-| `gtvpn xpra <host> detach` | close the viewer; everything keeps running on the server |
-| `gtvpn xpra <host> status` | the session and the windows in it |
-| `gtvpn xpra <host> stop` | end the session (refuses while windows are open; `--force` closes them without saving) |
+| `gtvpn vnc <host> attach` | reopen the viewer, e.g. after closing it or after the tunnel came back |
+| `gtvpn vnc <host> status` | the session and the programs in it |
+| `gtvpn vnc <host> stop` | end the session (refuses while programs have windows open; `--force` closes them without saving) |
+
+Closing the viewer window only closes the view; everything keeps running on
+the server.
 
 ### Claude Code for future projects
 
@@ -305,9 +307,10 @@ What is checked (details in [docs/DESIGN.md](docs/DESIGN.md#verification-recursi
 | A host is missing from VS Code's list | Run `gtvpn hosts`, then reopen the Remote-SSH list. Only plain names on `Host` lines become entries (`Host *.example` is a pattern, not a host) |
 | A dev tool can't download something | Add its exact hostname to `GTVPN_DIRECT_ALLOW`, then `./gtvpn down && ./gtvpn up` |
 | `git@github.com` (port 22) fails | Use HTTPS remotes; the direct path is HTTPS-only |
-| Virtuoso is sluggish (panning, zooming, opening forms) | Use `gtvpn xpra <server>` instead of `ssh -Y` ([Smoother Cadence](#smoother-cadence-gtvpn-xpra)) |
-| `gtvpn xpra` says "no open connection" | The container's connection to that server closed (tunnel drop, 8 h limit). Run `gtvpn xpra <server>` again in a terminal: it signs in once and reattaches; the session and Virtuoso are still there |
-| The xpra viewer opens no windows | `gtvpn xpra <server> status` lists the windows in the session. If Virtuoso is not among them, it was started on another display: check `echo $DISPLAY` against `cat ~/.gtvpn-display` in that terminal |
+| Virtuoso is sluggish (panning, zooming, opening forms) | Use `gtvpn vnc <server>` instead of `ssh -Y` ([Smoother Cadence](#smoother-cadence-gtvpn-vnc)) |
+| `gtvpn vnc` says "no open connection" | The container's connection to that server closed (tunnel drop, 8 h limit). Run `gtvpn vnc <server>` again in a terminal: it signs in once and reopens the viewer; the session and Virtuoso are still there |
+| The viewer shows the desktop but not Virtuoso | `gtvpn vnc <server> status` lists the programs in the session. If Virtuoso is not among them, it was started on another display: check `echo $DISPLAY` against `cat ~/.gtvpn-display` in that terminal |
+| The viewer says the connection was refused or closed | Run `gtvpn vnc <server> attach` again; it reopens the forwards. If it still fails, `gtvpn vnc <server>` checks the session itself |
 
 ## Layout
 
@@ -323,7 +326,7 @@ windows/Setup-GtVpn.ps1       Windows setup
 vscode/                       VS Code settings + Dev Containers attach config
 tests/lab/                    end-to-end lab with a real tunnel (see below)
 docs/DESIGN.md                design, threat model, alternatives
-docs/PERFORMANCE.md           Cadence display performance: measurements, options, xpra
+docs/PERFORMANCE.md           Cadence display performance: measurements, options, gtvpn vnc
 ```
 
 ## Tests
@@ -337,7 +340,7 @@ tests/lab/run-lab.sh   # split + full tunnel: leaks, crash, tampering, SSH jump,
 tests/lab/run-x11.sh   # remote X app → ssh over tunnel → container → host display
 tests/lab/run-cli.sh   # the real ./gtvpn flow incl. SSO hand-off via the link handler
 tests/lab/run-perms.sh # image built from a Windows-drive checkout (all files 0777) is still safe
-tests/lab/run-xpra.sh  # gtvpn xpra: install on a fresh account, session, viewer through the container, cleanup
+tests/lab/run-vnc.sh   # gtvpn vnc: session with the server's own Xvnc, viewer through the container, cleanup
 ```
 
 The one piece the lab cannot do is GT's real portal and Duo. The first

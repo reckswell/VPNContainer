@@ -448,127 +448,116 @@ cmd_watch() {
   done
 }
 
-# ---- xpra: smooth Cadence windows ------------------------------------------
-# The session runs on the GT server (gtvpn-xpra in the container starts it);
-# the viewer runs natively on this computer: Windows' xpra on WSL, xpra on
-# Linux. It reaches the session through `ssh gtvpn`, which runs the host's
-# link to gtvpn-xpra-proxy in the container, over the container's shared
-# connection to the server.
-xpra_viewer_cmd() { # the viewer program, or nothing
-  local v d l; v=$(envget GTVPN_XPRA_VIEWER)
-  if [[ -n $v ]]; then [[ -x $v || -f $v ]] && { printf '%s\n' "$v"; return 0; }; return 1; fi
+# ---- vnc: smooth Cadence windows -------------------------------------------
+# The session is the GT server's own TigerVNC X server (gtvpn-vnc in the
+# container starts it; nothing is installed there). The container's shared
+# connection forwards its 127.0.0.1:P to the session's private socket; here
+# a hidden `ssh gtvpn` forwards this computer's 127.0.0.1:P to that port, and
+# the TigerVNC viewer connects to it. This computer never talks to GT.
+# TigerVNC's viewer for Windows is one signed file; this exact one is pinned.
+VNC_WIN_VERSION=1.15.0
+VNC_WIN_URL=https://downloads.sourceforge.net/project/tigervnc/stable/$VNC_WIN_VERSION/vncviewer64-$VNC_WIN_VERSION.exe
+VNC_WIN_SHA256=fe55c1a0ff15c6ee8aa3f77ac98318504b6ab50257182f7df6a12f9b2d90e1f3
+vnc_viewer_cmd() { # the viewer program, or nothing
+  local v d f l; v=$(envget GTVPN_VNC_VIEWER)
+  if [[ -n $v ]]; then [[ -f $v ]] && { printf '%s\n' "$v"; return 0; }; return 1; fi
   if is_wsl; then
-    # The installer (winget) puts it in Program Files; the portable zip
-    # from xpra.org goes wherever you unpack it, e.g. %LOCALAPPDATA%\Programs\Xpra.
-    l=$(win_env LOCALAPPDATA) && l=$(wslpath -u "$l" 2>/dev/null)
-    for d in "/mnt/c/Program Files/Xpra" "/mnt/c/Program Files (x86)/Xpra" ${l:+"$l/Programs/Xpra"}; do
-      [[ -f $d/Xpra.exe ]] && { printf '%s\n' "$d/Xpra.exe"; return 0; }
+    l=$(win_env LOCALAPPDATA) && l=$(wslpath -u "$l" 2>/dev/null) || l=
+    for d in ${l:+"$l/Programs/TigerVNC"} "/mnt/c/Program Files/TigerVNC" "/mnt/c/Program Files (x86)/TigerVNC"; do
+      for f in "$d"/vncviewer64-*.exe "$d"/vncviewer.exe "$d"/vncviewer64.exe; do
+        [[ -f $f ]] && { printf '%s\n' "$f"; return 0; }
+      done
     done
     return 1
   fi
-  command -v xpra
+  command -v vncviewer || command -v xtigervncviewer
 }
-# On Windows, offer to install the viewer: xpra.org's portable build, into
-# %LOCALAPPDATA%\Programs\Xpra (no admin rights). It is newer than the
-# winget package (6.3) and matches Windows' light or dark title bars. The
-# download is checked against the SHA-1 xpra.org publishes next to it, and
-# resumed if the connection drops (it is 200 MB).
-XPRA_WIN_ZIP=https://xpra.org/stable/windows/Xpra.zip
-xpra_install_viewer() {
+# On Windows, offer to download the viewer into %LOCALAPPDATA%\Programs\TigerVNC
+# (no admin rights; 24 MB), checked against the pinned SHA-256.
+vnc_install_viewer() {
   is_wsl && [[ -t 0 ]] || return 1
-  local la dest tmp want got r i src
-  la=$(win_env LOCALAPPDATA) || return 1
-  dest=$(wslpath -u "$la")/Programs/Xpra
-  printf 'The xpra viewer for Windows is not installed. Download it from xpra.org (200 MB, no admin rights needed) into %s\\Programs\\Xpra? [Y/n] ' "$la"
+  local la dest r; la=$(win_env LOCALAPPDATA) || return 1
+  dest=$(wslpath -u "$la")/Programs/TigerVNC
+  printf 'The TigerVNC viewer for Windows is not installed. Download it (%s, 24 MB, no admin rights needed) into %s\\Programs\\TigerVNC? [Y/n] ' "$VNC_WIN_VERSION" "$la"
   read -r r; [[ -z $r || $r == [Yy]* ]] || return 1
-  want=$(curl -fsSL --retry 3 "$XPRA_WIN_ZIP.sha1" | tr 'A-F' 'a-f' | grep -oE '[0-9a-f]{40}' | head -1) \
-    || { warn "could not get the viewer's checksum from xpra.org"; return 1; }
-  tmp=$(dirname "$dest")/.xpra-download; mkdir -p "$tmp" || return 1
-  for i in 1 2 3 4 5 6 7 8; do
-    got=$(sha1sum "$tmp/Xpra.zip" 2>/dev/null | cut -d' ' -f1)
-    [[ $got == "$want" ]] && break
-    [[ $i == 1 ]] || say "download interrupted, resuming ($i)"
-    # complete but wrong (e.g. a new release since the last try): start over
-    if curl -fL -C - --progress-bar -o "$tmp/Xpra.zip" "$XPRA_WIN_ZIP"; then
-      [[ $(sha1sum "$tmp/Xpra.zip" | cut -d' ' -f1) == "$want" ]] || rm -f "$tmp/Xpra.zip"
-    else sleep 2; fi
-    got=$(sha1sum "$tmp/Xpra.zip" 2>/dev/null | cut -d' ' -f1)
-  done
-  [[ $got == "$want" ]] || { rm -rf "$tmp"; warn "the viewer download failed or did not match xpra.org's checksum"; return 1; }
-  say "unpacking"
-  rm -rf "$tmp/x"
-  local wz wx; wz=$(wslpath -w "$tmp/Xpra.zip"); wx=$(wslpath -w "$tmp/x")
-  powershell.exe -NoProfile -Command "Expand-Archive -LiteralPath '${wz//\'/\'\'}' -DestinationPath '${wx//\'/\'\'}' -Force" >/dev/null \
-    || { warn "could not unpack the viewer"; return 1; }
-  src=$(find "$tmp/x" -maxdepth 2 -name Xpra.exe -printf '%h\n' | head -1)
-  [[ -n $src ]] || { warn "no Xpra.exe in the download"; return 1; }
-  [[ -e $dest ]] && mv "$dest" "$dest.old-$(date +%s)"   # not a viewer (no Xpra.exe), but not ours to delete
-  mv "$src" "$dest" && rm -rf "$tmp" || { warn "could not move the viewer to $dest"; return 1; }
-  say "xpra viewer installed in $la\\Programs\\Xpra"
-  xpra_viewer_cmd >/dev/null
+  mkdir -p "$dest" || return 1
+  curl -fL --retry 5 --retry-all-errors --progress-bar -o "$dest/.download" "$VNC_WIN_URL" \
+    || { rm -f "$dest/.download"; warn "the download failed: $VNC_WIN_URL"; return 1; }
+  [[ $(sha256sum "$dest/.download" | cut -d' ' -f1) == "$VNC_WIN_SHA256" ]] \
+    || { rm -f "$dest/.download"; warn "the downloaded viewer does not match its pinned checksum; not installed"; return 1; }
+  mv "$dest/.download" "$dest/vncviewer64-$VNC_WIN_VERSION.exe" || return 1
+  say "TigerVNC viewer installed in $la\\Programs\\TigerVNC"
 }
-xpra_viewer_args() { # display host
-  local extra; extra=$(envget GTVPN_XPRA_VIEWER_ARGS)
-  # Tuned for CAD (docs/PERFORMANCE.md): lossless pictures for anything
-  # that stays still (text, thin lines), video only for big areas that
-  # change on every frame (panning, zooming), at the monitor's refresh rate.
-  # Windows keep their own titles (no " on <host>") and the native frame
-  # (no GTK header bar), like local programs.
-  # shellcheck disable=SC2086
-  printf '%s\n' attach "ssh://gtvpn/${1#:}" --ssh=ssh "--remote-xpra=/home/dev/.gtvpn/xpra/$2" --title=@title@ --headerbar=no \
-    --splash=no --tray=no --notifications=no --speaker=off --microphone=off --webcam=no \
-    --printing=no --file-transfer=no --open-files=no --open-url=no \
-    --opengl=auto --refresh-rate=auto --min-quality=70 --min-speed=50 --auto-refresh-delay=0.1 \
-    $extra
-}
-xpra_attach() { # display host
-  local exe; exe=$(xpra_viewer_cmd) || { xpra_install_viewer && exe=$(xpra_viewer_cmd); } || {
-    if is_wsl; then die "the xpra viewer for Windows is not installed. Run gtvpn xpra $2 attach in a terminal to install it, or install it yourself (https://github.com/Xpra-org/xpra/wiki/Download, or: winget install -e --id xpra-org.xpra)"
-    else die "xpra is not installed here. Install xpra 6 (https://github.com/Xpra-org/xpra/wiki/Download), then run: gtvpn xpra $2 attach"; fi
-  }
-  local -a a; mapfile -t a < <(xpra_viewer_args "$1" "$2")
+# This computer's 127.0.0.1:P -> the container's 127.0.0.1:P, through the
+# container's sshd (key-only, loopback), in the background.
+vnc_local_forward() { # port
+  local p=$1
   if is_wsl; then
-    # Detached from this terminal, as a normal Windows program. Windows
-    # splits the argument string at spaces (host and display have none).
+    local probe="\$c=New-Object Net.Sockets.TcpClient; try { if (\$c.ConnectAsync('127.0.0.1',$p).Wait(700)) { exit 0 } } catch {}; exit 1"
+    powershell.exe -NoProfile -Command "$probe" >/dev/null 2>&1 && return 0
+    powershell.exe -NoProfile -Command "Start-Process -WindowStyle Hidden -FilePath ssh -ArgumentList '-N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -L 127.0.0.1:${p}:127.0.0.1:$p gtvpn'" >/dev/null 2>&1 \
+      || die "could not start the forward to the container (Windows ssh)"
+    local _; for _ in 1 2 3 4 5 6 7 8; do sleep 0.5; powershell.exe -NoProfile -Command "$probe" >/dev/null 2>&1 && return 0; done
+    die "the forward through ssh gtvpn did not open; check that 'ssh gtvpn' works in PowerShell (gtvpn setup configures it)"
+  else
+    (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null && return 0
+    ssh -f -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o LogLevel=error \
+      -L "127.0.0.1:$p:127.0.0.1:$p" gtvpn </dev/null >/dev/null 2>&1 \
+      || die "could not start the forward to the container (ssh gtvpn; check that ssh gtvpn works)"
+  fi
+}
+vnc_attach() { # port host
+  local exe; exe=$(vnc_viewer_cmd) || { vnc_install_viewer && exe=$(vnc_viewer_cmd); } || {
+    if is_wsl; then die "the TigerVNC viewer for Windows is not installed. Run gtvpn vnc $2 attach in a terminal to install it, or get vncviewer64-$VNC_WIN_VERSION.exe from https://sourceforge.net/projects/tigervnc/files/stable/$VNC_WIN_VERSION/ into %LOCALAPPDATA%\\Programs\\TigerVNC"
+    else die "no VNC viewer here. Install one (Ubuntu: sudo apt install tigervnc-viewer), then run: gtvpn vnc $2 attach"; fi
+  }
+  vnc_local_forward "$1"
+  # AutoSelect picks the compression from the measured line speed;
+  # RemoteResize makes the GT desktop follow the viewer window's size.
+  local extra; extra=$(envget GTVPN_VNC_VIEWER_ARGS)
+  local -a a=(-SecurityTypes=None -AutoSelect=1 -RemoteResize=1 -AcceptClipboard=1 -SendClipboard=1)
+  # shellcheck disable=SC2206
+  a+=($extra "127.0.0.1::$1")
+  if is_wsl; then
     local w j; w=$(wslpath -w "$exe"); j="${a[*]}"
     powershell.exe -NoProfile -Command "Start-Process -FilePath '${w//\'/\'\'}' -ArgumentList '${j//\'/\'\'}'" >/dev/null 2>&1 \
-      || die "could not start the xpra viewer ($w)"
+      || die "could not start the VNC viewer ($w)"
   else
-    setsid -f "$exe" "${a[@]}" >/dev/null 2>&1 < /dev/null || die "could not start the xpra viewer"
+    setsid -f "$exe" "${a[@]}" >/dev/null 2>&1 < /dev/null || die "could not start the VNC viewer"
   fi
-  say "viewer opening: Cadence windows from $2 will appear as normal windows here"
+  say "viewer opening: the GT desktop with your Cadence windows appears in a window here"
 }
-cmd_xpra() {
+vnc_session() { # host field: the running session's port= or display= value, from the container
+  { engine exec -u dev "$NAME" gtvpn-vnc "$1" display 2>/dev/null || true; } | tr -d '\r' | sed -n "s/^$2=//p"
+}
+cmd_vnc() {
   need_running
-  local host=${1:-} action=${2:-start} d
-  [[ $host =~ ^[A-Za-z0-9][A-Za-z0-9._@-]*$ ]] || die "usage: gtvpn xpra <host> [start|attach|detach|status|stop [--force]|install]"
+  local host=${1:-} action=${2:-start} p d
+  local u="usage: gtvpn vnc <host> [start|attach|status|stop [--force]]"
+  [[ $host =~ ^[A-Za-z0-9][A-Za-z0-9._@-]*$ ]] || die "$u"
   case $action in
     start)
       # In the terminal (it may ask for the GT password and Duo once), then
-      # ask for the display without one.
-      engine exec -it -u dev -w /home/dev "$NAME" gtvpn-xpra "$host" start || die "could not start the session"
-      d=$(engine exec -u dev "$NAME" gtvpn-xpra "$host" display | tr -d '\r' | sed -n 's/^display=//p')
-      [[ $d =~ ^:[0-9]+$ ]] || die "no display reported by $host"
-      xpra_attach "$d" "$host"
+      # ask for the port without one.
+      engine exec -it -u dev -w /home/dev "$NAME" gtvpn-vnc "$host" start || die "could not start the session"
+      p=$(vnc_session "$host" port); [[ $p =~ ^[0-9]+$ ]] || die "no session reported by $host"
+      d=$(vnc_session "$host" display)
+      vnc_attach "$p" "$host"
       cat <<EOF
 Session display on $host: $d (it keeps running if the viewer, VS Code or the tunnel disconnect)
 In a terminal on $host (for example VS Code's), before starting Cadence:
     export DISPLAY=\$(cat ~/.gtvpn-display)        # bash
     setenv DISPLAY \`cat ~/.gtvpn-display\`        # tcsh
-Reopen the viewer: gtvpn xpra $host attach. End the session: gtvpn xpra $host stop
+Reopen the viewer: gtvpn vnc $host attach. End the session: gtvpn vnc $host stop
 EOF
       ;;
     attach)
-      d=$(engine exec -u dev "$NAME" gtvpn-xpra "$host" display | sed -n 's/^display=//p')
-      [[ $d =~ ^:[0-9]+$ ]] || die "no session on $host (or no open connection to it); start one with: gtvpn xpra $host"
-      xpra_attach "$d" "$host" ;;
-    detach)
-      if is_wsl; then taskkill.exe /IM Xpra.exe >/dev/null 2>&1 || true
-      else pkill -f "xpra attach ssh://gtvpn/" || true; fi
-      say "viewer closed; the session on $host keeps running (gtvpn xpra $host attach)" ;;
-    install|status) engine exec -it -u dev -w /home/dev "$NAME" gtvpn-xpra "$host" "$action" ;;
-    stop) engine exec -it -u dev -w /home/dev "$NAME" gtvpn-xpra "$host" stop "${3:-}" ;;
-    *) die "usage: gtvpn xpra <host> [start|attach|detach|status|stop [--force]|install]" ;;
+      p=$(vnc_session "$host" port)
+      [[ $p =~ ^[0-9]+$ ]] || die "no session on $host (or no open connection to it); start one with: gtvpn vnc $host"
+      vnc_attach "$p" "$host" ;;
+    status) engine exec -it -u dev -w /home/dev "$NAME" gtvpn-vnc "$host" status ;;
+    stop) engine exec -it -u dev -w /home/dev "$NAME" gtvpn-vnc "$host" stop "${3:-}" ;;
+    *) die "$u" ;;
   esac
 }
 
@@ -594,9 +583,10 @@ ${c_b}gtvpn${c_0} - Georgia Tech GlobalProtect in an isolated container
                    keep an X display open on a GT server for terminals that
                    ssh -Y did not open (VS Code Remote-SSH): Cadence there
                    then needs  export DISPLAY=\$(cat ~/.gtvpn-display)
-  xpra <host> [start|attach|detach|status|stop|install]
-                   smooth Cadence: a persistent xpra session on a GT server,
-                   shown in native windows here (same DISPLAY step as above)
+  vnc <host> [start|attach|status|stop]
+                   smooth Cadence: a persistent VNC session on a GT server
+                   (its own TigerVNC, nothing installed), in a viewer window
+                   here (same DISPLAY step as above)
   logs             container + VPN client logs
   callback <url>   (used by the browser link handler)
   rebuild          rebuild the image (updates Claude Code / base packages)
@@ -627,7 +617,7 @@ case $cmd in
       if [ $rc -eq 0 ] || [ $rc -eq 124 ]; then echo "X11 works"; else echo "X11 test failed (xeyes exit $rc)"; exit 1; fi' ;;
   display) need_running; [[ ${1:-} ]] || die "usage: gtvpn display <host> [status|stop]"
     engine exec -it -u dev -w /home/dev "$NAME" bash -lc "gtvpn-display $(printf '%q ' "$@")" ;;
-  xpra) cmd_xpra "$@" ;;
+  vnc) cmd_vnc "$@" ;;
   logs) engine logs --tail 100 "$NAME"
     engine exec -u root "$NAME" sh -c 'for f in connect gpclient; do [ -s /var/log/gtvpn/$f.log ] || continue; echo "--- $f.log"; tail -n 50 /var/log/gtvpn/$f.log | sed "s/\x1b\[[0-9;]*[A-Za-z]//g; s/\r//g"; done' || true ;;
   callback) cmd_callback "$@" ;;

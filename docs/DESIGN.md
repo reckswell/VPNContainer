@@ -243,42 +243,44 @@ where the portal would issue a real cookie.
     cookie in your `~/.Xauthority` is required, the same exposure as any
     `ssh -Y` session.
 
-### xpra sessions (`gtvpn xpra`)
+### VNC sessions (`gtvpn vnc`)
 
 X11 over ssh is slow for Virtuoso (Qt5 sends full-window pictures, every
 request crosses the tunnel; numbers in [PERFORMANCE.md](PERFORMANCE.md)).
-`gtvpn xpra <host>` moves the X server to the GT host instead:
+`gtvpn vnc <host>` moves the X server to the GT host instead, using only
+what GT's servers already have: nothing is installed or stored there beyond
+runtime files in `/tmp` and one cookie in `~/.Xauthority`, as `ssh -Y` adds.
 
-- **Server side** (`share/gtvpn/xpra/remote.sh`, run with `/bin/sh -s` over
-  the shared connection, since login shells may be tcsh): xpra 6.2 from
-  conda-forge, installed by micromamba into `~/.local/gtvpn-xpra` from a
-  pinned explicit lock file (MD5 per package; micromamba's own tarball is
-  pinned by SHA-256). No root, no system packages beyond Xvfb, curl and
-  bzip2, which GT's RHEL 8 servers have. `xpra seamless` runs Xvfb on a
-  display picked per user (100 + uid mod 200, skipping used ones). Sockets
-  live in `~/.xpra`, not only `/run/user/<uid>`, which systemd deletes when
-  the user's last login ends: the session must stay reachable after the
-  tunnel drops. No TCP, HTTP, mDNS, audio, printing, file transfer or
-  `start-new-commands`: the only way in is the user's own Unix socket.
-- **Transport:** the viewer on the computer runs `ssh gtvpn` (the
-  container's key-only loopback sshd, the same one VS Code uses) with
-  `--remote-xpra=~/.gtvpn/xpra/<host>`, a link to `gtvpn-xpra-proxy`. The
-  proxy takes the host from its own name, accepts only `_proxy :N`, and
-  execs `ssh` as a client
-  of the container's shared connection (`ControlMaster no`, `BatchMode`)
-  running `xpra _proxy :N` on the server, which bridges stdin/stdout to
-  the session's socket. So the computer still never talks to GT itself,
-  nothing new listens anywhere, and with no open connection the proxy
-  fails at once instead of prompting for a password behind the viewer.
-- **Sign-in:** `gtvpn xpra` runs `gtvpn-xpra start` with a terminal, so a
+- **Server side** (`share/gtvpn/vnc/remote.sh`, sent over the shared
+  connection and run with `/bin/sh -s`, since login shells may be tcsh):
+  the server's own TigerVNC `Xvnc` on a display picked per user (100 + uid
+  mod 200, skipping used ones), with the server's window manager (metacity,
+  else mwm or mutter). Xvnc has no TCP port at all (`-rfbport -1`,
+  `-nolisten tcp`); it listens only on a Unix socket in `/tmp/gtvpn-<uid>`,
+  which must be a real directory owned by the user with mode 0700 (the
+  socket is 0600), so no other user of the shared server can reach it. VNC
+  authentication is off (`-SecurityTypes None`) because that socket is the
+  boundary; the X display itself needs the cookie, like any X server.
+- **Transport:** `gtvpn-vnc` in the container, as a client of the shared
+  connection (`ControlMaster no`, same `ControlPath`), asks the master to
+  forward the container's `127.0.0.1:P` (P = 15900 + N) to that socket.
+  The forward lives in the master, so nothing extra keeps running, and it
+  ends with the connection. On the computer, a background `ssh -N -L
+  127.0.0.1:P:127.0.0.1:P gtvpn` (the container's key-only loopback sshd,
+  the same one VS Code uses) brings it to the viewer. The computer still
+  never talks to GT, and nothing new listens on any network.
+- **Sign-in:** `gtvpn vnc` runs `gtvpn-vnc start` with a terminal, so a
   missing connection is opened the usual way (`ssh true` with
-  `ControlPersist`, one Duo prompt), exactly like `gtvpn display`.
+  `ControlPersist`, one Duo prompt), exactly like `gtvpn display`. `attach`
+  and `display` never sign in.
 - **Lifetime:** the session is independent of every connection; `stop`
-  refuses while windows are open (Virtuoso would lose unsaved work) unless
-  `--force`. A failed start kills the Xvfb that xpra leaves behind for
-  crash recovery.
-- **Not taken:** X2Go and NX need root packages on the server; VNC shows a
-  whole desktop in one window; the xpra HTML5 client is a browser tab.
+  refuses while programs other than the window manager have windows open
+  (Virtuoso would lose unsaved work) unless `--force`, then removes the
+  cookie, the folder and `~/.gtvpn-display`, and cancels the forward.
+- **Not taken:** xpra (separate native windows, but it would have to be
+  installed in the GT home), X2Go and NX (root packages on the server),
+  FastX (installed on GT's servers, but its service is not running).
+  Details in [PERFORMANCE.md](PERFORMANCE.md).
 
 ## SSH hosts (`hosts.conf`)
 
