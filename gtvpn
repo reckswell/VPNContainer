@@ -664,7 +664,7 @@ cmd=${1:-help}; shift || true
 # anything is changed.
 case $cmd in
   setup|up|connect|hosts|ssh-config|verify|host-verify|watch)
-    cfg_load || die "fix $CONF, then run ./gtvpn $cmd again (nothing was changed)" ;;
+    cfg_load || die "fix the problem above, then run ./gtvpn $cmd again (nothing was changed)" ;;
 esac
 case $cmd in
   setup) cmd_setup ;;

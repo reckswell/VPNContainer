@@ -26,7 +26,7 @@ Design, threat model and the alternatives considered are in
 ### Ubuntu 24.04
 
 ```bash
-sudo apt install docker.io docker-compose-v2 git xauth
+sudo apt install docker.io docker-compose-v2 git xauth python3
 sudo usermod -aG docker $USER   # then log out and back in
 git clone https://github.com/reckswell/VPNContainer ~/VPNContainer && cd ~/VPNContainer
 ./gtvpn setup
@@ -67,32 +67,60 @@ git clone https://github.com/reckswell/VPNContainer ~/VPNContainer && cd ~/VPNCo
 
 ## 2. Configure
 
-**Your GT servers** go in `hosts.conf` (created by `setup`), in the same
-format as a normal `~/.ssh/config`. Add as many as you like:
+Everything shared lives in **[gtvpn.toml](gtvpn.toml)**, in the repo, so the
+copy on each of your computers matches GitHub. It says:
 
+- **which VPN** the container runs (`[vpn] provider = "globalprotect"`, the
+  only kind so far) and how it signs in (portal, gateway, Duo);
+- **which SSH connections go through the container**: your servers, one
+  `[[hosts]]` block each, plus name and address patterns (`[ssh] private`).
+  **Anything not listed connects directly**, as if gtvpn weren't
+  installed: VS Code Remote-SSH to your home desktop, GitHub, and so on;
+- the leak-check targets and the direct-egress allow-list.
+
+```toml
+[ssh]
+private = ["*.gatech.edu", "128.61.*", "130.207.*", "143.215.*"]   # [] = only the hosts below
+direct = []                                    # exceptions that connect directly
+
+[[hosts]]
+name = "linlab19"
+hostname = "ece-linlab19.ece.gatech.edu"
+
+[[hosts]]
+name = "pace"
+hostname = "login-ice.pace.gatech.edu"
+user = "gburdell3"      # optional: also port, x11, options = { ... }
 ```
-Host cadence
-    HostName <your-ece-server>.ece.gatech.edu
-    User gburdell3
 
-Host pace
-    HostName login-ice.pace.gatech.edu
-```
-
-Then run `./gtvpn hosts`. Each host now works as `ssh cadence` inside the
+Then run `./gtvpn hosts`. Each host now works as `ssh linlab19` inside the
 container, with X11, compression and one Duo prompt per 8 hours already on,
-and shows up in VS Code's Remote-SSH list as `gt-cadence`. Run `gtvpn hosts`
-again after every edit. A file with mistakes is refused, and the previous
-hosts stay in place.
-
-**Everything else** is in `.env`. The settings that matter:
+and shows up in VS Code's Remote-SSH list as `gt-linlab19`. Its own name
+(`ece-linlab19.ece.gatech.edu`) goes through the container too. Run
+`gtvpn hosts` again after every edit, and `gtvpn up` after changing `[vpn]`.
+A file with mistakes is refused, and the previous settings stay in place.
+To see which way a connection goes:
 
 ```bash
-GTVPN_GT_USER=gburdell3          # used for GT hosts that don't set User
-GTVPN_PROBE_TARGETS="<your-ece-server>.ece.gatech.edu:22"   # used by the leak tests
+./gtvpn route ece-linlab19.ece.gatech.edu my-desktop.local
+  ece-linlab19.ece.gatech.edu    through the container  (to ece-linlab19.ece.gatech.edu)
+  my-desktop.local               direct, not through the container  (to my-desktop.local)
+```
+
+**Personal and per-computer settings** are in `.env` (not tracked by git;
+the repo is public):
+
+```bash
+GTVPN_USER=gburdell3             # your VPN sign-in name (optional)
+GTVPN_GT_USER=gburdell3          # your user name on servers that don't set one
 GTVPN_CPUS=2
 GTVPN_MEMORY=2g
 ```
+
+A setting in `gtvpn.toml` wins over the same `GTVPN_*` line in `.env`
+(`gtvpn up` says so if they differ). Hosts you'd rather not publish can go
+in `gtvpn.local.toml`, which git ignores: same format, its settings win and
+its `[[hosts]]` are added.
 
 ## 3. Daily use
 
@@ -114,7 +142,8 @@ prompt is labeled with what to type:
    It is not your password, and nothing is pushed to your phone.
 
 Then the tunnel starts. `connect` signs in at a GT gateway directly
-(`GTVPN_SKIP_PORTAL=1`, `GTVPN_GATEWAY=dc-ext-gw.vpn.gatech.edu`), because
+(`skip_portal = true`, `gateway = "dc-ext-gw.vpn.gatech.edu"` in
+`gtvpn.toml`), because
 going through the vpn.gatech.edu portal first makes the gateway ask for
 your password and a new Duo code a second time. If GT refuses the sign-in,
 `connect` stops instead of asking again, because repeated failed logins can
@@ -167,15 +196,18 @@ without starting anything.
   and Ubuntu. `gtvpn setup` installs the attach config, and on Windows the
   setup script adds the Dev Containers extension.
 - **Open a folder on a GT server directly:** Remote-SSH to `gt-<name>` for
-  any host in `hosts.conf`, or to any GT server by its name or address
-  (*Connect to Host… → ece-linlab19.ece.gatech.edu*). Every one of them goes
-  through the container: your computer only talks to the container's sshd,
-  and the container opens the connection to GT through its tunnel, so your
-  computer never connects to GT itself. (VS Code always runs Remote-SSH on
+  any `[[hosts]]` entry in `gtvpn.toml`, or to any GT server by its name or
+  address (*Connect to Host… → ece-linlab19.ece.gatech.edu*). Every one of
+  them goes through the container: your computer only talks to the
+  container's sshd, and the container opens the connection to GT through
+  its tunnel, so your computer never connects to GT itself. (VS Code always runs Remote-SSH on
   your computer, even from a container window; this jump is how it reaches
-  GT from inside the container.) Names under `*.gatech.edu` and GT's
-  address blocks are covered; for your own `~/.ssh/config` aliases that
-  point at GT, add `ProxyJump gtvpn` or list them in `hosts.conf`. These
+  GT from inside the container.) The `[ssh] private` patterns cover names
+  under `*.gatech.edu` and GT's address blocks; a server outside them
+  (say, an address that only exists on the VPN) needs a `[[hosts]]` entry.
+  Servers that match nothing connect directly, as before. For your own
+  `~/.ssh/config` aliases that point at GT, add `ProxyJump gtvpn` or list
+  the server in `gtvpn.toml`. These
   windows' terminals have no X display of their own; see
   [Cadence](#cadence-virtuoso--vivado-x11) for the one command that gives
   them one.
@@ -200,7 +232,7 @@ WSLg needs nothing at all.
 Two ways to start Cadence:
 
 - **From a container terminal** (`gtvpn code` or `gtvpn shell`): `ssh -Y
-  ece-linlab19.ece.gatech.edu` (or your `hosts.conf` alias), then start
+  ece-linlab19.ece.gatech.edu` (or its `[[hosts]]` name), then start
   Cadence there.
 - **From a VS Code Remote-SSH window on the GT server.** VS Code runs
   Remote-SSH from your computer, which has no X server for GT, so its
@@ -238,11 +270,11 @@ Two ways to start Cadence:
 `./gtvpn claude` (or `claude` in any container terminal). Your projects can
 live in `/home/dev/projects` (persistent volume), or share a host folder
 through `./share` → `/home/dev/share`. Claude Code reaches Anthropic through
-a filtering proxy that allows only the hostnames in `GTVPN_DIRECT_ALLOW`
-(Anthropic, GitHub, npm and PyPI by default). That traffic leaves directly
-and **never** goes through GT, even if GT sends you a full tunnel. Add hosts
-to that list as projects need them. Set `GTVPN_DIRECT_EGRESS=0` to make the
-container GT-only. Update Claude Code with `./gtvpn rebuild`.
+a filtering proxy that allows only the hostnames in `[direct_egress] allow`
+in `gtvpn.toml` (Anthropic, GitHub, npm and PyPI by default). That traffic
+leaves directly and **never** goes through GT, even if GT sends you a full
+tunnel. Add hosts to that list as projects need them. Set `enabled = false`
+there to make the container GT-only. Update Claude Code with `./gtvpn rebuild`.
 
 ## 4. Verify (as often as you like)
 
@@ -274,12 +306,13 @@ What is checked (details in [docs/DESIGN.md](docs/DESIGN.md#verification-recursi
 | Symptom | Fix |
 |---|---|
 | Inside the container, `ssh` to a GT host says "Could not resolve hostname" | The tunnel is off (the prompt shows `(GT:off)`), and the kill-switch blocks everything until it is up. Run `gtvpn connect` on your PC, then retry |
-| Tunnel up but GT hosts refuse you | Set `GTVPN_HIP=1` (some portals require a HIP report), then reconnect |
-| Portal rejects the client | Check `GTVPN_OS` / `GTVPN_CLIENT_VERSION` (empty: the client's own Linux identity; the official app is `Windows` / `6.2.8-243`) |
-| `unsafe legacy renegotiation` | `GTVPN_FIX_OPENSSL=1` |
-| "gateway does not exist" or "No gateways found" | That is gpclient misreading GT's Duo challenge. Use the default `GTVPN_CLIENT=auto` (OpenConnect for password sign-in), then `gtvpn up` |
-| Connect asks which gateway to use | That is the portal sign-in (`GTVPN_SKIP_PORTAL=0`). Type `DC Gateway`, or set `GTVPN_GATEWAY_NAME` in `.env` |
-| Connect asks for your password and a Duo code twice | That is the portal sign-in: the gateway runs its own. Set `GTVPN_SKIP_PORTAL=1` and `GTVPN_GATEWAY=dc-ext-gw.vpn.gatech.edu` in `.env`, then `gtvpn down && gtvpn up`. If you keep it, use a new Duo code the second time |
+| Tunnel up but GT hosts refuse you | Set `hip = true` in `gtvpn.toml` (some portals require a HIP report), then `gtvpn up` and reconnect |
+| Portal rejects the client | Check `os` / `client_version` in `gtvpn.toml` (left out: the client's own Linux identity; the official app is `Windows` / `6.2.8-243`) |
+| `unsafe legacy renegotiation` | `fix_openssl = true` in `gtvpn.toml` |
+| "gateway does not exist" or "No gateways found" | That is gpclient misreading GT's Duo challenge. Use the default `client = "auto"` (OpenConnect for password sign-in), then `gtvpn up` |
+| `gtvpn` says a VPN provider "is not supported yet" | Only `provider = "globalprotect"` exists so far (see [Extending later](docs/DESIGN.md#extending-later)) |
+| Connect asks which gateway to use | That is the portal sign-in (`skip_portal = false`). Type `DC Gateway`, or set `gateway_name` in `gtvpn.toml` |
+| Connect asks for your password and a Duo code twice | That is the portal sign-in: the gateway runs its own. Set `skip_portal = true` and `gateway = "dc-ext-gw.vpn.gatech.edu"` in `gtvpn.toml`, then `gtvpn up`. If you keep it, use a new Duo code the second time |
 | "GT refused the sign-in" or "The gateway refused the sign-in" | Usually a Duo code that was already used (each works once) or expired, or a mistyped password. Run `gtvpn connect` again with a new code from Duo Mobile. Don't retry many times in a row: GT can lock your account |
 | "GT refused your saved password" | `username` or `password` in `gtvpn-login.conf` is wrong (or your GT password changed). Fix it, or run `Start-GtVpn.cmd -SavePassword`; until the file changes, `connect` asks you to type the password |
 | "password_dpapi ... cannot be decrypted" | It was saved by another Windows account or PC. Run `Start-GtVpn.cmd -SavePassword` again on this one |
@@ -291,8 +324,10 @@ What is checked (details in [docs/DESIGN.md](docs/DESIGN.md#verification-recursi
 | `ssh gtvpn` says "Could not resolve hostname" in Git Bash | Git Bash's own ssh can't read the Windows config. Use PowerShell or VS Code, which use Windows' OpenSSH |
 | `gtvpn code` opens a window as root, or VS Code asks which container | Install the Dev Containers extension (`ms-vscode-remote.remote-containers`), open VS Code once, then run `gtvpn setup` again to install the attach config |
 | VS Code hangs installing the server | Add `"remote.SSH.localServerDownload": "always"` |
-| A host is missing from VS Code's list | Run `gtvpn hosts`, then reopen the Remote-SSH list. Only plain names on `Host` lines become entries (`Host *.example` is a pattern, not a host) |
-| A dev tool can't download something | Add its exact hostname to `GTVPN_DIRECT_ALLOW`, then `./gtvpn down && ./gtvpn up` |
+| A host is missing from VS Code's list | Run `gtvpn hosts`, then reopen the Remote-SSH list. Each `[[hosts]]` entry becomes `gt-<name>`; `[ssh] private` patterns route connections but are not list entries |
+| A server goes through the container but shouldn't (or the other way round) | `gtvpn route <server>` says which way it goes. Add it to `[ssh] direct`, or as a `[[hosts]]` entry, then `gtvpn hosts` |
+| `gtvpn` says "hosts.conf is no longer read" | Your servers moved to `gtvpn.toml`: add a `[[hosts]]` block for each name it lists, run `gtvpn hosts`, then delete `hosts.conf` |
+| A dev tool can't download something | Add its exact hostname to `[direct_egress] allow` in `gtvpn.toml`, then `./gtvpn up` |
 | `git@github.com` (port 22) fails | Use HTTPS remotes; the direct path is HTTPS-only |
 | Virtuoso is sluggish | Expected for X11 over a VPN. Compression is on; for heavy layout work use GT's remote desktop through the container |
 
@@ -300,8 +335,9 @@ What is checked (details in [docs/DESIGN.md](docs/DESIGN.md#verification-recursi
 
 ```
 gtvpn                         host CLI (Linux / WSL)
-compose.yaml, .env.example    container definition and settings
-hosts.conf.example            template for hosts.conf, your GT servers (ssh config syntax)
+gtvpn.toml                    which VPN, which SSH hosts go through it, checks (shared, in git)
+compose.yaml, .env.example    container definition, per-computer settings
+host/config.py                reads and checks gtvpn.toml
 gtvpn-login.example.conf      template for gtvpn-login.conf, your saved sign-in (never committed)
 Start-GtVpn.cmd               Windows one-click start: setup, Docker, sign-in
 image/                        Dockerfile + in-container scripts
@@ -311,11 +347,16 @@ host/verify-host.sh           host-side checks
 windows/Setup-GtVpn.ps1       Windows setup
 windows/Start-GtVpn.ps1       what Start-GtVpn.cmd runs
 vscode/                       VS Code settings + Dev Containers attach config
+tests/config/                 gtvpn.toml routing checks (no Docker needed)
 tests/lab/                    end-to-end lab with a real tunnel (see below)
 docs/DESIGN.md                design, threat model, alternatives
 ```
 
 ## Tests
+
+`tests/config/run-config.sh` checks the routing from `gtvpn.toml` in a few
+seconds, without Docker or a VPN: listed hosts and patterns go through the
+container, unlisted ones connect directly, and mistakes are refused.
 
 `tests/lab/` builds a stand-in VPN gateway (ocserv) with "GT-internal"
 services, a fake allow-listed API, a fake portal and a fake GT ssh server,

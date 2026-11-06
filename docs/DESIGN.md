@@ -274,27 +274,80 @@ where the portal would issue a real cookie.
     cookie in your `~/.Xauthority` is required, the same exposure as any
     `ssh -Y` session.
 
-## SSH hosts (`hosts.conf`)
+## Configuration (`gtvpn.toml`)
 
-One file in standard OpenSSH syntax lists your GT servers, and both sides
-read it:
+Settings are split by who shares them:
 
-- **Container:** `gtvpn hosts` (and `gtvpn up`) checks it with `ssh -G`
-  and copies it to `runtime/in`. `gtvpn-hosts` then installs a root-owned
-  0644 copy as `/etc/gtvpn/user-hosts.conf`, included from
-  `ssh_config.d/40-gtvpn-user.conf`. A plain include of the mounted file
-  would not work: ssh refuses config files that others can write, and a
-  Windows-drive checkout shows every file as 0777. A file with errors is
-  refused (validated as `dev`, so a `Match exec` never runs as root), and
-  the previous copy stays. The GT defaults (X11, compression,
-  multiplexing) come after your settings, so yours win. They apply to every
-  plain alias in the file and, through `Match host`, to any target whose
-  real name is under `gatech.edu` or in GT's address ranges.
-- **Host / VS Code:** each plain alias becomes `gt-<alias>` with only its
-  resolved HostName, User and Port plus `ProxyJump gtvpn`. Other options
-  are not copied, so container-only settings such as ControlMaster never
-  reach Windows OpenSSH, which lacks them. On WSL the Windows copy
-  (`%USERPROFILE%\.ssh\gtvpn\config`) is rewritten too.
+- **`gtvpn.toml`, in git:** which VPN (`[vpn] provider`, only
+  `globalprotect` so far, plus its portal, gateway and sign-in options),
+  which SSH connections go through the container (`[ssh]`, `[[hosts]]`),
+  the verification targets (`[checks]`) and the direct-egress allow-list
+  (`[direct_egress]`). It is the same on every computer and on GitHub. The
+  repo is public, so it holds no user names or secrets.
+- **`.env`, untracked:** this computer and this person: UIDs, X11 paths,
+  resource limits, the container's ssh port, and your user names
+  (`GTVPN_USER`, `GTVPN_GT_USER`).
+- **`gtvpn.local.toml`, untracked and optional:** the same format as
+  `gtvpn.toml`, read on top of it, for hosts you'd rather not publish.
+
+`host/config.py` reads the TOML with Python's `tomllib` (3.11+, which
+Ubuntu 24.04 has) and checks every value: unknown sections and keys, types,
+host names, ports, and patterns that would also match the container itself
+(a jump through itself) are refused with the file and key in the message.
+Its output is a fixed line format that `./gtvpn` reads without evaluating
+anything. Values it maps to `GTVPN_*` win over `.env` and are exported, so
+`docker compose` (which prefers the environment to `.env`) passes them to
+the container and `host/verify-host.sh` sees them. Plain `docker compose`
+without `./gtvpn` reads only `.env`. `gtvpn up` warns about `.env` lines
+that `gtvpn.toml` overrides with a different value. A mistake stops
+`setup`, `up`, `connect` and `hosts` before anything changes.
+
+### Which connections go through the container
+
+The rule is a list: only what `gtvpn.toml` names is routed. On this
+computer (and in VS Code Remote-SSH, which uses the same ssh config) the
+generated `~/.ssh/gtvpn/config` has, in this order:
+
+1. `Host gtvpn`, the container's own sshd on `127.0.0.1`.
+2. `Host gt-<name>` for each `[[hosts]]` entry: its HostName, User and Port
+   plus `ProxyJump gtvpn`. Other options are not copied, so container-only
+   settings such as ControlMaster never reach Windows OpenSSH, which lacks
+   them. (`[ssh] prefix` sets the `gt-`.)
+3. `Match host <hostname>` for each entry, so typing the server's own name
+   (VS Code's *Connect to Host*) also jumps, with the same user and port.
+4. `Match host <[ssh] private>,!<[ssh] direct>` for everything else that
+   matches a pattern: the committed file lists `*.gatech.edu` and GT's
+   public address blocks. `10.*` is left out, because home networks use it
+   too; a VPN-only `10.x` server needs a `[[hosts]]` entry.
+
+A destination that matches none of these gets no ProxyJump, so ssh
+connects directly, exactly as without gtvpn. `gtvpn route <host>` asks
+`ssh -G` which way a destination goes. The file is included at the top of
+`~/.ssh/config`, so its settings come first; your own aliases are matched
+by the name you type, before their HostName applies. On Windows the same
+text is written to `%USERPROFILE%\.ssh\gtvpn\config` (WSL rewrites it on
+every `gtvpn hosts`), included from `%USERPROFILE%\.ssh\config`.
+
+### Inside the container
+
+`gtvpn hosts` (and `gtvpn up`) writes the `[[hosts]]` as ssh config
+(`Host <name>`, HostName, User, Port, `ForwardX11 no` for `x11 = false`,
+and any `options`), checks it with `ssh -G`, and copies it to
+`runtime/in/hosts.conf`, followed by your default user name for those hosts
+and the `[ssh] private` patterns. `gtvpn-hosts` then installs a root-owned
+0644 copy as `/etc/gtvpn/user-hosts.conf`, included from
+`ssh_config.d/40-gtvpn-user.conf`. A plain include of the mounted file
+would not work: ssh refuses config files that others can write, and a
+Windows-drive checkout shows every file as 0777. A file with errors is
+refused (validated as `dev`, so a `Match exec` never runs as root), and the
+previous copy stays. The GT defaults (X11, compression, multiplexing) come
+after your settings, so yours win. They apply to every listed host and,
+through `Match host`, to any target whose real name is under `gatech.edu`
+or in GT's address ranges. Inside the container there is nothing to route:
+everything but the direct-egress proxy goes through the tunnel.
+
+`hosts.conf`, the ssh-syntax host list before `gtvpn.toml`, is no longer
+read; `gtvpn` names any hosts left in one so they can be moved.
 
 ## VS Code
 
@@ -316,12 +369,13 @@ read it:
   the container unset `SSH_AUTH_SOCK` when it points there. Nothing from GT
   can reach these: INPUT is DROP on the tunnel, so only processes you start
   in the container could.
-- **GT hosts directly:** `gt-<alias>` entries use `ProxyJump gtvpn`, and
-  so does a `Match host *.gatech.edu,128.61.*,130.207.*,143.215.*` block
-  for any other GT server typed by name or address (VS Code Remote-SSH's
-  *Connect to Host*; `GTVPN_SSH_VIA_CONTAINER=0` turns it off; `10.*` is
-  left out because home networks use it too). The host's ssh/VS Code
-  reaches the GT host *through the container's tunnel*. VS Code runs
+- **GT hosts directly:** `gt-<name>` entries use `ProxyJump gtvpn`, and so
+  do the listed hostnames and the `[ssh] private` patterns, for any other
+  GT server typed by name or address (VS Code Remote-SSH's *Connect to
+  Host*; see [Which connections go through the
+  container](#which-connections-go-through-the-container)). Anything else
+  connects directly. The host's ssh/VS Code reaches the GT host *through
+  the container's tunnel*. VS Code runs
   Remote-SSH on the host even in a container window, so this jump is how
   it gets to GT from inside the container.
   Container sshd allows only local (`-W`/`-L`) forwarding, and those
@@ -337,7 +391,7 @@ A sealed container would make Claude Code unusable in split-tunnel mode, and
 in full-tunnel mode it would send that traffic through GT. Instead:
 
 - tinyproxy on `127.0.0.1:3128` with a default-deny, exact-hostname
-  allow-list (`GTVPN_DIRECT_ALLOW`), CONNECT to port 443 only. It refuses IP
+  allow-list (`[direct_egress] allow` in `gtvpn.toml`), CONNECT to port 443 only. It refuses IP
   literals and always refuses `*.gatech.edu`.
 - Its sockets are marked and policy-routed (`ip rule fwmark → table 166`)
   out of `eth0` with MASQUERADE, so they bypass GT even when GT pushes a
@@ -399,11 +453,15 @@ without).
 
 ## Extending later
 
-- Other company VPNs: `gpclient` handles any GlobalProtect portal
-  (`GTVPN_PORTAL`). For AnyConnect/Pulse/Fortinet, add `openconnect` to the
-  image and switch `gtvpn-connect`; the kill-switch, verifier, X11 and VS
-  Code layers are protocol-agnostic. For simultaneous VPNs, run one
-  container per VPN (`COMPOSE_PROJECT_NAME`, different `GTVPN_SSH_PORT`).
+- Other school/work VPNs: any GlobalProtect portal works today (`[vpn]
+  portal`). `[vpn] provider` is where another kind plugs in: add it to
+  `PROVIDERS` in `host/config.py` and as a case in `gtvpn-connect`. The
+  image already has OpenConnect, which also speaks AnyConnect, Pulse and
+  Fortinet (`--protocol`); the kill-switch would need that VPN's control
+  ports (GlobalProtect's are TCP 443 and UDP 4501). The kill-switch,
+  verifier, X11, VS Code and routing layers don't depend on the protocol.
+  For simultaneous VPNs, run one container per VPN (`COMPOSE_PROJECT_NAME`,
+  different `GTVPN_SSH_PORT`, and a different `[ssh] prefix`).
 - Heavier GUI use: if X11 over the VPN is too slow for Virtuoso, GT's
   remote desktop offerings can be reached the same way (for example VNC
   through `ssh -L` inside the container).

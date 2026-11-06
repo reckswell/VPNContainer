@@ -88,19 +88,21 @@ check "container terminals drop VS Code's forwarded ssh-agent" bash -c \
 check "...but keep an agent you started in the container" bash -c \
   "[[ \$(docker exec -u dev -e SSH_AUTH_SOCK=/tmp/ssh-x/agent.1 gtvpn bash -ic 'echo \"s=\${SSH_AUTH_SOCK:-none}\"' 2>/dev/null | tail -1) == s=/tmp/ssh-x/agent.1 ]]"
 
-# hosts.conf: one standard ssh config for the container and for VS Code.
+# gtvpn.toml [[hosts]] (here from gtvpn.local.toml, so the committed file
+# stays as it is): one list for the container and for VS Code.
 sed -i 's/^GTVPN_GT_USER=.*/GTVPN_GT_USER=gtdefault/' .env
-cat > hosts.conf <<'HOSTS'
-Host labbox
-    HostName labhost.gatech.edu
-    User someone
-    Port 2200
-Host labip
-    HostName 10.66.0.1
-Host *.example
-    User nobody
+[[ -f gtvpn.local.toml ]] && mv gtvpn.local.toml gtvpn.local.toml.lab-saved
+cat > gtvpn.local.toml <<'HOSTS'
+[[hosts]]
+name = "labbox"
+hostname = "labhost.gatech.edu"
+user = "someone"
+port = 2200
+[[hosts]]
+name = "labip"
+hostname = "10.66.0.1"
 HOSTS
-check "gtvpn hosts accepts a standard ssh config" ./gtvpn hosts
+check "gtvpn hosts accepts [[hosts]] from gtvpn.local.toml" ./gtvpn hosts
 G=$HOME/.ssh/gtvpn/config
 # (capture first: `cmd | grep -q` can SIGPIPE cmd, and pipefail calls that a failure)
 sshG() { local o; o=$(ssh -G -F "$G" "$1" 2>/dev/null); grep -qx "$2" <<<"$o"; }
@@ -109,23 +111,25 @@ check "VS Code entry gt-labbox: User" sshG gt-labbox 'user someone'
 check "VS Code entry gt-labbox: Port" sshG gt-labbox 'port 2200'
 check "VS Code entry gt-labbox: jumps through the container" sshG gt-labbox 'proxyjump gtvpn'
 check "VS Code entry gt-labip gets the GT username from .env" sshG gt-labip 'user gtdefault'
-check "wildcard Host lines don't become VS Code entries" bash -c "! grep -q 'gt-\*' '$G'"
+check "a listed VPN-only address typed directly also jumps" sshG 10.66.0.1 'proxyjump gtvpn'
+check "an unlisted 10.x address still connects directly" bash -c "! ssh -G -F '$G' 10.66.0.2 2>/dev/null | grep -q '^proxyjump'"
 inG() { local o; o=$(docker exec -u dev gtvpn ssh -G "$1" 2>/dev/null); grep -qx "$2" <<<"$o"; }
 check "container: ssh labbox goes to the right host" inG labbox 'hostname labhost.gatech.edu'
 check "container: ssh labbox has X11 on" inG labbox 'forwardx11 yes'
 check "container: ssh labbox shares one connection (one Duo prompt)" inG labbox 'controlmaster auto'
 check "container: an alias with an IP HostName gets X11 too" inG labip 'forwardx11 yes'
 check "container: alias without User gets the GT username" inG labip 'user gtdefault'
-check "container's copy of hosts.conf is root-owned, not writable by dev" \
+check "container's copy of the hosts is root-owned, not writable by dev" \
   bash -c "[[ \$(docker exec gtvpn stat -c '%U %a' /etc/gtvpn/user-hosts.conf) == 'root 644' ]]"
-cp hosts.conf hosts.conf.good
-printf 'Host broken\n    NotAnOption yes\n' >> hosts.conf
-check "gtvpn hosts refuses a hosts.conf with errors" bash -c "! ./gtvpn hosts >/dev/null 2>&1"
+cp gtvpn.local.toml gtvpn.local.toml.good
+printf '[[hosts]]\nname = "broken"\nhostname = "x.gatech.edu"\noptions = { NotAnOption = "yes" }\n' >> gtvpn.local.toml
+check "gtvpn hosts refuses an ssh option that doesn't exist" bash -c "! ./gtvpn hosts >/dev/null 2>&1"
 check "after the refusal the VS Code entries are unchanged" sshG gt-labbox 'hostname labhost.gatech.edu'
 printf 'Host broken\n    NotAnOption yes\n' > runtime/in/hosts.conf
-check "the container also refuses a broken hosts.conf by itself" bash -c "! docker exec gtvpn gtvpn-hosts >/dev/null 2>&1"
+check "the container also refuses a broken hosts file by itself" bash -c "! docker exec gtvpn gtvpn-hosts >/dev/null 2>&1"
 check "after the refusal the container keeps the previous hosts" inG labbox 'hostname labhost.gatech.edu'
-mv hosts.conf.good hosts.conf; ./gtvpn hosts >/dev/null
+mv gtvpn.local.toml.good gtvpn.local.toml; ./gtvpn hosts >/dev/null
+rm -f gtvpn.local.toml; [[ -f gtvpn.local.toml.lab-saved ]] && mv gtvpn.local.toml.lab-saved gtvpn.local.toml
 
 # The host opens only safe sign-in addresses that the container publishes.
 opens() { # login.url content -> exit 0 if the host would open it
