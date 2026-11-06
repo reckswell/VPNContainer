@@ -353,7 +353,14 @@ namespace GtVpn
             get
             {
                 var cp = base.CreateParams;
-                if (Win != null && Win.Popup) cp.ExStyle |= 0x08000000 | 0x00000080; // WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+                if (Win != null && Win.Popup)
+                {
+                    cp.ExStyle |= 0x08000000 | 0x00000080; // WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+                    // Mono makes a WS_POPUP window without a caption override-redirect,
+                    // as the session's popup is: an X window manager (WSLg's) then
+                    // leaves it where it is, instead of placing it as a window.
+                    if (!Native.IsWindows) cp.Style = unchecked((int)0x80000000) | (cp.Style & ~0x00CF0000);
+                }
                 // A frameless window as WS_POPUP: Windows gives a WS_OVERLAPPED
                 // window a caption while it creates it. Keep the system menu and
                 // minimize, so its taskbar button can minimize it.
@@ -896,6 +903,10 @@ namespace GtVpn
                 if (owner == null && w.Dialog && Form.ActiveForm is XForm) owner = (XForm)Form.ActiveForm;
                 var f = new XForm(this, w, owner);
                 forms[w.Id] = f;
+                // Mono writes the window's place into its size hints (as given
+                // by the user) when it creates it, and WSLg's window manager
+                // places it by them: there it is placed before it exists.
+                if (!Native.IsWindows) f.Place(gx, gy, gw, gh);
                 f.CreateControl();
                 var h = f.Handle;
                 f.Place(gx, gy, gw, gh);
