@@ -248,6 +248,48 @@ namespace GtVpn
             }
         }
 
+        // Copies the pixels of src to dst here only (not in the framebuffer, which
+        // must stay what the server has): what Xvnc will send once it has moved a
+        // window, shown a network round trip early. The rectangles may overlap.
+        public void Move(Rectangle src, Point dst)
+        {
+            int dx = dst.X - src.X, dy = dst.Y - src.Y;
+            var all = new Rectangle(0, 0, w, h);
+            var s = Rectangle.Intersect(src, all);
+            var d = Rectangle.Intersect(new Rectangle(s.X + dx, s.Y + dy, s.Width, s.Height), all);
+            if (d.Width <= 0 || d.Height <= 0) return;
+            s = new Rectangle(d.X - dx, d.Y - dy, d.Width, d.Height);
+            var buf = new int[d.Width * d.Height];
+            for (int y = 0; y < s.Height; y++)
+            {
+                if (Native.IsWindows) Marshal.Copy(new IntPtr(bits.ToInt64() + ((long)(s.Y + y) * w + s.X) * 4), buf, y * d.Width, d.Width);
+                else Array.Copy(px, (s.Y + y) * w + s.X, buf, y * d.Width, d.Width);
+            }
+            for (int y = 0; y < d.Height; y++)
+            {
+                if (Native.IsWindows) Marshal.Copy(buf, y * d.Width, new IntPtr(bits.ToInt64() + ((long)(d.Y + y) * w + d.X) * 4), d.Width);
+                else Array.Copy(buf, y * d.Width, px, (d.Y + y) * w + d.X, d.Width);
+            }
+        }
+
+        // The share of pixels, on every third row of r, that are the same here as
+        // in the framebuffer (colour only).
+        public double Same(int[] fb, int fbw, int fbh, Rectangle r)
+        {
+            r.Intersect(new Rectangle(0, 0, Math.Min(w, fbw), Math.Min(h, fbh)));
+            if (r.Width <= 0 || r.Height <= 0) return 1;
+            long same = 0, all = 0;
+            var row = new int[r.Width];
+            for (int y = r.Y + 1; y < r.Bottom; y += 3)
+            {
+                if (Native.IsWindows) Marshal.Copy(new IntPtr(bits.ToInt64() + ((long)y * w + r.X) * 4), row, 0, r.Width);
+                else Array.Copy(px, y * w + r.X, row, 0, r.Width);
+                int o = y * fbw + r.X;
+                for (int i = 0; i < r.Width; i++) { all++; if (((fb[o + i] ^ row[i]) & 0xffffff) == 0) same++; }
+            }
+            return all == 0 ? 1 : (double)same / all;
+        }
+
         public void Save(string path) { if (gb != null) gb.Save(path, ImageFormat.Png); }
 
         public void Paint(Graphics g, Rectangle dst, int sx, int sy)
@@ -270,6 +312,14 @@ namespace GtVpn
         public bool ClosingFromX, Applying;
         public bool Ready;                   // placed where the session's window is: from now on, report moves
         public DateTime LastSent;
+        public bool InSizeMove;              // inside Windows' move/size loop (dragging the title bar or a border)
+        // A move of the session's window whose pixels are still on their way:
+        // until then this window shows a local copy (Mirror.Move), and the
+        // framebuffer's updates inside XRect, which are from before the move,
+        // are kept out of the picture.
+        public bool Guarded, MoveConfirmed;
+        public DateTime GuardStart, GuardUntil;
+        public readonly List<Point> Requested = new List<Point>();  // moves sent to the session, not yet confirmed
 
         public XForm(Viewer v, XWin w, XForm owner)
         {
@@ -378,7 +428,10 @@ namespace GtVpn
             if (WindowState == FormWindowState.Minimized) { v.Minimized(this); return; }
             v.NativeMoved(this, false);
         }
-        protected override void OnResizeEnd(EventArgs e) { base.OnResizeEnd(e); if (Ready) v.NativeMoved(this, true); }
+        // WM_ENTERSIZEMOVE / WM_EXITSIZEMOVE: a drag by the title bar or a
+        // border, or the keyboard's Move and Size.
+        protected override void OnResizeBegin(EventArgs e) { base.OnResizeBegin(e); InSizeMove = true; }
+        protected override void OnResizeEnd(EventArgs e) { base.OnResizeEnd(e); InSizeMove = false; if (Ready) v.NativeMoved(this, true); }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
@@ -408,9 +461,13 @@ namespace GtVpn
         public bool Debug = Environment.GetEnvironmentVariable("GTVPN_VIEWER_DEBUG") == "1";
         readonly TextWriter log;
         long paints, lastFrames, lastBytes, lastPaints; DateTime lastStat = DateTime.Now; TimeSpan lastCpu;
+        // Ends the guard of a moved window when no update comes to do it.
+        readonly System.Windows.Forms.Timer guardTimer = new System.Windows.Forms.Timer { Interval = 50 };
+        const int GuardMs = 300;             // the longest a moved window waits for its pixels
 
         public Viewer(TextWriter log)
         {
+            guardTimer.Tick += delegate { CheckGuards(); };
             this.log = log;
             ShowInTaskbar = false; WindowState = FormWindowState.Minimized; FormBorderStyle = FormBorderStyle.FixedToolWindow;
             Opacity = 0; Size = new Size(1, 1);
@@ -493,7 +550,12 @@ namespace GtVpn
             lock (Rfb.FbLock)
             {
                 if (resize) mirror.Resize(Rfb.Width, Rfb.Height);
-                foreach (var r in rs) mirror.Copy(Rfb.Fb, Rfb.Width, Rfb.Height, r);
+                // A moved window's rectangle keeps its local copy until its
+                // pixels arrive (CheckGuards): updates there are from before the move.
+                var keep = new List<Rectangle>();
+                if (!resize) foreach (var f in forms.Values) if (f.Guarded) keep.Add(f.XRect);
+                foreach (var r in rs)
+                    foreach (var p in Outside(r, keep)) mirror.Copy(Rfb.Fb, Rfb.Width, Rfb.Height, p);
                 if (Debug && resize)
                 {
                     mirror.Save(Path.Combine(Path.GetTempPath(), "gtvpn-mirror0.png"));
@@ -509,8 +571,10 @@ namespace GtVpn
             // The timer below is starved while updates stream in (timer
             // messages wait for an empty queue), so the stats come from here too.
             if ((DateTime.Now - lastStat).TotalSeconds >= 5) Stats();
+            if (resize) foreach (var f in forms.Values) f.Guarded = false;
             foreach (var f in forms.Values)
             {
+                if (f.Guarded) continue;
                 foreach (var r in rs)
                 {
                     var i = Rectangle.Intersect(r, f.XRect);
@@ -521,6 +585,65 @@ namespace GtVpn
                     }
                 }
             }
+            CheckGuards();
+        }
+
+        // The parts of r outside every rectangle in cut.
+        static List<Rectangle> Outside(Rectangle r, List<Rectangle> cut)
+        {
+            var pieces = new List<Rectangle> { r };
+            foreach (var c in cut)
+            {
+                var next = new List<Rectangle>();
+                foreach (var p in pieces)
+                {
+                    var i = Rectangle.Intersect(p, c);
+                    if (i.Width <= 0 || i.Height <= 0) { next.Add(p); continue; }
+                    if (i.Y > p.Y) next.Add(new Rectangle(p.X, p.Y, p.Width, i.Y - p.Y));                   // above
+                    if (i.Bottom < p.Bottom) next.Add(new Rectangle(p.X, i.Bottom, p.Width, p.Bottom - i.Bottom)); // below
+                    if (i.X > p.X) next.Add(new Rectangle(p.X, i.Y, i.X - p.X, i.Height));                  // left
+                    if (i.Right < p.Right) next.Add(new Rectangle(i.Right, i.Y, p.Right - i.Right, i.Height)); // right
+                }
+                pieces = next;
+            }
+            return pieces;
+        }
+
+        // A pure move of the session's window to r: Xvnc copies its pixels there
+        // a network round trip later. Until then the picture here gets the same
+        // copy at once (so nothing flashes), and updates inside r, still from
+        // before the move, stay out of it.
+        void ShiftXRect(XForm f, Rectangle r)
+        {
+            var from = f.XRect;
+            if (r == from) return;
+            lock (Rfb.FbLock) mirror.Move(from, r.Location);
+            f.XRect = r;
+            if (!f.Guarded) f.GuardStart = DateTime.Now;
+            f.Guarded = true; f.MoveConfirmed = false;
+            f.GuardUntil = DateTime.Now.AddMilliseconds(GuardMs);
+            guardTimer.Start();
+        }
+
+        // A moved window paints from the framebuffer again once the session has
+        // confirmed the move and the framebuffer shows the window there (what
+        // the local copy shows), or after GuardMs at the latest.
+        void CheckGuards()
+        {
+            bool any = false;
+            foreach (var f in forms.Values)
+            {
+                if (!f.Guarded) continue;
+                bool late = DateTime.Now >= f.GuardUntil, landed = false;
+                if (!late && f.MoveConfirmed) lock (Rfb.FbLock) landed = mirror.Same(Rfb.Fb, Rfb.Width, Rfb.Height, f.XRect) >= 0.995;
+                if (!late && !landed) { any = true; continue; }
+                f.Guarded = false;
+                lock (Rfb.FbLock) mirror.Copy(Rfb.Fb, Rfb.Width, Rfb.Height, f.XRect);
+                f.Invalidate();
+                Log("moved " + f.Win.Id.ToString("x") + " to +" + f.XRect.X + "+" + f.XRect.Y + ": " +
+                        (landed ? "its pixels arrived after " : "stopped waiting for its pixels after ") + (int)(DateTime.Now - f.GuardStart).TotalMilliseconds + " ms");
+            }
+            if (!any) guardTimer.Stop();
         }
 
         public void OnCursor(CursorShape c)
@@ -669,21 +792,29 @@ namespace GtVpn
         public void NativeMoved(XForm f, bool final)
         {
             if (f.Win.Popup || f.WindowState == FormWindowState.Minimized) return;
-            var now = DateTime.Now;
-            if (!final && (now - f.LastSent).TotalMilliseconds < 15) return;
-            f.LastSent = now;
             var c = f.PointToScreen(Point.Empty);
             int x = c.X - OriginX, y = c.Y - OriginY, w = f.ClientSize.Width, h = f.ClientSize.Height;
+            // While a window is dragged, Windows moves its picture like any
+            // other window's, and the session's window stays where it is until
+            // the drag ends: moving it at every step would paint the window from
+            // framebuffer pixels that are a network round trip behind, so its
+            // content would trail its frame. (Compared with the size last asked
+            // for: dragging a maximized window out resizes it first.)
+            if (w == f.Win.W && h == f.Win.H && f.InSizeMove && !final) return;
+            bool move = w == f.XRect.Width && h == f.XRect.Height;
+            // Resizing by a border sends at most one change per 15 ms.
+            var now = DateTime.Now;
+            if (!final && f.InSizeMove && (now - f.LastSent).TotalMilliseconds < 15) return;
+            f.LastSent = now;
             if (x == f.Win.X && y == f.Win.Y && w == f.Win.W && h == f.Win.H) return;
             f.Win.X = x; f.Win.Y = y; f.Win.W = w; f.Win.H = h;
-            if (w == f.XRect.Width && h == f.XRect.Height)
+            if (move)
             {
-                // A move: the window keeps showing what it shows (Windows moves
-                // its picture), and from now on it takes the framebuffer's
-                // updates at the new place, where Xvnc copies the session's
-                // window. Waiting for the session to confirm the move would
-                // show the uncovered spot for a frame.
-                f.XRect = new Rectangle(x, y, w, h);
+                // A move: the window keeps showing what it shows (Windows moved
+                // its picture), and its pixels move with it here at once.
+                ShiftXRect(f, new Rectangle(x, y, w, h));
+                f.Requested.Add(new Point(x, y));
+                if (f.Requested.Count > 16) f.Requested.RemoveAt(0);
                 Wm.Move(f.Win.Id, x, y);
             }
             else Wm.Configure(f.Win.Id, x, y, w, h);
@@ -769,7 +900,20 @@ namespace GtVpn
                 XForm f;
                 if (!forms.TryGetValue(id, out f)) return;
                 var r = new Rectangle(x, y, w, h);
+                // The session confirms a move made from here: the latest one
+                // lets the window take the framebuffer's pixels again once they
+                // show it there (CheckGuards); an older one, which arrives while
+                // the window has moved on, changes nothing.
+                int k = r.Size == f.XRect.Size ? f.Requested.IndexOf(r.Location) : -1;
+                if (k >= 0)
+                {
+                    if (k == f.Requested.Count - 1) f.MoveConfirmed = true;
+                    f.Requested.RemoveRange(0, k + 1);
+                    return;
+                }
                 if (r == f.XRect) return;
+                // The program moved its own window: its pixels follow the same way.
+                if (r.Size == f.XRect.Size) { ShiftXRect(f, r); f.MoveConfirmed = true; return; }
                 f.XRect = r;
                 f.Invalidate();
             });
