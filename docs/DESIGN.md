@@ -359,6 +359,16 @@ the same session twice:
   gets the AppUserModelID `GtVpn.X.<WM_CLASS>`, named after its WM_CLASS
   (the relaunch display name; no pinning, since a pinned button could not
   start it), and its `_NET_WM_ICON` as its icon.
+- **Dragging:** while you drag a window by its title bar, Windows moves its
+  picture with the frame and the X window stays put; at the drop the
+  viewer moves the X window once. Moving it at every step would paint the
+  window from framebuffer pixels a network round trip behind its frame,
+  so the content trailed the frame. Until Xvnc's copy of the moved window
+  arrives (35-57 ms on the real setup, at most 300 ms), the viewer shows
+  its own copy there and keeps the framebuffer's older updates for that
+  rectangle out of the picture. Snaps, keyboard moves and a program moving
+  its own window go the same way. A resize by a border is sent at most
+  every 15 ms.
 - **Input:** mouse and keys go to Xvnc as RFB events at root coordinates
   (Windows virtual keys become X keysyms, with Ctrl and Alt kept as
   modifiers); focus goes through the window manager. Text copied on

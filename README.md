@@ -316,7 +316,7 @@ its taskbar button, as Windows programs do.
 On the test PC this shows a panning layout-like view at 20-33 full
 redraws per second, pixel-exact (6 with `ssh -Y`); the pointer and moving
 or resizing windows run at the monitor's refresh rate, since Windows draws
-them. The pictures are lossless (ZRLE). To trade exactness in photo-like
+them, and a window's content stays on its frame while you drag it. The pictures are lossless (ZRLE). To trade exactness in photo-like
 areas for JPEG, or to tune compression, set `GTVPN_VIEWER_ARGS` in `.env`
 (for example `--encoding tight`; details in
 [PERFORMANCE.md](docs/PERFORMANCE.md#on-the-real-setup)).
@@ -390,6 +390,7 @@ What is checked (details in [docs/DESIGN.md](docs/DESIGN.md#verification-recursi
 | `gtvpn vnc` says "no open connection" | The container's connection to that server closed (tunnel drop, 8 h limit). Run `gtvpn vnc <server>` again in a terminal: it signs in once and reopens the viewer; the session and Virtuoso are still there |
 | The viewer shows the desktop but not Virtuoso | `gtvpn vnc <server> status` lists the programs in the session. If Virtuoso is not among them, it was started on another display: check `echo $DISPLAY` in that terminal against the display `gtvpn vnc` printed |
 | The viewer says the connection was refused or closed | Run `gtvpn vnc <server> attach` again; it reopens the forwards. If it still fails, `gtvpn vnc <server>` checks the session itself |
+| `gtvpn vnc <server> windows` shows nothing, and Windows says "An Application Control policy has blocked this file" (or Event Viewer has Code Integrity events 3033/3077) | Smart App Control is on, and it blocks programs that are not signed and that it has not seen before. gtvpn builds its viewer on your PC, so each new build is one of those. Use `gtvpn vnc <server> attach` (the TigerVNC viewer, which is signed) until the viewer is signed |
 
 ## Layout
 
