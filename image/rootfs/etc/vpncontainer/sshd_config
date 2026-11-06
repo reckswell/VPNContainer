@@ -1,13 +1,13 @@
-# sshd for the gtvpn container. Reachable only via 127.0.0.1:<port> on the host.
+# sshd for the vpncontainer container. Reachable only via 127.0.0.1:<port> on the host.
 Port 2222
 ListenAddress 0.0.0.0
-HostKey /var/lib/gtvpn/ssh/ssh_host_ed25519_key
-PidFile /run/gtvpn/sshd.pid
+HostKey /var/lib/vpncontainer/ssh/ssh_host_ed25519_key
+PidFile /run/vpncontainer/sshd.pid
 
 AllowUsers dev
 PermitRootLogin no
 PubkeyAuthentication yes
-AuthorizedKeysFile /etc/gtvpn/authorized_keys/%u
+AuthorizedKeysFile /etc/vpncontainer/authorized_keys/%u
 PasswordAuthentication no
 KbdInteractiveAuthentication no
 PermitEmptyPasswords no
@@ -26,7 +26,7 @@ X11Forwarding no
 AllowAgentForwarding no
 PermitUserEnvironment no
 # Rewritten at start with the host's DISPLAY.
-SetEnv DISPLAY=:0 GTVPN=1
+SetEnv DISPLAY=:0 VPNCONTAINER=1
 
 ClientAliveInterval 30
 ClientAliveCountMax 4

@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Read gtvpn.toml (and the optional, untracked gtvpn.local.toml) for ./gtvpn.
+"""Read vpncontainer.toml (and the optional, untracked vpncontainer.local.toml) for ./vpncontainer.
 
-    config.py records   CONF [LOCAL]   settings for ./gtvpn, one per line:
-                                         env <GTVPN_VAR> <value>
+    config.py records   CONF [LOCAL]   settings for ./vpncontainer, one per line:
+                                         env <VPNCONTAINER_VAR> <value>
                                          prefix <VS Code name prefix>
                                          private <ssh pattern>
                                          direct <ssh pattern>
     config.py ssh-hosts CONF [LOCAL]   the [[hosts]] as OpenSSH config (for
                                        the container, where `ssh <name>` works)
 
-Every value is checked here, so ./gtvpn can use the lines as they are. A
-mistake is reported as "gtvpn.toml: <where>: <what>", with exit status 1.
+Every value is checked here, so ./vpncontainer can use the lines as they are. A
+mistake is reported as "vpncontainer.toml: <where>: <what>", with exit status 1.
 Needs Python 3.11+ (tomllib; Ubuntu 24.04 has 3.12) or the tomli package.
 """
 import fnmatch
@@ -24,11 +24,11 @@ except ModuleNotFoundError:  # Python < 3.11
     try:
         import tomli as tomllib
     except ModuleNotFoundError:
-        sys.exit("gtvpn: reading gtvpn.toml needs Python 3.11 or newer "
+        sys.exit("vpncontainer: reading vpncontainer.toml needs Python 3.11 or newer "
                  "(Ubuntu 24.04 has it), or: sudo apt install python3-tomli")
 
 # VPN types the container can run. Only GlobalProtect today; a new type is
-# added here and in image/rootfs/usr/local/sbin/gtvpn-connect.
+# added here and in image/rootfs/usr/local/sbin/vpncontainer-connect.
 PROVIDERS = ("globalprotect",)
 
 HOST_RE = r"[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?"
@@ -38,34 +38,34 @@ TEXT_RE = r"[A-Za-z0-9 ._:/@+-]*"
 # section -> key -> (environment variable or None, kind, extra)
 SCHEMA = {
     "vpn": {
-        "provider": ("GTVPN_PROVIDER", "choice", PROVIDERS),
-        "portal": ("GTVPN_PORTAL", "hostport", None),
-        "gateway": ("GTVPN_GATEWAY", "hostport", None),
-        "skip_portal": ("GTVPN_SKIP_PORTAL", "bool", None),
-        "gateway_name": ("GTVPN_GATEWAY_NAME", "text", None),
-        "auth": ("GTVPN_AUTH", "choice", ("auto", "saml", "password")),
-        "client": ("GTVPN_CLIENT", "choice", ("auto", "openconnect", "gpclient")),
-        "username": ("GTVPN_USER", "name", None),
-        "hip": ("GTVPN_HIP", "bool", None),
-        "os": ("GTVPN_OS", "text", None),
-        "client_version": ("GTVPN_CLIENT_VERSION", "text", None),
-        "fix_openssl": ("GTVPN_FIX_OPENSSL", "bool", None),
+        "provider": ("VPNCONTAINER_PROVIDER", "choice", PROVIDERS),
+        "portal": ("VPNCONTAINER_PORTAL", "hostport", None),
+        "gateway": ("VPNCONTAINER_GATEWAY", "hostport", None),
+        "skip_portal": ("VPNCONTAINER_SKIP_PORTAL", "bool", None),
+        "gateway_name": ("VPNCONTAINER_GATEWAY_NAME", "text", None),
+        "auth": ("VPNCONTAINER_AUTH", "choice", ("auto", "saml", "password")),
+        "client": ("VPNCONTAINER_CLIENT", "choice", ("auto", "openconnect", "gpclient")),
+        "username": ("VPNCONTAINER_USER", "name", None),
+        "hip": ("VPNCONTAINER_HIP", "bool", None),
+        "os": ("VPNCONTAINER_OS", "text", None),
+        "client_version": ("VPNCONTAINER_CLIENT_VERSION", "text", None),
+        "fix_openssl": ("VPNCONTAINER_FIX_OPENSSL", "bool", None),
     },
     "ssh": {
-        "user": ("GTVPN_GT_USER", "name", None),
+        "user": ("VPNCONTAINER_GT_USER", "name", None),
         "prefix": (None, "prefix", None),
         "private": (None, "patterns", None),
         "direct": (None, "patterns", None),
     },
     "checks": {
-        "probe_targets": ("GTVPN_PROBE_TARGETS", "hostports", None),
-        "probe_names": ("GTVPN_PROBE_NAMES", "hosts", None),
-        "egress_url": ("GTVPN_EGRESS_URL", "url", None),
+        "probe_targets": ("VPNCONTAINER_PROBE_TARGETS", "hostports", None),
+        "probe_names": ("VPNCONTAINER_PROBE_NAMES", "hosts", None),
+        "egress_url": ("VPNCONTAINER_EGRESS_URL", "url", None),
     },
     "direct_egress": {
-        "enabled": ("GTVPN_DIRECT_EGRESS", "bool", None),
-        "allow": ("GTVPN_DIRECT_ALLOW", "hosts", None),
-        "no_proxy_extra": ("GTVPN_NO_PROXY_EXTRA", "noproxy", None),
+        "enabled": ("VPNCONTAINER_DIRECT_EGRESS", "bool", None),
+        "allow": ("VPNCONTAINER_DIRECT_ALLOW", "hosts", None),
+        "no_proxy_extra": ("VPNCONTAINER_NO_PROXY_EXTRA", "noproxy", None),
     },
 }
 HOST_KEYS = ("name", "hostname", "user", "port", "x11", "options")
@@ -133,7 +133,7 @@ def check_value(where, kind, extra, v):
         for x in v:
             if not full(r"[A-Za-z0-9.*/:-]+", x):
                 bad(f"{x!r} must be a host name, .domain or address/prefix")
-        # gtvpn-entrypoint puts it in front of its own list.
+        # vpncontainer-entrypoint puts it in front of its own list.
         return "".join(x + "," for x in v)
     if kind == "patterns":
         for x in v:
@@ -141,7 +141,7 @@ def check_value(where, kind, extra, v):
                 bad(f"{x!r}: a pattern is a host name or address with * or ?, "
                     "e.g. *.example.edu or 10.20.*")
             low = x.lower()
-            for own in ("127.0.0.1", "localhost", "gtvpn"):
+            for own in ("127.0.0.1", "localhost", "vpncontainer"):
                 if fnmatch.fnmatchcase(own, low):
                     bad(f"{x!r} would also match the container itself ({own})")
         return list(v)
@@ -171,8 +171,8 @@ def check_host(i, h):
     name, hostname = h.get("name"), h.get("hostname")
     if not full(NAME_RE, name):
         raise ConfigError(f"{where}: name must be a plain name (letters, digits, . _ -), no wildcards")
-    if name.lower() == "gtvpn":
-        raise ConfigError(f"{where}: the name gtvpn is taken by the container itself")
+    if name.lower() == "vpncontainer":
+        raise ConfigError(f"{where}: the name vpncontainer is taken by the container itself")
     if not full(HOST_RE, hostname):
         raise ConfigError(f"{where}: hostname must be a host name or IP address")
     out = {"name": name, "hostname": hostname, "user": None, "port": None,
@@ -208,7 +208,7 @@ def read(path):
 
 
 def merge(base, local):
-    """gtvpn.local.toml: its settings win, its hosts are added (same name: replaced)."""
+    """vpncontainer.local.toml: its settings win, its hosts are added (same name: replaced)."""
     out = {k: (dict(v) if isinstance(v, dict) else v) for k, v in base.items()}
     for k, v in local.items():
         if k == "hosts" and isinstance(v, list) and isinstance(out.get("hosts", []), list):
@@ -275,7 +275,7 @@ def settings(data):
 def ssh_hosts(cfg):
     lines = []
     for h in cfg["hosts"]:
-        lines += ["", f"# '{h['name']}' from gtvpn.toml", f"Host {h['name']}", f"    HostName {h['hostname']}"]
+        lines += ["", f"# '{h['name']}' from vpncontainer.toml", f"Host {h['name']}", f"    HostName {h['hostname']}"]
         if h["user"]:
             lines.append(f"    User {h['user']}")
         if h["port"]:
@@ -296,7 +296,7 @@ def main(argv):
         print(e, file=sys.stderr)
         return 1
     except OSError as e:
-        print(f"gtvpn: can't read {e.filename}: {e.strerror}", file=sys.stderr)
+        print(f"vpncontainer: can't read {e.filename}: {e.strerror}", file=sys.stderr)
         return 1
     if argv[1] == "ssh-hosts":
         text = ssh_hosts(cfg)

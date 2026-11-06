@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # verify-host.sh: checks from the HOST side that the GT VPN is confined to
-# the gtvpn container: the host has no VPN interface/route/DNS, cannot reach
+# the vpncontainer container: the host has no VPN interface/route/DNS, cannot reach
 # GT-internal hosts, does not share the container's egress IP, and the
 # container is configured the way the isolation model requires.
 #
-# Run via `./gtvpn verify` (container + host) or directly. --quiet prints
+# Run via `./vpncontainer verify` (container + host) or directly. --quiet prints
 # only failures. Exit status 1 if anything failed.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
-NAME=gtvpn
-ENGINE=${GTVPN_ENGINE:-docker}
+NAME=vpncontainer
+ENGINE=${VPNCONTAINER_ENGINE:-docker}
 QUIET=0; [[ ${1:-} == --quiet ]] && QUIET=1
 FAILS=0; PASSES=0
 
@@ -26,7 +26,7 @@ is_wsl() { grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; }
 tcp_open() { timeout 4 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null; }
 host_route_dev() { ip -4 route get "$1" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}'; }
 
-[[ $QUIET == 0 ]] && printf '\033[1m== gtvpn host-side verification %s ==\033[0m\n' "$(date -u +%FT%TZ)"
+[[ $QUIET == 0 ]] && printf '\033[1m== vpncontainer host-side verification %s ==\033[0m\n' "$(date -u +%FT%TZ)"
 command -v ip >/dev/null || { emit FAIL H0 "iproute2 ('ip') not installed on the host; cannot verify routing"; exit 1; }
 
 # ---- container configuration ------------------------------------------------
@@ -51,7 +51,7 @@ bad_ports=$("$ENGINE" inspect -f '{{range $p, $b := .NetworkSettings.Ports}}{{ra
 
 # sshd must not be reachable from the LAN side of this machine
 lan_ip=$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1); exit}}')
-port=$(envget GTVPN_SSH_PORT); port=${port:-2222}
+port=$(envget VPNCONTAINER_SSH_PORT); port=${port:-2222}
 if [[ -n $lan_ip ]]; then
   if tcp_open "$lan_ip" "$port"; then emit FAIL H6 "container sshd reachable on LAN address $lan_ip:$port"
   else emit PASS H6 "container sshd is not reachable on LAN address $lan_ip:$port"; fi
@@ -90,7 +90,7 @@ fi
 
 # GT-internal probe targets: routed via the host's normal network, and not
 # reachable (they only answer through the VPN).
-for t in $(envget GTVPN_PROBE_TARGETS); do
+for t in $(envget VPNCONTAINER_PROBE_TARGETS); do
   h=${t%:*}; p=${t##*:}
   ip=$(getent ahostsv4 "$h" 2>/dev/null | awk 'NR==1{print $1}')
   [[ -z $ip ]] && { emit PASS H11 "host cannot even resolve $h (GT-internal name)"; continue; }
@@ -104,7 +104,7 @@ for t in $(envget GTVPN_PROBE_TARGETS); do
 done
 
 # ---- no VPN client on the host ---------------------------------------------------
-# (processes of the gtvpn container are visible here too; exclude them)
+# (processes of the vpncontainer container are visible here too; exclude them)
 cpids=$("$ENGINE" top "$NAME" -eo pid 2>/dev/null | awk 'NR>1{print $1}')
 hostvpn=""
 while read -r pid comm; do
@@ -123,7 +123,7 @@ if is_wsl; then
 fi
 
 # ---- egress identity -----------------------------------------------------------
-url=$(envget GTVPN_EGRESS_URL)
+url=$(envget VPNCONTAINER_EGRESS_URL)
 if [[ -n $url ]] && [[ -s runtime/out/egress_ip ]]; then
   hip=$(curl -fsS -m 10 "$url" 2>/dev/null | tr -dc '0-9a-fA-F.:' | head -c 64)
   cip=$(cat runtime/out/egress_ip)

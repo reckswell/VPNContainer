@@ -1,17 +1,17 @@
-# gtvpn.toml: which VPN the container connects to, and which of your SSH
+# vpncontainer.toml: which VPN the container connects to, and which of your SSH
 # connections go through it. Everything else on this computer, including
-# SSH to anything not listed here, connects directly, as if gtvpn weren't
+# SSH to anything not listed here, connects directly, as if vpncontainer weren't
 # installed.
 #
 # This file is part of the repo (and public on GitHub), so keep passwords
 # and personal details out of it. Your user names go in .env; hosts you'd
-# rather not publish can go in gtvpn.local.toml (same format, not tracked
+# rather not publish can go in vpncontainer.local.toml (same format, not tracked
 # by git): its settings win and its [[hosts]] are added to these.
 #
-# After editing:  ./gtvpn hosts   SSH hosts and routing (container keeps running)
-#                 ./gtvpn up      VPN settings (restarts the container)
-# Check a destination with:  ./gtvpn route <host>
-# A setting here wins over the same GTVPN_* line in .env. A setting that is
+# After editing:  ./vpncontainer hosts   SSH hosts and routing (container keeps running)
+#                 ./vpncontainer up      VPN settings (restarts the container)
+# Check a destination with:  ./vpncontainer route <host>
+# A setting here wins over the same VPNCONTAINER_* line in .env. A setting that is
 # left out (or commented out) comes from .env, or else the default.
 
 # ---- The VPN ------------------------------------------------------------------
@@ -36,7 +36,7 @@ fix_openssl = false   # true for "unsafe legacy renegotiation" errors
 # What the client reports itself as (left out: its own Linux identity).
 # os = "Windows"
 # client_version = "6.2.8-243"
-# Your VPN sign-in name: set GTVPN_USER in .env, so it stays off GitHub.
+# Your VPN sign-in name: set VPNCONTAINER_USER in .env, so it stays off GitHub.
 # username = ""
 
 # ---- SSH: what goes through the container -----------------------------------------
@@ -57,7 +57,7 @@ direct = []
 # VS Code's Remote-SSH list shows each host below as <prefix><name>.
 prefix = "gt-"
 # Your user name on these servers, where a host doesn't set one: set
-# GTVPN_GT_USER in .env (this file is public).
+# VPNCONTAINER_GT_USER in .env (this file is public).
 # user = ""
 
 # One block per server. Each one:
@@ -82,7 +82,7 @@ hostname = "ece-linlab19.ece.gatech.edu"
 # x11 = false
 # options = { ServerAliveInterval = 60 }
 
-# ---- Leak and reachability checks (gtvpn verify) ------------------------------------
+# ---- Leak and reachability checks (vpncontainer verify) -----------------------------
 [checks]
 # VPN-side services (host:port) that must be reachable through the tunnel
 # and NOT from this computer directly.

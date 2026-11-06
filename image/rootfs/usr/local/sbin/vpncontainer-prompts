@@ -1,5 +1,5 @@
 #!/usr/bin/perl
-# gtvpn-prompts: sits between OpenConnect's sign-in output (stderr) and your
+# vpncontainer-prompts: sits between OpenConnect's sign-in output (stderr) and your
 # terminal. It relabels each prompt with exactly what to type there, marked
 # [PASSWORD] or [DUO CODE], so the two are never confused, and passes
 # everything else through unchanged.
@@ -8,10 +8,10 @@
 # again, and repeating a refused sign-in only adds failed logins, which can
 # lock a GT account.
 #
-# Usage: openconnect --authenticate ... 2> >(gtvpn-prompts [options])
+# Usage: openconnect --authenticate ... 2> >(vpncontainer-prompts [options])
 #   --gateway-only: the sign-in is at a gateway directly (no portal), so
 #   its prompts are the first ones and any refusal ends it.
-#   --saved-password: OpenConnect already has your password (gtvpn-login.conf).
+#   --saved-password: OpenConnect already has your password (vpncontainer-login.conf).
 #   A refusal before any Duo code means that password was refused: stop
 #   at once, whatever the step, and say so.
 #   --status FILE: write "password" or "code" there when a refusal stops it.
@@ -29,13 +29,13 @@ while (@ARGV) {
 }
 my ($gw, $stopped, $held, $challenged) = (0, 0, '', 0);
 
-sub note { print STDERR "$_[1]\[gtvpn] $_[0]$N\n" }
+sub note { print STDERR "$_[1]\[vpncontainer] $_[0]$N\n" }
 sub stop_signin {
   my ($what) = @_;
   $stopped = 1;
   if (length $status && open(my $f, '>', $status)) { print $f "$what\n"; close $f }
   # The only OpenConnect in this container right now is this sign-in:
-  # gtvpn-connect refuses to run while a tunnel is up.
+  # vpncontainer-connect refuses to run while a tunnel is up.
   system('pkill', '-TERM', '-x', 'openconnect');
 }
 
@@ -67,18 +67,18 @@ sub piece {
     note("(wait until Duo Mobile shows a different one; a used code is refused).", $Y);
   } elsif ($t =~ /^Unexpected 512 result from server/) {
     if ($saved && !$challenged) {
-      note("GT refused your saved password (gtvpn-login.conf), before any Duo code.", $R);
-      note("gtvpn stops after this one try, because repeated failed logins can lock a", $R);
-      note("GT account. Check username and password in gtvpn-login.conf. Until you", $R);
-      note("change that file, 'gtvpn connect' asks you to type your password instead.", $R);
+      note("GT refused your saved password (vpncontainer-login.conf), before any Duo code.", $R);
+      note("vpncontainer stops after this one try, because repeated failed logins can lock a", $R);
+      note("GT account. Check username and password in vpncontainer-login.conf. Until you", $R);
+      note("change that file, 'vpncontainer connect' asks you to type your password instead.", $R);
       stop_signin('password');
     } elsif ($gw || $direct) {
       note($saved && $challenged ? "GT refused the Duo code (most often one that was already used"
          : $direct ? "GT refused the sign-in (a mistyped password, or a Duo code that was already used"
                    : "The gateway refused the sign-in (for example a Duo code that was already used", $R);
-      note("or had expired). gtvpn stops here instead of asking again, because repeated", $R);
-      note("failed logins can lock a GT account. Nothing was connected; run 'gtvpn connect'", $R);
-      note("to try again ('gtvpn logs' shows this transcript).", $R);
+      note("or had expired). vpncontainer stops here instead of asking again, because repeated", $R);
+      note("failed logins can lock a GT account. Nothing was connected; run 'vpncontainer connect'", $R);
+      note("to try again ('vpncontainer logs' shows this transcript).", $R);
       stop_signin('code');
     } else {
       note("GT refused that: a mistyped password, or a Duo code that was already used or had expired.", $Y);

@@ -4,13 +4,13 @@
   // so VS Code downloads its server and extensions on your machine and copies
   // them in. Dev Containers always does that for the server; the first line
   // does it for extensions (any remote), the second for Remote-SSH servers
-  // (`gtvpn` and GT hosts reached via gt-<alias>).
+  // (`vpncontainer` and GT hosts reached via gt-<alias>).
   "remote.downloadExtensionsLocally": true,
   "remote.SSH.localServerDownload": "always",
   // Windows only: use the built-in OpenSSH client.
   // "remote.SSH.path": "C:\\Windows\\System32\\OpenSSH\\ssh.exe",
-  "remote.SSH.remotePlatform": { "gtvpn": "linux" },
-  // Dev Containers (gtvpn code / Attach to Running Container): do not hand
+  "remote.SSH.remotePlatform": { "vpncontainer": "linux" },
+  // Dev Containers (vpncontainer code / Attach to Running Container): do not hand
   // your computer's git and Docker credentials to containers. These are
   // user-wide, so they also apply to any other dev containers you use.
   "dev.containers.gitCredentialHelperConfigLocation": "none",

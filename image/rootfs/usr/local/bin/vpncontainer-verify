@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# gtvpn-verify: prove, from inside the container, that
+# vpncontainer-verify: prove, from inside the container, that
 #   (a) the tunnel works for your tools (when connected), and
 #   (b) nothing your tools do can leave the container except through the
 #       tunnel, and nothing reaches the Docker host / your LAN.
@@ -8,17 +8,17 @@
 # kill-switch's reject counter must go up, which proves it was the firewall
 # that stopped it (not just a missing route or a down server).
 #
-#   gtvpn-verify            --full if the tunnel is up, else --pre
-#   gtvpn-verify --pre      leak tests only (no tunnel expected)
-#   gtvpn-verify --full     leak tests + tunnel reachability tests
-#   gtvpn-verify --loop N   repeat every N seconds until a failure (Ctrl-C to stop)
+#   vpncontainer-verify            --full if the tunnel is up, else --pre
+#   vpncontainer-verify --pre      leak tests only (no tunnel expected)
+#   vpncontainer-verify --full     leak tests + tunnel reachability tests
+#   vpncontainer-verify --loop N   repeat every N seconds until a failure (Ctrl-C to stop)
 #   --quiet                 print only failures
 #
-# Config (env): GTVPN_PROBE_TARGETS="host:port ..." (GT hosts that must be
-# reachable through the tunnel), GTVPN_PROBE_NAMES="name ..." (must resolve
-# via the tunnel DNS), GTVPN_EGRESS_URL (optional what-is-my-IP URL).
+# Config (env): VPNCONTAINER_PROBE_TARGETS="host:port ..." (GT hosts that must be
+# reachable through the tunnel), VPNCONTAINER_PROBE_NAMES="name ..." (must resolve
+# via the tunnel DNS), VPNCONTAINER_EGRESS_URL (optional what-is-my-IP URL).
 set -uo pipefail
-[[ $(id -u) == 0 ]] || exec echo "gtvpn-verify must run as root (gtvpn verify does this for you)"
+[[ $(id -u) == 0 ]] || exec echo "vpncontainer-verify must run as root (vpncontainer verify does this for you)"
 
 MODE=auto; QUIET=0; LOOP=0
 while [[ $# -gt 0 ]]; do
@@ -29,17 +29,17 @@ while [[ $# -gt 0 ]]; do
   esac; shift
 done
 
-TUN=${GTVPN_TUN_IF:-tun0}
-WAN=$(cat /run/gtvpn/wan_if 2>/dev/null || echo eth0)
-PUBLIC_V4=${GTVPN_TEST_PUBLIC_V4:-1.1.1.1}
-PUBLIC_V4B=${GTVPN_TEST_PUBLIC_V4B:-8.8.8.8}
-LAN_V4=${GTVPN_TEST_LAN_V4:-192.168.1.1}
-PUBLIC_V6=${GTVPN_TEST_PUBLIC_V6:-2606:4700:4700::1111}
+TUN=${VPNCONTAINER_TUN_IF:-tun0}
+WAN=$(cat /run/vpncontainer/wan_if 2>/dev/null || echo eth0)
+PUBLIC_V4=${VPNCONTAINER_TEST_PUBLIC_V4:-1.1.1.1}
+PUBLIC_V4B=${VPNCONTAINER_TEST_PUBLIC_V4B:-8.8.8.8}
+LAN_V4=${VPNCONTAINER_TEST_LAN_V4:-192.168.1.1}
+PUBLIC_V6=${VPNCONTAINER_TEST_PUBLIC_V6:-2606:4700:4700::1111}
 
 asdev()   { setpriv --reuid=dev --regid=dev --init-groups -- "$@"; }
 asroot0() { setpriv --regid=0 --clear-groups -- "$@"; }          # root, but not the VPN client
 asvpn()   { setpriv --regid=gpvpn --clear-groups -- "$@"; }      # the VPN client identity
-blocked() { iptables -w 5 -nvxL GTVPN_BLOCKED 2>/dev/null | awk 'NR>2{s+=$1}END{print s+0}'; }
+blocked() { iptables -w 5 -nvxL VPNCONTAINER_BLOCKED 2>/dev/null | awk 'NR>2{s+=$1}END{print s+0}'; }
 route_dev() { ip -4 route get "$1" 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="dev"){print $(i+1); exit}}'; }
 
 FAILS=0; PASSES=0; REPORT=""
@@ -76,19 +76,19 @@ must_work() {
 
 run_pre() {
   # Static state
-  if /usr/local/sbin/gtvpn-firewall check >/dev/null 2>&1; then emit PASS F1 "kill-switch ruleset intact, policy DROP on INPUT/OUTPUT/FORWARD"
+  if /usr/local/sbin/vpncontainer-firewall check >/dev/null 2>&1; then emit PASS F1 "kill-switch ruleset intact, policy DROP on INPUT/OUTPUT/FORWARD"
   else emit FAIL F1 "kill-switch ruleset missing or modified"; fi
   if [[ ! -d /proc/sys/net/ipv6 ]]; then emit PASS F2 "IPv6 not present in this kernel"
   elif [[ $(cat /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null) == 1 ]]; then emit PASS F2 "IPv6 disabled in the container"
   else emit FAIL F2 "IPv6 is enabled in the container"; fi
   if ip6tables -S 2>/dev/null | grep -qx -- '-P OUTPUT DROP'; then emit PASS F3 "IPv6 output policy DROP"
   else emit INFO F3 "ip6tables not available (IPv6 disabled by sysctl only)"; fi
-  local weak; weak=$(/usr/local/sbin/gtvpn-permcheck | head -5 | tr '\n' ' ')
+  local weak; weak=$(/usr/local/sbin/vpncontainer-permcheck | head -5 | tr '\n' ' ')
   if [[ -z $weak ]]; then emit PASS F4 "root-run scripts and their directories are root-owned and not writable by dev"
   else emit FAIL F4 "writable by non-root (privilege-escalation path): $weak"; fi
   if [[ ! -e /.dockerenv && -z ${container:-} ]]; then emit INFO F4 "could not confirm we are in a container"; fi
 
-  local gw; gw=$(cat /run/gtvpn/wan_gw 2>/dev/null)
+  local gw; gw=$(cat /run/vpncontainer/wan_gw 2>/dev/null)
 
   # Your tools (user dev) must not get out of the WAN interface
   if [[ $(route_dev "$PUBLIC_V4") == "$WAN" ]]; then
@@ -116,16 +116,16 @@ run_pre() {
   else emit PASS L12 "dev -> IPv6 internet is impossible"; fi
   # Control: the VPN client itself must still be able to reach the portal,
   # otherwise the blocks above prove nothing about selectivity.
-  if [[ ${GTVPN_SKIP_CONTROL:-0} != 1 ]]; then
-    local pip; pip=$(asvpn timeout 5 getent ahostsv4 "${GTVPN_PORTAL:-vpn.gatech.edu}" 2>/dev/null | awk 'NR==1{print $1}')
+  if [[ ${VPNCONTAINER_SKIP_CONTROL:-0} != 1 ]]; then
+    local pip; pip=$(asvpn timeout 5 getent ahostsv4 "${VPNCONTAINER_PORTAL:-vpn.gatech.edu}" 2>/dev/null | awk 'NR==1{print $1}')
     if [[ -n $pip ]] && asvpn nc -z -n -w 4 "$pip" 443 >/dev/null 2>&1; then
-      emit PASS C1 "VPN client can reach portal ${GTVPN_PORTAL:-vpn.gatech.edu} ($pip:443) - firewall is selective, not just closed"
+      emit PASS C1 "VPN client can reach portal ${VPNCONTAINER_PORTAL:-vpn.gatech.edu} ($pip:443) - firewall is selective, not just closed"
     else
-      emit INFO C1 "VPN client cannot reach portal ${GTVPN_PORTAL:-vpn.gatech.edu}:443 right now (offline? captive portal?)"
+      emit INFO C1 "VPN client cannot reach portal ${VPNCONTAINER_PORTAL:-vpn.gatech.edu}:443 right now (offline? captive portal?)"
     fi
   fi
   if ! ip link show "$TUN" >/dev/null 2>&1; then
-    if asdev timeout 5 getent ahostsv4 "${GTVPN_PORTAL:-vpn.gatech.edu}" >/dev/null 2>&1; then
+    if asdev timeout 5 getent ahostsv4 "${VPNCONTAINER_PORTAL:-vpn.gatech.edu}" >/dev/null 2>&1; then
       emit FAIL L13 "dev can resolve names with no tunnel (DNS leak)"
     else emit PASS L13 "dev cannot resolve any name while disconnected"; fi
   fi
@@ -140,20 +140,20 @@ proxy_refuses() {
 }
 
 run_egress() {
-  if [[ ${GTVPN_DIRECT_EGRESS:-1} != 1 ]]; then emit INFO E0 "direct egress disabled: the container can only use the tunnel"; return; fi
-  PROXY=http://127.0.0.1:${GTVPN_PROXY_PORT:-3128}
-  local port=${GTVPN_PROXY_PORT:-3128} first ip code
+  if [[ ${VPNCONTAINER_DIRECT_EGRESS:-1} != 1 ]]; then emit INFO E0 "direct egress disabled: the container can only use the tunnel"; return; fi
+  PROXY=http://127.0.0.1:${VPNCONTAINER_PROXY_PORT:-3128}
+  local port=${VPNCONTAINER_PROXY_PORT:-3128} first ip code
   if ! ss -ltnH "sport = :$port" | grep -q .; then emit FAIL E1 "egress proxy is not running"; return; fi
   if ss -ltnH "sport = :$port" | awk '{print $4}' | grep -qv '^127\.0\.0\.1:'; then emit FAIL E1 "egress proxy listens beyond loopback"
   else emit PASS E1 "egress proxy listens on 127.0.0.1 only"; fi
 
-  first=$(awk '{print $1}' <<<"${GTVPN_DIRECT_ALLOW:-api.anthropic.com}")
+  first=$(awk '{print $1}' <<<"${VPNCONTAINER_DIRECT_ALLOW:-api.anthropic.com}")
   code=$(asdev curl -s -o /dev/null -w '%{http_code}' -m 15 -x "$PROXY" "https://$first/" 2>/dev/null || true)
   if [[ -n $code && $code != 000 ]]; then emit PASS E2 "allow-listed $first reachable via the direct path (HTTP $code)"
   else emit INFO E2 "allow-listed $first not reachable right now (offline?)"; fi
 
   proxy_refuses E3 "proxy refuses a non-allow-listed site (example.com)" example.com 443
-  proxy_refuses E4 "proxy refuses the GT portal ${GTVPN_PORTAL:-vpn.gatech.edu} (GT only via tunnel)" "${GTVPN_PORTAL:-vpn.gatech.edu}" 443
+  proxy_refuses E4 "proxy refuses the GT portal ${VPNCONTAINER_PORTAL:-vpn.gatech.edu} (GT only via tunnel)" "${VPNCONTAINER_PORTAL:-vpn.gatech.edu}" 443
   proxy_refuses E5 "proxy refuses gatech.edu (GT only via tunnel)" gatech.edu 443
   proxy_refuses E6 "proxy refuses raw IP destinations ($PUBLIC_V4)" "$PUBLIC_V4" 443
   proxy_refuses E7 "proxy refuses non-443 ports ($first:22)" "$first" 22
@@ -172,8 +172,8 @@ run_egress() {
   else
     emit INFO E8 "$first not pinned yet (offline?)"
   fi
-  if awk '/>>> gtvpn direct-egress/{f=1;next} /<<< gtvpn direct-egress/{f=0} f' /etc/hosts | grep -qi 'gatech' \
-     || grep -qi 'gatech' /run/gtvpn/egress-allow.ere 2>/dev/null; then
+  if awk '/>>> vpncontainer direct-egress/{f=1;next} /<<< vpncontainer direct-egress/{f=0} f' /etc/hosts | grep -qi 'gatech' \
+     || grep -qi 'gatech' /run/vpncontainer/egress-allow.ere 2>/dev/null; then
     emit FAIL E11 "a GT hostname is on the direct-egress allow-list"
   else emit PASS E11 "no GT hostname is on the direct-egress allow-list"; fi
 }
@@ -202,19 +202,19 @@ run_full() {
   [[ $any == 1 ]] || emit FAIL T3 "no DNS servers configured"
 
   local n
-  for n in ${GTVPN_PROBE_NAMES:-gatech.edu}; do
+  for n in ${VPNCONTAINER_PROBE_NAMES:-gatech.edu}; do
     must_work T4 "dev resolves $n via tunnel DNS" -- asdev timeout 10 getent ahostsv4 "$n"
   done
 
   local t h p ip
-  for t in ${GTVPN_PROBE_TARGETS:-}; do
+  for t in ${VPNCONTAINER_PROBE_TARGETS:-}; do
     h=${t%:*}; p=${t##*:}
     ip=$(asdev getent ahostsv4 "$h" 2>/dev/null | awk 'NR==1{print $1}')
     if [[ -z $ip ]]; then emit FAIL T5 "cannot resolve probe target $h"; continue; fi
     if [[ $(route_dev "$ip") != "$TUN" ]]; then emit FAIL T5 "$h ($ip) is NOT routed through the tunnel"; continue; fi
     must_work T5 "dev -> $h:$p ($ip) reachable through tunnel" -- asdev nc -z -n -w 3 "$ip" "$p"
   done
-  [[ -z ${GTVPN_PROBE_TARGETS:-} ]] && emit SKIP T5 "set [checks] probe_targets in gtvpn.toml (e.g. your Cadence server:22) to test reachability"
+  [[ -z ${VPNCONTAINER_PROBE_TARGETS:-} ]] && emit SKIP T5 "set [checks] probe_targets in vpncontainer.toml (e.g. your Cadence server:22) to test reachability"
 
   # The VPN gateway itself is reachable over the WAN: only the VPN client may use it.
   local gwip
@@ -223,10 +223,10 @@ run_full() {
     must_block T7 "root (not VPN client) -> VPN gateway $gwip:443 is blocked" -- asroot0 nc -z -n -w 3 "$gwip" 443
   done
 
-  if [[ -n ${GTVPN_EGRESS_URL:-} ]]; then
-    local eip; eip=$(asdev curl -fsS -m 10 "$GTVPN_EGRESS_URL" 2>/dev/null | tr -dc '0-9a-fA-F.:' | head -c 64)
-    if [[ -n $eip ]]; then emit INFO T8 "container egress IP: $eip"; echo "$eip" | /usr/local/sbin/gtvpn-outwrite egress_ip
-    else emit INFO T8 "egress URL not reachable from container (expected with split-tunnel)"; rm -f /run/gtvpn/out/egress_ip; fi
+  if [[ -n ${VPNCONTAINER_EGRESS_URL:-} ]]; then
+    local eip; eip=$(asdev curl -fsS -m 10 "$VPNCONTAINER_EGRESS_URL" 2>/dev/null | tr -dc '0-9a-fA-F.:' | head -c 64)
+    if [[ -n $eip ]]; then emit INFO T8 "container egress IP: $eip"; echo "$eip" | /usr/local/sbin/vpncontainer-outwrite egress_ip
+    else emit INFO T8 "egress URL not reachable from container (expected with split-tunnel)"; rm -f /run/vpncontainer/out/egress_ip; fi
   fi
 }
 
@@ -234,13 +234,13 @@ once() {
   FAILS=0; PASSES=0; REPORT=""
   local m=$MODE
   [[ $m == auto ]] && { ip link show "$TUN" >/dev/null 2>&1 && m=full || m=pre; }
-  [[ $QUIET == 0 ]] && printf '\033[1m== gtvpn container verification (%s) %s ==\033[0m\n' "$m" "$(date -u +%FT%TZ)"
+  [[ $QUIET == 0 ]] && printf '\033[1m== vpncontainer container verification (%s) %s ==\033[0m\n' "$m" "$(date -u +%FT%TZ)"
   run_pre
   run_egress
   [[ $m == full ]] && run_full
   local summary="$PASSES passed, $FAILS failed (mode=$m)"
   [[ $QUIET == 0 ]] && printf '\033[1m== %s ==\033[0m\n' "$summary"
-  { echo "# $(date -u +%FT%TZ) $summary"; printf '%s' "$REPORT"; } | /usr/local/sbin/gtvpn-outwrite verify.txt 2>/dev/null || true
+  { echo "# $(date -u +%FT%TZ) $summary"; printf '%s' "$REPORT"; } | /usr/local/sbin/vpncontainer-outwrite verify.txt 2>/dev/null || true
   return $(( FAILS > 0 ))
 }
 

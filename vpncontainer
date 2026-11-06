@@ -1,36 +1,36 @@
 #!/usr/bin/env bash
-# gtvpn: host-side control for the isolated Georgia Tech VPN container.
-# Works on Ubuntu 24.04 and inside WSL2 (Windows). Run `./gtvpn help`.
+# vpncontainer: host-side control for the isolated Georgia Tech VPN container.
+# Works on Ubuntu 24.04 and inside WSL2 (Windows). Run `./vpncontainer help`.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 cd "$HERE"
-NAME=gtvpn
-SSH_DIR="$HOME/.ssh/gtvpn"
+NAME=vpncontainer
+SSH_DIR="$HOME/.ssh/vpncontainer"
 
 c_b=$'\033[1m'; c_g=$'\033[32m'; c_r=$'\033[31m'; c_y=$'\033[33m'; c_0=$'\033[0m'
-say()  { printf '%s[gtvpn]%s %s\n' "$c_b" "$c_0" "$*"; }
-warn() { printf '%s[gtvpn] %s%s\n' "$c_y" "$*" "$c_0" >&2; }
-die()  { printf '%s[gtvpn] %s%s\n' "$c_r" "$*" "$c_0" >&2; exit 1; }
+say()  { printf '%s[vpncontainer]%s %s\n' "$c_b" "$c_0" "$*"; }
+warn() { printf '%s[vpncontainer] %s%s\n' "$c_y" "$*" "$c_0" >&2; }
+die()  { printf '%s[vpncontainer] %s%s\n' "$c_r" "$*" "$c_0" >&2; exit 1; }
 
 is_wsl() { grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; }
 
-# Container engine: docker (default) or podman (GTVPN_ENGINE=podman).
-ENGINE=${GTVPN_ENGINE:-docker}
+# Container engine: docker (default) or podman (VPNCONTAINER_ENGINE=podman).
+ENGINE=${VPNCONTAINER_ENGINE:-docker}
 compose() {
   if [[ $ENGINE == podman ]]; then podman compose "$@"; else docker compose "$@"; fi
 }
 engine() { "$ENGINE" "$@"; }
 running() { [[ $(engine inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null) == true ]]; }
-need_running() { running || die "container is not running; start it with: ./gtvpn up"; }
+need_running() { running || die "container is not running; start it with: ./vpncontainer up"; }
 
-# ---- Settings: gtvpn.toml (in the repo), then .env (this computer) ---------
-# gtvpn.toml says which VPN to use and which SSH hosts go through the
-# container. host/config.py checks it and turns it into GTVPN_* values, which
+# ---- Settings: vpncontainer.toml (in the repo), then .env (this computer) ---------
+# vpncontainer.toml says which VPN to use and which SSH hosts go through the
+# container. host/config.py checks it and turns it into VPNCONTAINER_* values, which
 # win over the same lines in .env and are exported, so docker compose (it
 # prefers the environment to .env) and host/verify-host.sh see them too.
-# gtvpn.local.toml (untracked, optional) is read on top of it.
-CONF=gtvpn.toml; CONF_LOCAL=gtvpn.local.toml
+# vpncontainer.local.toml (untracked, optional) is read on top of it.
+CONF=vpncontainer.toml; CONF_LOCAL=vpncontainer.local.toml
 declare -A CFG=(); CFG_PRIVATE=(); CFG_DIRECT=(); CFG_PREFIX=gt-; CFG_LOADED=0
 cfg_py() { python3 -I "$HERE/host/config.py" "$1" "$HERE/$CONF" "$HERE/$CONF_LOCAL"; }
 cfg_load() {
@@ -49,18 +49,18 @@ cfg_load() {
   done <<<"$out"
   CFG_LOADED=1
 }
-# .env lines that gtvpn.toml overrides with a different value.
+# .env lines that vpncontainer.toml overrides with a different value.
 cfg_overrides() {
   local k v l=()
   for k in "${!CFG[@]}"; do
     v=$(envfile_get "$k"); [[ -n $v && $v != "${CFG[$k]}" ]] && l+=("$k")
   done
-  [[ $(envfile_get GTVPN_SSH_VIA_CONTAINER) == 0 ]] && l+=("GTVPN_SSH_VIA_CONTAINER (now [ssh] private)")
+  [[ $(envfile_get VPNCONTAINER_SSH_VIA_CONTAINER) == 0 ]] && l+=("VPNCONTAINER_SSH_VIA_CONTAINER (now [ssh] private)")
   ((${#l[@]})) || return 0
   warn "$CONF wins over these lines in .env, which are ignored: ${l[*]}"
 }
 
-# A setting: from gtvpn.toml if it sets it, else KEY=VALUE from .env (read
+# A setting: from vpncontainer.toml if it sets it, else KEY=VALUE from .env (read
 # without executing it).
 envget() {
   if [[ -n ${CFG[$1]+set} ]]; then printf '%s' "${CFG[$1]}"; return; fi
@@ -73,13 +73,13 @@ envfile_get() {
   v=${line#*=}; v=${v%\"}; v=${v#\"}; v=${v%\'}; v=${v#\'}
   printf '%s' "$v"
 }
-# gtvpn-login.conf: your GT sign-in for this computer only (.gitignore keeps
-# it out of git; gtvpn-login.example.conf is its empty template). Keys
+# vpncontainer-login.conf: your GT sign-in for this computer only (.gitignore keeps
+# it out of git; vpncontainer-login.example.conf is its empty template). Keys
 # username, password and, on Windows, password_dpapi (the launcher's
 # encrypted form). Plain key=value lines, # comments, never executed; a
 # value is taken as written, minus spaces at its ends.
-LOCAL_CONF=$HERE/gtvpn-login.conf
-REFUSED=$HERE/gtvpn-login.conf.refused
+LOCAL_CONF=$HERE/vpncontainer-login.conf
+REFUSED=$HERE/vpncontainer-login.conf.refused
 confget() {
   local want=${1,,} line k v=''
   [[ -f $LOCAL_CONF ]] || return 0
@@ -108,9 +108,9 @@ saved_password() {
       try { [Console]::Out.Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR($b)) }
       finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b) }' 2>/dev/null | tr -d '\r') || p=''
     if [[ -n $p ]]; then printf '%s' "$p"; return 0; fi
-    warn "Windows could not decrypt password_dpapi in gtvpn-login.conf (saved by another Windows account or PC?)"
+    warn "Windows could not decrypt password_dpapi in vpncontainer-login.conf (saved by another Windows account or PC?)"
   elif [[ -n $d ]]; then
-    warn "password_dpapi in gtvpn-login.conf can only be read on the Windows PC that saved it"
+    warn "password_dpapi in vpncontainer-login.conf can only be read on the Windows PC that saved it"
   fi
   confget password
 }
@@ -120,32 +120,32 @@ tunnel_up() { engine exec "$NAME" ip link show tun0 >/dev/null 2>&1; }
 # treat it as typed input and start a real sign-in with it).
 can_stash() {
   # shellcheck disable=SC2016  # runs in the container
-  engine exec -u root "$NAME" sh -c 'grep -q "^STASH=" /usr/local/sbin/gtvpn-connect && [ "$(stat -f -c %T /run/gtvpn/secret 2>/dev/null)" = tmpfs ]' >/dev/null 2>&1
+  engine exec -u root "$NAME" sh -c 'grep -q "^STASH=" /usr/local/sbin/vpncontainer-connect && [ "$(stat -f -c %T /run/vpncontainer/secret 2>/dev/null)" = tmpfs ]' >/dev/null 2>&1
 }
-# Hand the saved sign-in to the container for the next gtvpn-connect (see
-# gtvpn-connect --stash). Prints why it did not, if it did not.
+# Hand the saved sign-in to the container for the next vpncontainer-connect (see
+# vpncontainer-connect --stash). Prints why it did not, if it did not.
 stash_signin() {
   local u p
   has_saved_signin || return 0
-  tunnel_up && return 0   # already connected: gtvpn-connect just says so
+  tunnel_up && return 0   # already connected: vpncontainer-connect just says so
   if ! can_stash; then
-    warn "this container is older than the saved sign-in, so it is not used; type your password this time (it is updated at the next connect without a tunnel, or: gtvpn down && gtvpn up)"
+    warn "this container is older than the saved sign-in, so it is not used; type your password this time (it is updated at the next connect without a tunnel, or: vpncontainer down && vpncontainer up)"
     return 0
   fi
   if [[ -f $REFUSED && ! $LOCAL_CONF -nt $REFUSED ]]; then
-    warn "GT refused your saved password on $(date -r "$REFUSED" '+%b %d %H:%M'). Not using it until you change gtvpn-login.conf; type your password this time."
+    warn "GT refused your saved password on $(date -r "$REFUSED" '+%b %d %H:%M'). Not using it until you change vpncontainer-login.conf; type your password this time."
     return 0
   fi
-  u=$(confget username); [[ -n $u ]] || u=$(envget GTVPN_USER)
+  u=$(confget username); [[ -n $u ]] || u=$(envget VPNCONTAINER_USER)
   if [[ ! $u =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
-    warn "gtvpn-login.conf has a password but no valid username; type your sign-in this time"; return 0
+    warn "vpncontainer-login.conf has a password but no valid username; type your sign-in this time"; return 0
   fi
   if ! is_wsl && [[ -n $(confget password) && -n $(find "$LOCAL_CONF" -perm /077 2>/dev/null) ]]; then
-    chmod 600 "$LOCAL_CONF" && say "made gtvpn-login.conf readable only by you (it holds your password)"
+    chmod 600 "$LOCAL_CONF" && say "made vpncontainer-login.conf readable only by you (it holds your password)"
   fi
   p=$(saved_password)
   [[ -n $p ]] || return 0
-  printf '%s\n%s\n' "$u" "$p" | engine exec -i -u root "$NAME" gtvpn-connect --stash || true
+  printf '%s\n%s\n' "$u" "$p" | engine exec -i -u root "$NAME" vpncontainer-connect --stash || true
 }
 
 envset() { # key value  (in-place, keeps the rest of the file)
@@ -157,7 +157,7 @@ envset() { # key value  (in-place, keeps the rest of the file)
 }
 
 open_url() { # url-or-file
-  local u=$1 b; b=$(envget GTVPN_BROWSER)
+  local u=$1 b; b=$(envget VPNCONTAINER_BROWSER)
   if [[ -n $b ]]; then
     # shellcheck disable=SC2086
     nohup $b "$u" >/dev/null 2>&1 & return
@@ -189,14 +189,14 @@ x11_detect() {
     disp=":${disp##*:}"; disp=${disp%%.*}
     sockdir=/tmp/.X11-unix
   fi
-  envset GTVPN_DISPLAY "$disp"
-  envset GTVPN_X11_DIR "$sockdir"
+  envset VPNCONTAINER_DISPLAY "$disp"
+  envset VPNCONTAINER_X11_DIR "$sockdir"
 }
 
 x11_cookie() {
   # Fresh cookie each `up`: Xwayland generates a new one every login.
   mkdir -p runtime/in
-  local out=runtime/in/xauth disp; disp=$(envget GTVPN_DISPLAY)
+  local out=runtime/in/xauth disp; disp=$(envget VPNCONTAINER_DISPLAY)
   rm -f "$out"
   if is_wsl; then return 0; fi          # WSLg needs no cookie
   if command -v xauth >/dev/null && [[ -n ${DISPLAY:-} ]]; then
@@ -210,16 +210,16 @@ x11_cookie() {
   if command -v xhost >/dev/null && [[ -n ${DISPLAY:-} ]]; then
     xhost "+SI:localuser:$(id -un)" >/dev/null 2>&1 || true
   fi
-  [[ -n ${DISPLAY:-} ]] || warn "no DISPLAY in this shell; X11 apps will need 'gtvpn up' from a desktop session"
+  [[ -n ${DISPLAY:-} ]] || warn "no DISPLAY in this shell; X11 apps will need 'vpncontainer up' from a desktop session"
   : "${disp}"
 }
 
 # ---------------------------------------------------------------------------
 ssh_setup() {
   mkdir -p "$SSH_DIR"; chmod 700 "$HOME/.ssh" "$SSH_DIR"
-  [[ -s $SSH_DIR/id_ed25519 ]] || ssh-keygen -q -t ed25519 -N '' -C "gtvpn-$(hostname)" -f "$SSH_DIR/id_ed25519"
+  [[ -s $SSH_DIR/id_ed25519 ]] || ssh-keygen -q -t ed25519 -N '' -C "vpncontainer-$(hostname)" -f "$SSH_DIR/id_ed25519"
   mkdir -p runtime/in
-  # Keep any extra keys (e.g. the Windows-side key added by Setup-GtVpn.ps1).
+  # Keep any extra keys (e.g. the Windows-side key added by Setup-VpnContainer.ps1).
   touch runtime/in/authorized_keys
   grep -qF "$(cut -d' ' -f2 "$SSH_DIR/id_ed25519.pub")" runtime/in/authorized_keys || cat "$SSH_DIR/id_ed25519.pub" >> runtime/in/authorized_keys
   chmod 644 runtime/in/authorized_keys
@@ -244,24 +244,24 @@ win_env() {
   printf '%s' "$v"
 }
 # On WSL, also refresh the copy Windows' ssh (and VS Code on Windows) reads,
-# if Setup-GtVpn.ps1 created it. Windows OpenSSH has no ControlMaster.
+# if Setup-VpnContainer.ps1 created it. Windows OpenSSH has no ControlMaster.
 write_win_ssh_config() {
   is_wsl || return 0
   local prof dir win
   prof=$(win_env USERPROFILE) || return 0
-  dir=$(wslpath -u "$prof" 2>/dev/null)/.ssh/gtvpn
+  dir=$(wslpath -u "$prof" 2>/dev/null)/.ssh/vpncontainer
   [[ -f $dir/config ]] || return 0
-  win=${prof//\\//}/.ssh/gtvpn
+  win=${prof//\\//}/.ssh/vpncontainer
   ssh_config_text "$win/id_ed25519" "$win/known_hosts" none > "$dir/config"
 }
 
-# ---- Your hosts: [[hosts]] and [ssh] in gtvpn.toml --------------------------
+# ---- Your hosts: [[hosts]] and [ssh] in vpncontainer.toml -------------------
 # The container gets them as one standard ssh config, runtime/in/hosts.conf
-# (gtvpn-hosts installs a root-owned copy), so `ssh <name>` works in there.
+# (vpncontainer-hosts installs a root-owned copy), so `ssh <name>` works in there.
 # This computer's ssh and VS Code get gt-<name> entries and the routing rules
 # (ssh_config_text).
 HOSTS_OUT=runtime/in/hosts.conf
-# hosts.conf (ssh config syntax) was the host list before gtvpn.toml.
+# hosts.conf (ssh config syntax) was the host list before vpncontainer.toml.
 hosts_conf_note() {
   [[ -f hosts.conf ]] || return 0
   local a; a=$(hosts_aliases hosts.conf | tr '\n' ' ')
@@ -279,12 +279,12 @@ hosts_aliases() { # [file]
 # (user/port are "-" when not set and default).
 hosts_resolve() { # alias
   local f; f=$(mktemp)
-  { cat "$HOSTS_OUT"; printf '\nHost *\n    User gtvpn-unset\n'; } > "$f"
+  { cat "$HOSTS_OUT"; printf '\nHost *\n    User vpncontainer-unset\n'; } > "$f"
   ssh -G -F "$f" "$1" 2>/dev/null | awk '$1=="hostname"{h=$2} $1=="user"{u=$2} $1=="port"{p=$2}
-    END{ if (u=="gtvpn-unset") u="-"; if (p=="22") p="-"; if (h!="") print h, u, p }'
+    END{ if (u=="vpncontainer-unset") u="-"; if (p=="22") p="-"; if (h!="") print h, u, p }'
   rm -f "$f"
 }
-# Build the hosts file from gtvpn.toml, check it, and hand it to the
+# Build the hosts file from vpncontainer.toml, check it, and hand it to the
 # container (runtime/in). On a mistake the previous file stays.
 hosts_sync() {
   cfg_load || return 1
@@ -293,7 +293,7 @@ hosts_sync() {
   cfg_py ssh-hosts > "$f" || { rm -f "$f"; return 1; }
   if ! command -v ssh >/dev/null; then
     warn "no ssh client here; your hosts won't show in VS Code (sudo apt install openssh-client)"
-  elif ! err=$(ssh -G -F "$f" gtvpn-config-check 2>&1 >/dev/null); then
+  elif ! err=$(ssh -G -F "$f" vpncontainer-config-check 2>&1 >/dev/null); then
     # "<file>[:] line N: <problem>" -> the host whose block has line N
     ln=$(sed -nE "s|^$f:? line ([0-9]+):.*|\1|p" <<<"$err" | head -1)
     who=$(awk -v n="${ln:-0}" 'NR<=n && $1=="Host"{h=$2} END{print h}' "$f")
@@ -302,11 +302,11 @@ hosts_sync() {
     rm -f "$f"; return 1
   fi
   # Your user name for these hosts, after their own settings (theirs win).
-  u=$(envget GTVPN_GT_USER)
+  u=$(envget VPNCONTAINER_GT_USER)
   if [[ $u =~ ^[A-Za-z0-9._-]+$ ]]; then
     al=$(hosts_aliases "$f" | tr '\n' ' '); al=${al% }
     {
-      printf '\n# Added by gtvpn: your user name ([ssh] user or GTVPN_GT_USER), where a host sets none\n'
+      printf '\n# Added by vpncontainer: your user name ([ssh] user or VPNCONTAINER_GT_USER), where a host sets none\n'
       [[ -n $al ]] && printf 'Host %s\n    User %s\n' "$al" "$u"
       ((${#CFG_PRIVATE[@]})) && printf 'Match host %s\n    User %s\n' "$(IFS=,; echo "${CFG_PRIVATE[*]}")" "$u"
     } >> "$f"
@@ -316,10 +316,10 @@ hosts_sync() {
   chmod 644 "$HOSTS_OUT" 2>/dev/null || true
 }
 cmd_hosts() {
-  hosts_sync || die "fix $CONF and run ./gtvpn hosts again (nothing was changed)"
+  hosts_sync || die "fix $CONF and run ./vpncontainer hosts again (nothing was changed)"
   cfg_overrides
   write_ssh_config
-  if running; then engine exec -u root "$NAME" gtvpn-hosts >/dev/null || die "the container refused the hosts from $CONF (see above)"; fi
+  if running; then engine exec -u root "$NAME" vpncontainer-hosts >/dev/null || die "the container refused the hosts from $CONF (see above)"; fi
   local a h u p n=0
   while read -r a; do
     read -r h u p < <(hosts_resolve "$a") || continue
@@ -327,26 +327,26 @@ cmd_hosts() {
     printf '  %-12s -> %s%s%s   (container: ssh %s   VS Code: %s%s)\n' "$a" "${u:+$u@}" "$h" "${p:+:$p}" "$a" "$CFG_PREFIX" "$a"
     n=$((n+1))
   done < <(hosts_aliases)
-  if (( n )); then say "$n host(s) from $CONF are ready"; else say "$CONF lists no [[hosts]] yet; add yours and run ./gtvpn hosts again"; fi
+  if (( n )); then say "$n host(s) from $CONF are ready"; else say "$CONF lists no [[hosts]] yet; add yours and run ./vpncontainer hosts again"; fi
   if ((${#CFG_PRIVATE[@]})); then
     say "also through the container: anything matching ${CFG_PRIVATE[*]}${CFG_DIRECT[*]:+ (except ${CFG_DIRECT[*]})}"
   fi
-  say "everything else connects directly. Check one with: ./gtvpn route <host>"
+  say "everything else connects directly. Check one with: ./vpncontainer route <host>"
 }
 
 # Which way ssh (and VS Code Remote-SSH) on this computer reaches a host.
-# (GTVPN_SSH_CONFIG: another ssh config file to ask, for the tests.)
+# (VPNCONTAINER_SSH_CONFIG: another ssh config file to ask, for the tests.)
 cmd_route() {
-  (($#)) || die "usage: ./gtvpn route <host> [<host> ...]"
+  (($#)) || die "usage: ./vpncontainer route <host> [<host> ...]"
   command -v ssh >/dev/null || die "no ssh client here (sudo apt install openssh-client)"
   local t o h j
   for t in "$@"; do
     [[ $t =~ ^([A-Za-z0-9._-]+@)?[A-Za-z0-9._-]+$ ]] || die "not a host name: $t"
-    o=$(ssh ${GTVPN_SSH_CONFIG:+-F "$GTVPN_SSH_CONFIG"} -G "$t" 2>/dev/null </dev/null) || { warn "ssh could not read its config for $t"; continue; }
+    o=$(ssh ${VPNCONTAINER_SSH_CONFIG:+-F "$VPNCONTAINER_SSH_CONFIG"} -G "$t" 2>/dev/null </dev/null) || { warn "ssh could not read its config for $t"; continue; }
     h=$(awk '$1=="hostname"{print $2; exit}' <<<"$o")
     j=$(awk '$1=="proxyjump"{print $2; exit}' <<<"$o")
-    if [[ $j == gtvpn ]]; then printf '  %-30s %sthrough the container%s  (to %s)\n' "$t" "$c_g" "$c_0" "$h"
-    elif [[ -n $j ]]; then printf '  %-30s through %s, set in your own ssh config, not by gtvpn  (to %s)\n' "$t" "$j" "$h"
+    if [[ $j == vpncontainer ]]; then printf '  %-30s %sthrough the container%s  (to %s)\n' "$t" "$c_g" "$c_0" "$h"
+    elif [[ -n $j ]]; then printf '  %-30s through %s, set in your own ssh config, not by vpncontainer  (to %s)\n' "$t" "$j" "$h"
     else printf '  %-30s direct, not through the container  (to %s)\n' "$t" "$h"
     fi
   done
@@ -354,7 +354,7 @@ cmd_route() {
 
 # The lines every entry routed through the container gets.
 jump_lines() { # controlpath|none
-  echo "    ProxyJump gtvpn"
+  echo "    ProxyJump vpncontainer"
   if [[ $1 != none ]]; then
     echo "    ControlMaster auto"
     echo "    ControlPath $1"
@@ -364,12 +364,12 @@ jump_lines() { # controlpath|none
 }
 ssh_config_text() { # identity known_hosts controlpath|none
   local id=$1 kh=$2 cm=$3 port user hosts pair alias fq pre=$CFG_PREFIX
-  port=$(envget GTVPN_SSH_PORT); port=${port:-2222}
-  user=$(envget GTVPN_GT_USER); hosts=$(envget GTVPN_SSH_HOSTS)
+  port=$(envget VPNCONTAINER_SSH_PORT); port=${port:-2222}
+  user=$(envget VPNCONTAINER_GT_USER); hosts=$(envget VPNCONTAINER_SSH_HOSTS)
   {
-    echo "# Managed by gtvpn ($HERE). Do not edit: list your hosts in $CONF, then run: gtvpn hosts"
+    echo "# Managed by vpncontainer ($HERE). Do not edit: list your hosts in $CONF, then run: vpncontainer hosts"
     echo "# Only what is listed below goes through the container. Anything else connects directly."
-    echo "Host gtvpn"
+    echo "Host vpncontainer"
     echo "    HostName 127.0.0.1"
     echo "    Port $port"
     echo "    User dev"
@@ -396,14 +396,14 @@ ssh_config_text() { # identity known_hosts controlpath|none
         jump_lines "$cm"
       done < <(hosts_aliases)
     fi
-    for pair in $hosts; do  # GTVPN_SSH_HOSTS in .env, the oldest way to list hosts
+    for pair in $hosts; do  # VPNCONTAINER_SSH_HOSTS in .env, the oldest way to list hosts
       alias=${pair%%=*}; fq=${pair#*=}
       [[ $alias =~ ^[A-Za-z0-9._-]+$ && $fq =~ ^[A-Za-z0-9._-]+$ && $alias != "$pair" ]] || continue
       [[ $seen == *" $alias "* ]] && continue
       [[ $user =~ ^[A-Za-z0-9._-]+$ ]] && u=$user || u=-
       routes+=("$fq $u -")
       echo
-      echo "# GT host '$alias' (GTVPN_SSH_HOSTS) reached THROUGH the container's tunnel"
+      echo "# GT host '$alias' (VPNCONTAINER_SSH_HOSTS) reached THROUGH the container's tunnel"
       echo "Host $pre$alias"
       echo "    HostName $fq"
       [[ $u != - ]] && echo "    User $u"
@@ -437,7 +437,7 @@ ssh_config_text() { # identity known_hosts controlpath|none
 }
 
 pin_hostkey() {
-  local port pub; port=$(envget GTVPN_SSH_PORT); port=${port:-2222}
+  local port pub; port=$(envget VPNCONTAINER_SSH_PORT); port=${port:-2222}
   for _ in $(seq 30); do [[ -s runtime/out/ssh_host_ed25519_key.pub ]] && break; sleep 1; done
   pub=$(cut -d' ' -f1,2 runtime/out/ssh_host_ed25519_key.pub 2>/dev/null || true)
   [[ -n $pub ]] || { warn "container host key not published yet"; return; }
@@ -447,22 +447,22 @@ pin_hostkey() {
 install_url_handler() {
   # Lets the browser hand the GT sign-in result straight back to the container.
   if is_wsl; then
-    say "Windows: the link handler is installed by windows\\Setup-GtVpn.ps1"
+    say "Windows: the link handler is installed by windows\\Setup-VpnContainer.ps1"
     return
   fi
   command -v xdg-mime >/dev/null || { warn "xdg-mime not found; you will paste the sign-in link manually"; return; }
   local d="$HOME/.local/share/applications"; mkdir -p "$d"
-  cat > "$d/gtvpn-callback.desktop" <<EOF
+  cat > "$d/vpncontainer-callback.desktop" <<EOF
 [Desktop Entry]
 Type=Application
-Name=GT VPN sign-in (gtvpn)
-Comment=Hands the GlobalProtect SSO result to the isolated gtvpn container
-Exec=$HERE/gtvpn callback %u
+Name=GT VPN sign-in (vpncontainer)
+Comment=Hands the GlobalProtect SSO result to the isolated vpncontainer container
+Exec=$HERE/vpncontainer callback %u
 Terminal=false
 NoDisplay=true
 MimeType=x-scheme-handler/globalprotectcallback;
 EOF
-  xdg-mime default gtvpn-callback.desktop x-scheme-handler/globalprotectcallback
+  xdg-mime default vpncontainer-callback.desktop x-scheme-handler/globalprotectcallback
   command -v update-desktop-database >/dev/null && update-desktop-database "$d" >/dev/null 2>&1 || true
   say "registered the globalprotectcallback: link handler"
 }
@@ -483,12 +483,12 @@ vscode_attach_config() {
   for d in "$base/Code" "$base/Code - Insiders"; do
     [[ -d $d/User ]] || continue
     d="$d/User/globalStorage/ms-vscode-remote.remote-containers/imageConfigs"
-    mkdir -p "$d" && cp vscode/attached-container-config.json "$d/gtvpn%3alocal.json" && n=$((n+1))
+    mkdir -p "$d" && cp vscode/attached-container-config.json "$d/vpncontainer%3alocal.json" && n=$((n+1))
   done
-  ((n)) || warn "VS Code not found; open it once, then run: gtvpn setup (for Dev Containers attach)"
+  ((n)) || warn "VS Code not found; open it once, then run: vpncontainer setup (for Dev Containers attach)"
 }
 
-# vscode-remote URI that attaches to the gtvpn container and opens PATH.
+# vscode-remote URI that attaches to the vpncontainer container and opens PATH.
 vscode_attach_uri() { # path
   local p=${1:-/home/dev/projects} hex
   [[ $p =~ ^/[A-Za-z0-9._/~@+-]*$ ]] || die "use an absolute container path without spaces, e.g. /home/dev/projects"
@@ -500,7 +500,7 @@ cmd_code() {
   local ssh=0 uri
   [[ ${1:-} == --ssh ]] && { ssh=1; shift; }
   need_running
-  if ((ssh)); then pin_hostkey; set -- --remote ssh-remote+gtvpn "${1:-/home/dev/projects}"
+  if ((ssh)); then pin_hostkey; set -- --remote ssh-remote+vpncontainer "${1:-/home/dev/projects}"
   else
     uri=$(vscode_attach_uri "${1:-}") || exit 1
     vscode_attach_config >/dev/null 2>&1 || true
@@ -520,19 +520,19 @@ cmd_setup() {
   [[ -e /dev/net/tun ]] || warn "/dev/net/tun missing on this machine (sudo modprobe tun)"
   [[ -f .env ]] || { cp .env.example .env; say "created .env (your user names go there; your hosts go in $CONF)"; }
   envset HOST_UID "$(id -u)"; envset HOST_GID "$(id -g)"
-  [[ $(id -u) != 0 ]] || die "run gtvpn as your normal user, not root"
+  [[ $(id -u) != 0 ]] || die "run vpncontainer as your normal user, not root"
   x11_detect
   hosts_sync || true
   ssh_setup
   install_url_handler
   vscode_attach_config
   mkdir -p runtime/out share
-  say "setup done. Next: ./gtvpn up && ./gtvpn connect"
+  say "setup done. Next: ./vpncontainer up && ./vpncontainer connect"
 }
 
 cmd_up() {
   [[ -f .env ]] || cmd_setup
-  hosts_sync || warn "starting with the previous hosts; fix $CONF, then run: ./gtvpn hosts"
+  hosts_sync || warn "starting with the previous hosts; fix $CONF, then run: ./vpncontainer hosts"
   cfg_overrides
   x11_detect; x11_cookie; write_ssh_config
   local b=--build; [[ " $* " == *" --no-build "* ]] && b=""
@@ -545,10 +545,10 @@ cmd_up() {
   engine logs "$NAME" 2>&1 | grep -q 'ready\.' || { engine logs --tail 40 "$NAME" >&2; die "container did not become ready"; }
   pin_hostkey
   # A bind of a missing folder gives the container an empty one, silently.
-  local d; d=$(envget GTVPN_DISPLAY); d=${d#:}
+  local d; d=$(envget VPNCONTAINER_DISPLAY); d=${d#:}
   engine exec -u dev "$NAME" test -S "/tmp/.X11-unix/X${d:-0}" 2>/dev/null \
-    || warn "the container cannot see the X11 socket $(envget GTVPN_X11_DIR)/X${d:-0}; GUI apps (Cadence) will not open. See README: Troubleshooting."
-  say "container is up and sealed (no tunnel yet). Next: ./gtvpn connect"
+    || warn "the container cannot see the X11 socket $(envget VPNCONTAINER_X11_DIR)/X${d:-0}; GUI apps (Cadence) will not open. See README: Troubleshooting."
+  say "container is up and sealed (no tunnel yet). Next: ./vpncontainer connect"
 }
 
 # Open the sign-in page the container published. runtime/out is writable
@@ -581,11 +581,11 @@ cmd_connect() {
   ) &
   local opener=$! rc=0
   stash_signin
-  engine exec -it -u root "$NAME" gtvpn-connect || rc=$?
+  engine exec -it -u root "$NAME" vpncontainer-connect || rc=$?
   kill $opener 2>/dev/null || true
   if (( rc == 3 )); then
     touch "$REFUSED"
-    die "connect failed: GT refused the saved password. Fix it in gtvpn-login.conf; until then you will be asked to type it."
+    die "connect failed: GT refused the saved password. Fix it in vpncontainer-login.conf; until then you will be asked to type it."
   fi
   (( rc == 0 )) || die "connect failed"
   rm -f "$REFUSED"
@@ -596,14 +596,14 @@ cmd_connect() {
 cmd_callback() {
   local data=${1:-}
   [[ -n $data ]] || IFS= read -r data
-  printf '%s\n' "$data" | engine exec -i -u root "$NAME" gtvpn-callback
-  command -v notify-send >/dev/null && notify-send "GT VPN" "Sign-in handed to the gtvpn container" 2>/dev/null || true
+  printf '%s\n' "$data" | engine exec -i -u root "$NAME" vpncontainer-callback
+  command -v notify-send >/dev/null && notify-send "GT VPN" "Sign-in handed to the vpncontainer container" 2>/dev/null || true
 }
 
 cmd_verify() {
   need_running
   local rc=0
-  engine exec -u root "$NAME" gtvpn-verify "$@" || rc=1
+  engine exec -u root "$NAME" vpncontainer-verify "$@" || rc=1
   echo
   cmd_host_verify || rc=1
   return $rc
@@ -617,11 +617,11 @@ cmd_watch() {
   say "re-verifying every ${n}s (Ctrl-C to stop)"
   while true; do
     i=$((i+1))
-    if engine exec -u root "$NAME" gtvpn-verify --quiet >/dev/null && bash "$HERE/host/verify-host.sh" --quiet >/dev/null; then
+    if engine exec -u root "$NAME" vpncontainer-verify --quiet >/dev/null && bash "$HERE/host/verify-host.sh" --quiet >/dev/null; then
       printf '%s round %d: %ssealed%s\n' "$(date +%T)" "$i" "$c_g" "$c_0"
     else
-      printf '%s round %d: %sPROBLEM%s (run ./gtvpn verify)\n' "$(date +%T)" "$i" "$c_r" "$c_0"
-      command -v notify-send >/dev/null && notify-send -u critical "GT VPN" "gtvpn verification failed" 2>/dev/null || true
+      printf '%s round %d: %sPROBLEM%s (run ./vpncontainer verify)\n' "$(date +%T)" "$i" "$c_r" "$c_0"
+      command -v notify-send >/dev/null && notify-send -u critical "GT VPN" "vpncontainer verification failed" 2>/dev/null || true
     fi
     sleep "$n"
   done
@@ -629,7 +629,7 @@ cmd_watch() {
 
 usage() {
   cat <<EOF
-${c_b}gtvpn${c_0} - Georgia Tech GlobalProtect in an isolated container
+${c_b}vpncontainer${c_0} - Georgia Tech GlobalProtect in an isolated container
 
   setup            one-time: .env, SSH key + config, X11, sign-in link handler
   up               build/start the container (sealed, no tunnel yet)
@@ -639,7 +639,7 @@ ${c_b}gtvpn${c_0} - Georgia Tech GlobalProtect in an isolated container
   verify           full leak/reachability checks, container AND host side
   watch [secs]     re-run all checks forever, alert on any failure
   shell            bash in the container as 'dev'
-  hosts            apply gtvpn.toml's hosts and routing to the container and VS Code
+  hosts            apply vpncontainer.toml's hosts and routing to the container and VS Code
   route <host>     say whether ssh/VS Code reach a host through the container or directly
   ssh <alias|host> ssh to a GT host from inside the container (X11 on)
   code [path]      open VS Code in the container (Dev Containers attach, as dev)
@@ -649,7 +649,7 @@ ${c_b}gtvpn${c_0} - Georgia Tech GlobalProtect in an isolated container
   display <host> [status|stop]
                    keep an X display open on a GT server for terminals that
                    ssh -Y did not open (VS Code Remote-SSH): Cadence there
-                   then needs  export DISPLAY=\$(cat ~/.gtvpn-display)
+                   then needs  export DISPLAY=\$(cat ~/.vpncontainer-display)
   logs             container + VPN client logs
   callback <url>   (used by the browser link handler)
   rebuild          rebuild the image (updates Claude Code / base packages)
@@ -660,34 +660,34 @@ EOF
 # Sourcing (tests) defines the functions without running a command.
 [[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
 cmd=${1:-help}; shift || true
-# Commands that use gtvpn.toml's settings stop on a mistake in it, before
+# Commands that use vpncontainer.toml's settings stop on a mistake in it, before
 # anything is changed.
 case $cmd in
   setup|up|connect|hosts|ssh-config|verify|host-verify|watch)
-    cfg_load || die "fix the problem above, then run ./gtvpn $cmd again (nothing was changed)" ;;
+    cfg_load || die "fix the problem above, then run ./vpncontainer $cmd again (nothing was changed)" ;;
 esac
 case $cmd in
   setup) cmd_setup ;;
   up) cmd_up "$@" ;;
   connect) cmd_connect ;;
-  disconnect) need_running; engine exec -u root "$NAME" gtvpn-disconnect ;;
-  status) need_running; engine exec -u root "$NAME" gtvpn-status ;;
+  disconnect) need_running; engine exec -u root "$NAME" vpncontainer-disconnect ;;
+  status) need_running; engine exec -u root "$NAME" vpncontainer-status ;;
   verify) cmd_verify "$@" ;;
   host-verify) cmd_host_verify ;;
   watch) cmd_watch "$@" ;;
   shell) need_running; engine exec -it -u dev -w /home/dev "$NAME" bash -l ;;
   ssh) need_running; engine exec -it -u dev -w /home/dev "$NAME" bash -lc "ssh $(printf '%q ' "$@")" ;;
-  claude) need_running; engine exec -it -u dev -w "${GTVPN_WORKDIR:-/home/dev}" "$NAME" bash -lc "claude $(printf '%q ' "$@")" ;;
+  claude) need_running; engine exec -it -u dev -w "${VPNCONTAINER_WORKDIR:-/home/dev}" "$NAME" bash -lc "claude $(printf '%q ' "$@")" ;;
   code) cmd_code "$@" ;;
   x11test) need_running # xeyes still open after 10 s (timeout's 124) means it worked
     engine exec -u dev "$NAME" bash -lc 'echo "DISPLAY=$DISPLAY"
       xdpyinfo >/dev/null 2>&1 || { echo "X11 test failed: the container cannot reach your X display"; exit 1; }
       echo "showing xeyes for 10 seconds"; timeout 10 xeyes; rc=$?
       if [ $rc -eq 0 ] || [ $rc -eq 124 ]; then echo "X11 works"; else echo "X11 test failed (xeyes exit $rc)"; exit 1; fi' ;;
-  display) need_running; [[ ${1:-} ]] || die "usage: gtvpn display <host> [status|stop]"
-    engine exec -it -u dev -w /home/dev "$NAME" bash -lc "gtvpn-display $(printf '%q ' "$@")" ;;
+  display) need_running; [[ ${1:-} ]] || die "usage: vpncontainer display <host> [status|stop]"
+    engine exec -it -u dev -w /home/dev "$NAME" bash -lc "vpncontainer-display $(printf '%q ' "$@")" ;;
   logs) engine logs --tail 100 "$NAME"
-    engine exec -u root "$NAME" sh -c 'for f in connect gpclient; do [ -s /var/log/gtvpn/$f.log ] || continue; echo "--- $f.log"; tail -n 50 /var/log/gtvpn/$f.log | sed "s/\x1b\[[0-9;]*[A-Za-z]//g; s/\r//g"; done' || true ;;
+    engine exec -u root "$NAME" sh -c 'for f in connect gpclient; do [ -s /var/log/vpncontainer/$f.log ] || continue; echo "--- $f.log"; tail -n 50 /var/log/vpncontainer/$f.log | sed "s/\x1b\[[0-9;]*[A-Za-z]//g; s/\r//g"; done' || true ;;
   callback) cmd_callback "$@" ;;
   hosts) cmd_hosts ;;
   route) cmd_route "$@" ;;
@@ -698,8 +698,8 @@ case $cmd in
     IFS= read -r k; [[ $k =~ ^(ssh-ed25519|ssh-rsa|ecdsa-sha2-[a-z0-9-]+|sk-[a-z0-9@.-]+)\ [A-Za-z0-9+/=]+ ]] || die "not an ssh public key"
     mkdir -p runtime/in; touch runtime/in/authorized_keys
     grep -qF "$(cut -d' ' -f2 <<<"$k")" runtime/in/authorized_keys || echo "$k" >> runtime/in/authorized_keys
-    say "key authorized (takes effect on next ./gtvpn up)" ;;
-  rebuild) x11_detect; compose build --pull --no-cache; say "rebuilt; restart with ./gtvpn down && ./gtvpn up" ;;
+    say "key authorized (takes effect on next ./vpncontainer up)" ;;
+  rebuild) x11_detect; compose build --pull --no-cache; say "rebuilt; restart with ./vpncontainer down && ./vpncontainer up" ;;
   down) compose down ;;
   help|-h|--help) usage ;;
   *) usage; exit 2 ;;

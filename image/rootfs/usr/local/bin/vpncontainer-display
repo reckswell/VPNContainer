@@ -1,36 +1,36 @@
 #!/usr/bin/env bash
-# gtvpn-display: keep an X display open on a GT server for programs that are
+# vpncontainer-display: keep an X display open on a GT server for programs that are
 # not started through `ssh -Y` from this container, such as Cadence started
 # in a VS Code Remote-SSH terminal (those terminals have no DISPLAY: VS Code
 # runs Remote-SSH from your computer, which has no X server for GT).
 #
-#   gtvpn-display <host>           open it (asks for your GT password and Duo
+#   vpncontainer-display <host>           open it (asks for your GT password and Duo
 #                                  if no connection to <host> is open yet)
-#   gtvpn-display <host> status
-#   gtvpn-display <host> stop
+#   vpncontainer-display <host> status
+#   vpncontainer-display <host> stop
 #
 # How it works: an `ssh -Y <host>` session from this container stays open in
 # the background. Its X11 forwarding gives the server a display (for example
 # localhost:12.0) that leads back through the tunnel to this container and
 # on to your desktop. sshd puts that display's cookie in ~/.Xauthority on
-# the server, and this writes the display name to ~/.gtvpn-display there,
+# the server, and this writes the display name to ~/.vpncontainer-display there,
 # so any of your sessions on that server can use it:
-#   export DISPLAY=$(cat ~/.gtvpn-display)
+#   export DISPLAY=$(cat ~/.vpncontainer-display)
 #
 # The session rides on the shared connection to <host> (ControlMaster), so
 # it costs no extra sign-in, and stopping it leaves that connection alone. It
 # has a terminal on the server, so when it ends for any reason the server
-# hangs it up and it removes ~/.gtvpn-display (if that still names its
+# hangs it up and it removes ~/.vpncontainer-display (if that still names its
 # display) instead of lingering.
 set -uo pipefail
 host=${1:-}; action=${2:-start}
-usage() { echo "usage: gtvpn-display <host> [start|status|stop]" >&2; exit 2; }
-die() { printf 'gtvpn-display: %s\n' "$*" >&2; exit 1; }
+usage() { echo "usage: vpncontainer-display <host> [start|status|stop]" >&2; exit 2; }
+die() { printf 'vpncontainer-display: %s\n' "$*" >&2; exit 1; }
 [[ $host =~ ^[A-Za-z0-9][A-Za-z0-9._@-]*$ ]] || usage
-[[ $(id -un) == dev ]] || die "run it as dev (gtvpn display <host> on your computer does that)"
+[[ $(id -un) == dev ]] || die "run it as dev (vpncontainer display <host> on your computer does that)"
 # Marks this session's local process, so status/stop find exactly it.
-tag="gtvpn-display-keepalive:$host"
-# The same shared connection as the GT defaults in ssh_config.d/50-gtvpn.conf,
+tag="vpncontainer-display-keepalive:$host"
+# The same shared connection as the GT defaults in ssh_config.d/50-vpncontainer.conf,
 # named explicitly so this works for any host.
 # shellcheck disable=SC2088  # ssh expands the ~
 mux=(-o ControlPath='~/.ssh/cm-%C')
@@ -40,7 +40,7 @@ running() { pgrep -u dev -f -- "^ssh .*$tag\$" >/dev/null; }
 # shell there may be tcsh.
 remote_display() { # through the open connection (no new sign-in)
   ssh "${mux[@]}" -o ControlMaster=no -o BatchMode=yes -o ForwardX11=no "$host" \
-    "exec /bin/sh -c 'cat \"\$HOME/.gtvpn-display\" 2>/dev/null'" 2>/dev/null
+    "exec /bin/sh -c 'cat \"\$HOME/.vpncontainer-display\" 2>/dev/null'" 2>/dev/null
 }
 
 case $action in
@@ -53,7 +53,7 @@ case $action in
     else echo "no display open on $host"; fi ;;
   start)
     if running; then "$0" "$host" status; exit 0; fi
-    xdpyinfo >/dev/null 2>&1 || die "this container cannot reach your desktop's X display (DISPLAY=${DISPLAY:-unset}); try: gtvpn x11test"
+    xdpyinfo >/dev/null 2>&1 || die "this container cannot reach your desktop's X display (DISPLAY=${DISPLAY:-unset}); try: vpncontainer x11test"
     if ! ssh "${mux[@]}" -O check "$host" >/dev/null 2>&1; then
       echo "Signing in to $host first (your GT password and Duo, as for any ssh there)."
       ssh "${mux[@]}" -o ControlMaster=auto -o ControlPersist=8h "$host" true \
@@ -62,7 +62,7 @@ case $action in
     # The server side checks it got a display, records it, then waits until
     # its terminal hangs up. The tag rides along as sh's $0. No ' or ! in it.
     # shellcheck disable=SC2016  # expanded on the server
-    remote='d=${DISPLAY:-}; f=$HOME/.gtvpn-display; if [ -z "$d" ]; then echo "gtvpn-display: the server gave no X display (is X11 forwarding allowed there?)" >&2; exit 3; fi; bye() { [ "$(cat "$f" 2>/dev/null)" = "$d" ] && rm -f "$f"; trap - HUP INT TERM; kill 0; }; trap bye HUP INT TERM; umask 077; printf "%s\n" "$d" > "$f"; sleep 2147483647 & wait; bye'
+    remote='d=${DISPLAY:-}; f=$HOME/.vpncontainer-display; if [ -z "$d" ]; then echo "vpncontainer-display: the server gave no X display (is X11 forwarding allowed there?)" >&2; exit 3; fi; bye() { [ "$(cat "$f" 2>/dev/null)" = "$d" ] && rm -f "$f"; trap - HUP INT TERM; kill 0; }; trap bye HUP INT TERM; umask 077; printf "%s\n" "$d" > "$f"; sleep 2147483647 & wait; bye'
     # -f: background once the session is open. -tt: a terminal on the
     # server, for the hang-up. ControlMaster=no: a client of the shared
     # connection, never its owner.
@@ -79,9 +79,9 @@ case $action in
     cat <<EOF
 X display open on $host: $d (it leads to your desktop through this container)
 In a terminal on $host (for example VS Code's), before starting Cadence:
-    export DISPLAY=\$(cat ~/.gtvpn-display)        # bash
-    setenv DISPLAY \`cat ~/.gtvpn-display\`        # tcsh
-It stays open until 'gtvpn display $host stop', the tunnel drops or the
+    export DISPLAY=\$(cat ~/.vpncontainer-display)        # bash
+    setenv DISPLAY \`cat ~/.vpncontainer-display\`        # tcsh
+It stays open until 'vpncontainer display $host stop', the tunnel drops or the
 container stops.
 EOF
     ;;

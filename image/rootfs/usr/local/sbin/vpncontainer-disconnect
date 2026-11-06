@@ -2,7 +2,7 @@
 # Tear the tunnel down. The kill-switch stays in place, so after this the
 # container has no outside connectivity at all.
 set -uo pipefail
-TUN=${GTVPN_TUN_IF:-tun0}
+TUN=${VPNCONTAINER_TUN_IF:-tun0}
 if pgrep -x gpclient >/dev/null; then
   setpriv --regid=gpvpn --clear-groups -- gpclient disconnect --wait 10 >/dev/null 2>&1 || true
   sleep 1
@@ -16,20 +16,20 @@ if pgrep -x openconnect >/dev/null; then
   for _ in 1 2 3 4 5 6; do pgrep -x openconnect >/dev/null || break; sleep 0.5; done
   pkill -KILL -x openconnect 2>/dev/null || true
 fi
-rm -f /run/gtvpn/openconnect.pid
+rm -f /run/vpncontainer/openconnect.pid
 ip link del "$TUN" 2>/dev/null || true
 rm -f /var/run/gpclient.lock
 # If the client died without cleaning up (kill -9, crash), put the
 # pre-VPN routing and DNS back so a reconnect is possible. The kill-switch
 # is unaffected either way.
-WAN=$(cat /run/gtvpn/wan_if 2>/dev/null || echo eth0)
-GW=$(cat /run/gtvpn/wan_gw 2>/dev/null || true)
+WAN=$(cat /run/vpncontainer/wan_if 2>/dev/null || echo eth0)
+GW=$(cat /run/vpncontainer/wan_gw 2>/dev/null || true)
 ip -4 route del 0.0.0.0/1 2>/dev/null || true
 ip -4 route del 128.0.0.0/1 2>/dev/null || true
 if [[ -n $GW ]] && ! ip -4 route show default | grep -q .; then
   ip -4 route add default via "$GW" dev "$WAN" 2>/dev/null || true
 fi
-if [[ -s /run/gtvpn/resolv.conf.orig ]] && ! grep -q 127.0.0.11 /etc/resolv.conf; then
-  cat /run/gtvpn/resolv.conf.orig > /etc/resolv.conf
+if [[ -s /run/vpncontainer/resolv.conf.orig ]] && ! grep -q 127.0.0.11 /etc/resolv.conf; then
+  cat /run/vpncontainer/resolv.conf.orig > /etc/resolv.conf
 fi
-echo "[gtvpn] disconnected"
+echo "[vpncontainer] disconnected"

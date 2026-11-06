@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 #
-# gtvpn: an isolated GlobalProtect (Georgia Tech) VPN jump box.
+# vpncontainer: an isolated GlobalProtect (Georgia Tech) VPN jump box.
 #
 # The VPN client is the open-source GlobalProtect-openconnect project
 # (gpclient + gpauth, https://github.com/yuezk/GlobalProtect-openconnect).
@@ -31,7 +31,7 @@ ARG DEBIAN_FRONTEND=noninteractive
 # ("Hash Sum mismatch"): no pipelining, no proxy caches, retry, and redo a
 # failed index update from scratch a few times.
 RUN set -eu; printf '%s\n' 'Acquire::Retries "5";' 'Acquire::http::Pipeline-Depth "0";' \
-      'Acquire::http::No-Cache "true";' 'Acquire::BrokenProxy "true";' > /etc/apt/apt.conf.d/80gtvpn-net; \
+      'Acquire::http::No-Cache "true";' 'Acquire::BrokenProxy "true";' > /etc/apt/apt.conf.d/80vpncontainer-net; \
     for i in 1 2 3 4; do apt-get update && break; [ "$i" = 4 ] && exit 1; \
       echo "apt-get update failed (try $i), retrying"; rm -rf /var/lib/apt/lists/*; sleep 5; done; \
     apt-get install -y --no-install-recommends \
@@ -67,7 +67,7 @@ RUN set -eu; groupadd -g 4501 gpvpn; groupadd -g 4502 gtegress; \
     useradd -m -u 1000 -s /bin/bash dev; \
     # No password, but not "locked" (sshd refuses locked accounts).
     usermod -p "*" dev; \
-    mkdir -p /run/sshd /var/lib/gtvpn /var/log/gtvpn /run/gtvpn
+    mkdir -p /run/sshd /var/lib/vpncontainer /var/log/vpncontainer /run/vpncontainer
 
 # ---------------------------------------------------------------------------
 # Claude Code (optional, ~340 MB on disk, nothing when idle). The native
@@ -102,10 +102,10 @@ RUN set -eu; cd /tmp/rootfs; \
     chmod 0755 usr/local/sbin/* usr/local/bin/*; \
     tar -cf - . | tar -C / --no-overwrite-dir -xf -; \
     cd /; rm -rf /tmp/rootfs; \
-    /usr/local/sbin/gtvpn-permcheck || { echo "unsafe permissions (see above)"; exit 1; }
+    /usr/local/sbin/vpncontainer-permcheck || { echo "unsafe permissions (see above)"; exit 1; }
 
 # VS Code Dev Containers reads this when it attaches: run as dev, never root
-# (root holds NET_ADMIN, i.e. the kill-switch). gtvpn setup also installs the
+# (root holds NET_ADMIN, i.e. the kill-switch). vpncontainer setup also installs the
 # same choice as an attach config (vscode/attached-container-config.json).
 LABEL devcontainer.metadata='[{"remoteUser":"dev"}]'
 
@@ -113,5 +113,5 @@ LABEL devcontainer.metadata='[{"remoteUser":"dev"}]'
 EXPOSE 2222
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=60s --timeout=20s --start-period=20s \
-  CMD /usr/local/sbin/gtvpn-firewall check >/dev/null || exit 1
-ENTRYPOINT ["/usr/local/sbin/gtvpn-entrypoint"]
+  CMD /usr/local/sbin/vpncontainer-firewall check >/dev/null || exit 1
+ENTRYPOINT ["/usr/local/sbin/vpncontainer-entrypoint"]

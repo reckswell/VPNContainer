@@ -9,7 +9,7 @@ tests/lab/fakeapi/*.pem
 tests/lab/fakeportal/*.pem
 tests/lab/last-run.txt
 hosts.conf
-# Your saved GT sign-in (gtvpn-login.example.conf is its template): never commit
-gtvpn-login.conf
-gtvpn-login.conf.refused
-gtvpn.local.toml
+# Your saved GT sign-in (vpncontainer-login.example.conf is its template): never commit
+vpncontainer-login.conf
+vpncontainer-login.conf.refused
+vpncontainer.local.toml
