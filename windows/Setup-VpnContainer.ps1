@@ -95,6 +95,11 @@ InWsl "cd '$repo' && ./vpncontainer setup" | Write-Host
 
 # 4. Windows SSH key, authorized in the container ---------------------------
 $sshDir = Join-Path $env:USERPROFILE ".ssh\vpncontainer"
+$oldSshDir = Join-Path $env:USERPROFILE ".ssh\gtvpn"   # its name before the rename
+if ((Test-Path $oldSshDir) -and -not (Test-Path $sshDir)) {
+  try { Move-Item -LiteralPath $oldSshDir -Destination $sshDir; Say "moved $oldSshDir to $sshDir" }
+  catch { Warn "could not rename $oldSshDir ($_); still using it"; $sshDir = $oldSshDir }
+}
 New-Item -ItemType Directory -Force -Path $sshDir | Out-Null
 $key = Join-Path $sshDir "id_ed25519"
 if (-not (Test-Path $key)) {
@@ -115,7 +120,13 @@ $cfgText = InWsl "cd '$repo' && ./vpncontainer ssh-config '$idWin' '$khWin' none
 Set-Content -Path (Join-Path $sshDir "config") -Value $cfgText -Encoding ascii
 $userCfg = Join-Path $env:USERPROFILE ".ssh\config"
 $include = "Include $($sshDir -replace '\\','/')/config"
-$existing = if (Test-Path $userCfg) { Get-Content $userCfg -Raw } else { "" }
+[string]$existing = if (Test-Path $userCfg) { Get-Content $userCfg -Raw } else { "" }
+$oldInclude = "Include $($oldSshDir -replace '\\','/')/config"
+if ($oldInclude -ne $include -and $existing.Contains($oldInclude)) {
+  $existing = $existing.Replace($oldInclude, $include)
+  Set-Content -Path $userCfg -Value $existing -Encoding ascii -NoNewline
+  Say "changed '$oldInclude' to '$include' in $userCfg"
+}
 if ($existing -notmatch [regex]::Escape($include)) {
   Set-Content -Path $userCfg -Value ($include + "`r`n`r`n" + $existing) -Encoding ascii
   Say "added '$include' to $userCfg"
@@ -146,7 +157,13 @@ Say "registered the globalprotectcallback: link handler"
 # 7. vpncontainer command for PowerShell/cmd -------------------------------
 $bin = Join-Path $env:LOCALAPPDATA "vpncontainer\bin"
 New-Item -ItemType Directory -Force -Path $bin | Out-Null
-Set-Content -Path (Join-Path $bin "vpncontainer.cmd") -Encoding ascii -Value "@`"$wsl`" -d $Distro --cd `"$repo`" -e `"$repo/vpncontainer`" %*"
+$cmdFile = Join-Path $bin "vpncontainer.cmd"
+Set-Content -Path $cmdFile -Encoding ascii -Value "@`"$wsl`" -d $Distro --cd `"$repo`" -e `"$repo/vpncontainer`" %*"
+# The gtvpn command from before the rename says so, then runs this one.
+$oldCmd = Join-Path $env:LOCALAPPDATA "gtvpn\bin\gtvpn.cmd"
+if (Test-Path $oldCmd) {
+  Set-Content -Path $oldCmd -Encoding ascii -Value @("@echo [vpncontainer] gtvpn is now called vpncontainer 1>&2", "@`"$cmdFile`" %*")
+}
 $path = [Environment]::GetEnvironmentVariable("Path", "User")
 if ($path -notlike "*$bin*") {
   [Environment]::SetEnvironmentVariable("Path", "$path;$bin", "User")

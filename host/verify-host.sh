@@ -8,7 +8,7 @@
 # only failures. Exit status 1 if anything failed.
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
-NAME=vpncontainer
+NAME=${VPNCONTAINER_NAME:-vpncontainer}  # ./vpncontainer passes the one it uses
 ENGINE=${VPNCONTAINER_ENGINE:-docker}
 QUIET=0; [[ ${1:-} == --quiet ]] && QUIET=1
 FAILS=0; PASSES=0

@@ -16,12 +16,14 @@
 # the server, and this writes the display name to ~/.vpncontainer-display there,
 # so any of your sessions on that server can use it:
 #   export DISPLAY=$(cat ~/.vpncontainer-display)
+# It writes the same to ~/.gtvpn-display, the name before the rename, so a
+# line in your shell setup there that still reads that one keeps working.
 #
 # The session rides on the shared connection to <host> (ControlMaster), so
 # it costs no extra sign-in, and stopping it leaves that connection alone. It
 # has a terminal on the server, so when it ends for any reason the server
-# hangs it up and it removes ~/.vpncontainer-display (if that still names its
-# display) instead of lingering.
+# hangs it up and it removes ~/.vpncontainer-display (and ~/.gtvpn-display) if
+# that still names its display, instead of lingering.
 set -uo pipefail
 host=${1:-}; action=${2:-start}
 usage() { echo "usage: vpncontainer-display <host> [start|status|stop]" >&2; exit 2; }
@@ -62,7 +64,7 @@ case $action in
     # The server side checks it got a display, records it, then waits until
     # its terminal hangs up. The tag rides along as sh's $0. No ' or ! in it.
     # shellcheck disable=SC2016  # expanded on the server
-    remote='d=${DISPLAY:-}; f=$HOME/.vpncontainer-display; if [ -z "$d" ]; then echo "vpncontainer-display: the server gave no X display (is X11 forwarding allowed there?)" >&2; exit 3; fi; bye() { [ "$(cat "$f" 2>/dev/null)" = "$d" ] && rm -f "$f"; trap - HUP INT TERM; kill 0; }; trap bye HUP INT TERM; umask 077; printf "%s\n" "$d" > "$f"; sleep 2147483647 & wait; bye'
+    remote='d=${DISPLAY:-}; if [ -z "$d" ]; then echo "vpncontainer-display: the server gave no X display (is X11 forwarding allowed there?)" >&2; exit 3; fi; bye() { for f in "$HOME/.vpncontainer-display" "$HOME/.gtvpn-display"; do [ "$(cat "$f" 2>/dev/null)" = "$d" ] && rm -f "$f"; done; trap - HUP INT TERM; kill 0; }; trap bye HUP INT TERM; umask 077; for f in "$HOME/.vpncontainer-display" "$HOME/.gtvpn-display"; do printf "%s\n" "$d" > "$f"; done; sleep 2147483647 & wait; bye'
     # -f: background once the session is open. -tt: a terminal on the
     # server, for the hang-up. ControlMaster=no: a client of the shared
     # connection, never its owner.

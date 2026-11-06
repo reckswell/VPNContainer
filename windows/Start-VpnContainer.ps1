@@ -42,6 +42,14 @@ $ErrorActionPreference = "Continue"   # native tools report through exit codes
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot "..")).ProviderPath
 $Conf = if ($ConfPath) { $ConfPath } else { Join-Path $Repo "vpncontainer-login.conf" }
 $Example = Join-Path $Repo "vpncontainer-login.example.conf"
+# Its name before the rename (gtvpn): renamed, keeping its times (which say
+# whether a .refused next to it is still current).
+if (-not $ConfPath) {
+  foreach ($x in @("", ".refused")) {
+    $old = Join-Path $Repo "gtvpn-login.conf$x"
+    if ((Test-Path -LiteralPath $old) -and -not (Test-Path -LiteralPath "$Conf$x")) { Move-Item -LiteralPath $old -Destination "$Conf$x" }
+  }
+}
 
 function Say($m)  { Write-Host "[vpncontainer] $m" -ForegroundColor Cyan }
 function Warn($m) { Write-Host "[vpncontainer] $m" -ForegroundColor Yellow }
@@ -77,7 +85,12 @@ function Test-Dpapi([string]$Blob) {
 # ---- where WSL finds this repo -----------------------------------------------------
 $vpncontainerCmd = Join-Path $env:LOCALAPPDATA "vpncontainer\bin\vpncontainer.cmd"
 $distro = ""
-if ((Test-Path $vpncontainerCmd) -and ((Get-Content $vpncontainerCmd -Raw) -match '-d\s+(\S+)')) { $distro = $Matches[1] }
+# (gtvpn.cmd: the command setup installed before the rename. Only the new
+# one counts as setup done, so the first start after the rename runs setup
+# again, which installs it.)
+foreach ($c in @($vpncontainerCmd, (Join-Path $env:LOCALAPPDATA "gtvpn\bin\gtvpn.cmd"))) {
+  if (-not $distro -and (Test-Path $c) -and ((Get-Content $c -Raw) -match '-d\s+(\S+)')) { $distro = $Matches[1] }
+}
 $wslRepo = $Repo
 if ($Repo -match '^\\\\wsl(\.localhost|\$)\\([^\\]+)\\(.*)$') {
   # The repo is inside a WSL distro: use that distro and its Linux path.
@@ -119,9 +132,15 @@ if ($Check) {
   if ($cfg['password_dpapi'] -and -not $dpOk -and $cfg['password']) { Warn "password_dpapi holds no usable encrypted value; the next start replaces it with one made from password=" }
   Say "setup:     $(if ((Test-Path $vpncontainerCmd) -and (Test-Path (Join-Path $Repo '.env'))) { 'done' } else { 'not yet (the first start runs it)' })"
   if (Test-Docker) {
-    $st = & $docker inspect -f "{{.State.Running}}" vpncontainer 2>$null
-    $tun = if ("$st".Trim() -eq "true") { & $docker exec vpncontainer ip link show tun0 2>&1 | Out-Null; if ($LASTEXITCODE -eq 0) { ', tunnel UP' } else { ', no tunnel' } } else { '' }
-    Say "docker:    running; container vpncontainer: $(if ("$st".Trim() -eq 'true') { 'running' } elseif ($st) { 'stopped' } else { 'not created' })$tun"
+    $ct = "vpncontainer"
+    $st = & $docker container inspect -f "{{.State.Running}}" $ct 2>$null
+    if (-not $st) {  # the container from before the rename, if it is still there
+      $o = & $docker container inspect -f "{{.State.Running}}" gtvpn 2>$null
+      if ($o) { $ct = "gtvpn"; $st = $o }
+    }
+    $tun = if ("$st".Trim() -eq "true") { & $docker exec $ct ip link show tun0 2>&1 | Out-Null; if ($LASTEXITCODE -eq 0) { ', tunnel UP' } else { ', no tunnel' } } else { '' }
+    $was = if ($ct -eq "gtvpn") { " (from before the rename; the next start without a tunnel replaces it)" } else { "" }
+    Say "docker:    running; container ${ct}$($was): $(if ("$st".Trim() -eq 'true') { 'running' } elseif ($st) { 'stopped' } else { 'not created' })$tun"
   } else { Say "docker:    not running (a start would start Docker Desktop)" }
   exit 0
 }

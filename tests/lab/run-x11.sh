@@ -56,19 +56,21 @@ check "hosts.conf alias reaches the GT server and X11 works on a fresh connectio
 # not open, like VS Code Remote-SSH from the computer, still reaches the
 # desktop. "On the server" here is docker exec into the server container.
 srv(){ docker exec -u "$1" -e HOME="/home/$1" vpncontainer-lab-ocserv sh -c "$2"; }
-# Within 5 s: no ~/.vpncontainer-display and no waiting sleep left for user $1
-gone(){ for _ in $(seq 10); do srv "$1" '! test -e ~/.vpncontainer-display' && ! docker exec vpncontainer-lab-ocserv pgrep -u "$1" -x sleep >/dev/null && return 0; sleep 0.5; done; return 1; }
+# Within 5 s: no ~/.vpncontainer-display (or its old name) and no waiting sleep left for user $1
+gone(){ for _ in $(seq 10); do srv "$1" '! test -e ~/.vpncontainer-display && ! test -e ~/.gtvpn-display' && ! docker exec vpncontainer-lab-ocserv pgrep -u "$1" -x sleep >/dev/null && return 0; sleep 0.5; done; return 1; }
 export -f dev srv gone
 docker exec vpncontainer cat /home/dev/.ssh/id_ed25519.pub | docker exec -i vpncontainer-lab-ocserv sh -c 'cat > /etc/ssh/lab_keys/gtcsh; chmod 644 /etc/ssh/lab_keys/gtcsh'
 check "vpncontainer-display opens a display on the GT server, over the existing connection" \
   bash -c "dev 'vpncontainer-display cadence' | grep -q '^X display open on cadence: localhost:'"
 check "a separate session on the server draws on the desktop with ~/.vpncontainer-display" \
   srv gtuser 'DISPLAY=$(cat ~/.vpncontainer-display) xdpyinfo >/dev/null'
+check "...and with ~/.gtvpn-display, its name before the rename" \
+  srv gtuser 'test "$(cat ~/.gtvpn-display)" = "$(cat ~/.vpncontainer-display)" && DISPLAY=$(cat ~/.gtvpn-display) xdpyinfo >/dev/null'
 check "status reports the display, and a second start keeps the same one" \
   bash -c "a=\$(dev 'vpncontainer-display cadence status') && b=\$(dev 'vpncontainer-display cadence') && [[ \$a == 'open on cadence: DISPLAY=localhost:'* && \$a == \"\$b\" ]]"
 check "while open, it waits on the server as one idle process" \
   bash -c "[[ \$(docker exec vpncontainer-lab-ocserv pgrep -u gtuser -x sleep | wc -l) == 1 ]]"
-check "stop removes ~/.vpncontainer-display and leaves nothing running on the server" \
+check "stop removes ~/.vpncontainer-display (and the old name) and leaves nothing running on the server" \
   bash -c "dev 'vpncontainer-display cadence stop' >/dev/null && gone gtuser"
 check "stop leaves the shared connection open (no new Duo prompt)" dev "ssh -O check cadence 2>&1 | grep -qi running"
 check "with a tcsh login shell and no open connection, it signs in and opens a display" \

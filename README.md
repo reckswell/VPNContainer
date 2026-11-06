@@ -1,8 +1,10 @@
-# vpncontainer: Georgia Tech VPN in a sealed container
+# vpncontainer: your school or work VPN in a sealed container
 
-Connect to GT's GlobalProtect VPN **inside a small container**, not on your
-computer. SSH, VS Code and Cadence/Vivado windows work as usual. Your
-computer's own traffic never touches GT, and GT has no way back in.
+Connect to a school or work VPN **inside a small container**, not on your
+computer. So far that is Georgia Tech's GlobalProtect VPN (`[vpn] provider`
+in `vpncontainer.toml` is where others will go). SSH, VS Code and
+Cadence/Vivado windows work as usual. Your computer's own traffic never
+touches GT, and GT has no way back in.
 
 ```
   your computer ──(normal internet, untouched)──► the world
@@ -301,6 +303,33 @@ What is checked (details in [docs/DESIGN.md](docs/DESIGN.md#verification-recursi
   re-checks the firewall every 15 s and drops the tunnel if anything
   changed it.
 
+## Coming from gtvpn (the old name)
+
+This project used to be called gtvpn. After you update, use `./vpncontainer`
+(`vpncontainer` in PowerShell, `Start-VpnContainer.cmd` for one click). The
+rest happens by itself:
+
+- **A running gtvpn container keeps working** with every command, and its
+  tunnel stays up. The next `up` or `connect` while no tunnel is up replaces
+  it with the vpncontainer container, after copying your home in there and
+  its ssh host key into the new volumes. The old volumes are kept; once all
+  is well, remove them with `docker volume rm gtvpn_home gtvpn_state`.
+- **The first command renames, in place:** the `GTVPN_` lines in `.env`
+  (the file as it was stays as `.env.before-rename`), `gtvpn-login.conf`,
+  and `~/.ssh/gtvpn` with its `Include` line in `~/.ssh/config`.
+- **Windows:** the first `Start-VpnContainer.cmd` runs the setup once more.
+  It moves `%USERPROFILE%\.ssh\gtvpn`, installs the `vpncontainer` command
+  (`gtvpn` still works and says it was renamed) and points the sign-in link
+  handler at the new script. A shortcut to `Start-GtVpn.cmd` needs to point
+  to `Start-VpnContainer.cmd` now.
+- **GT servers:** `vpncontainer display` writes `~/.vpncontainer-display`
+  and also the old `~/.gtvpn-display`, so a line in your shell setup there
+  that reads the old name keeps working.
+- **VS Code:** the container's ssh host is `vpncontainer` now (it was
+  `gtvpn`); your `gt-<name>` hosts keep their names. If your settings have
+  `"remote.SSH.remotePlatform": { "gtvpn": "linux" }`, add
+  `"vpncontainer": "linux"` next to it.
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -363,10 +392,11 @@ services, a fake allow-listed API, a fake portal and a fake GT ssh server,
 then attacks the setup:
 
 ```bash
-tests/lab/run-lab.sh   # split + full tunnel: leaks, crash, tampering, SSH jump, proxy (46 checks)
-tests/lab/run-x11.sh   # remote X app → ssh over tunnel → container → host display
-tests/lab/run-cli.sh   # the real ./vpncontainer flow incl. SSO hand-off via the link handler
-tests/lab/run-perms.sh # image built from a Windows-drive checkout (all files 0777) is still safe
+tests/lab/run-lab.sh    # split + full tunnel: leaks, crash, tampering, SSH jump, proxy (59 checks)
+tests/lab/run-x11.sh    # remote X app → ssh over tunnel → container → host display
+tests/lab/run-cli.sh    # the real ./vpncontainer flow incl. SSO hand-off via the link handler
+tests/lab/run-perms.sh  # image built from a Windows-drive checkout (all files 0777) is still safe
+tests/lab/run-rename.sh # updating a gtvpn setup in place, with its tunnel up, to vpncontainer
 ```
 
 The one piece the lab cannot do is GT's real portal and Duo. The first

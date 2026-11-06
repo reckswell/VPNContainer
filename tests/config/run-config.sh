@@ -125,4 +125,37 @@ printf 'Host oldbox\n    HostName old.gatech.edu\n' > hosts.conf
 check "an old hosts.conf gets a note to move its hosts" bash -c "./vpncontainer hosts 2>&1 | grep -q 'hosts.conf is no longer read.*oldbox'"
 rm -f hosts.conf
 check "after all that, the good file still works" ./vpncontainer hosts
+
+# ---- From before the rename (gtvpn): files renamed in place, once ---------------------
+H2=$T/home2; R2=$T/repo2; O=$H2/.ssh/gtvpn; mkdir -p "$O" "$R2/host"
+cp "$SRC/vpncontainer" "$SRC/vpncontainer.toml" "$SRC/.env.example" "$SRC/compose.yaml" "$R2/"; cp "$SRC/host/config.py" "$R2/host/"
+printf 'HOST_UID=1000\nGTVPN_GT_USER=olduser\nGTVPN_SSH_PORT=2299\n' > "$R2/.env"
+printf 'username=olduser\n' > "$R2/gtvpn-login.conf"
+touch -d '2 days ago' "$R2/gtvpn-login.conf"; touch -d '1 day ago' "$R2/gtvpn-login.conf.refused"
+REF_T=$(stat -c %Y "$R2/gtvpn-login.conf.refused")
+# ~/.ssh/gtvpn/config as the old ./gtvpn wrote it
+printf 'Host gtvpn\n    HostName 127.0.0.1\n    Port 2299\n    IdentityFile %s/id_ed25519\n    UserKnownHostsFile %s/known_hosts\n\nHost gt-linlab19\n    HostName ece-linlab19.ece.gatech.edu\n    ProxyJump gtvpn\n    ControlPath %s/cm-%%C\n' "$O" "$O" "$O" > "$O/config"
+printf 'Include %s/config\n\nHost mine\n    HostName example.com\n' "$O" > "$H2/.ssh/config"
+OLDCFG=$(cat "$H2/.ssh/config")
+legacy_run() { (cd "$R2" && HOME=$H2 ./vpncontainer route example.com 2>&1); }
+MSG=$(legacy_run)
+N=$H2/.ssh/vpncontainer
+check "old .env: GTVPN_ settings become VPNCONTAINER_ ones" \
+  bash -c "grep -qx VPNCONTAINER_SSH_PORT=2299 '$R2/.env' && grep -qx VPNCONTAINER_GT_USER=olduser '$R2/.env' && grep -qx HOST_UID=1000 '$R2/.env' && ! grep -q GTVPN_ '$R2/.env'"
+check "...the file as it was is kept as .env.before-rename" grep -qx GTVPN_SSH_PORT=2299 "$R2/.env.before-rename"
+check "...and the CLI reads the renamed setting" bash -c "cd '$R2' && source ./vpncontainer && [[ \$(envget VPNCONTAINER_SSH_PORT) == 2299 ]]"
+check "gtvpn-login.conf becomes vpncontainer-login.conf, .refused with its time" \
+  bash -c "[[ -f '$R2/vpncontainer-login.conf' && ! -e '$R2/gtvpn-login.conf' && \$(stat -c %Y '$R2/vpncontainer-login.conf.refused') == $REF_T ]]"
+check "the folder .ssh/gtvpn moves to .ssh/vpncontainer" bash -c "[[ -f '$N/config' && ! -e '$O' ]]"
+check "...~/.ssh/config includes the new place, the rest unchanged" \
+  bash -c "[[ \$(cat '$H2/.ssh/config') == \"\${1//\$2/\$3}\" ]]" _ "$OLDCFG" "$O/config" "$N/config"
+check "...its config is usable right away: alias vpncontainer, the new paths" \
+  bash -c "o=\$(ssh -G -F '$N/config' vpncontainer) && grep -qx 'port 2299' <<<\"\$o\" && grep -qx 'identityfile $N/id_ed25519' <<<\"\$o\" && grep -qx 'userknownhostsfile $N/known_hosts' <<<\"\$o\""
+check "...and gt-<name> hosts jump through vpncontainer" \
+  bash -c "o=\$(ssh -G -F '$N/config' gt-linlab19) && grep -qx 'proxyjump vpncontainer' <<<\"\$o\" && grep -q '^controlpath $N/cm-' <<<\"\$o\""
+check "it says what it renamed" bash -c 'grep -q "renamed the GTVPN_ settings" <<<"$1" && grep -q "moved ~/.ssh/gtvpn" <<<"$1"' _ "$MSG"
+cp -p "$R2/.env.before-rename" "$T/env.copy"; mkdir -p "$O"
+MSG=$(legacy_run)
+check "a second run renames nothing (and overwrites no copy)" \
+  bash -c "[[ -z \$(grep -E 'renamed|moved' <<<\"\$1\") ]] && cmp -s '$R2/.env.before-rename' '$T/env.copy' && [[ -d '$O' && -f '$N/config' ]]" _ "$MSG"
 exit $FAILED

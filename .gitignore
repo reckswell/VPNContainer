@@ -12,4 +12,9 @@ hosts.conf
 # Your saved GT sign-in (vpncontainer-login.example.conf is its template): never commit
 vpncontainer-login.conf
 vpncontainer-login.conf.refused
+# ...and their names before the rename (gtvpn); ./vpncontainer renames them
+gtvpn-login.conf
+gtvpn-login.conf.refused
 vpncontainer.local.toml
+# .env as it was before the rename
+.env.before-rename

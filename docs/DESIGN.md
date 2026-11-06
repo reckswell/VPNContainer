@@ -451,6 +451,30 @@ and on Windows also from `.wslconfig` (`Setup-VpnContainer.ps1 -Memory 6GB
 -Processors 4`). The image is ~260 MB compressed with Claude Code (~100 MB
 without).
 
+## Renamed from gtvpn
+
+The project was called gtvpn until it was meant for more than one VPN. A
+setup from before keeps working without a restart, because the tunnel it
+may have up is not ours to drop:
+
+- `./vpncontainer` uses a running `gtvpn` container while no `vpncontainer`
+  one exists: the same commands, with that image's `gtvpn-*` scripts and
+  `/run/gtvpn` paths (`CP` in the CLI). `host/verify-host.sh` gets the name
+  through `VPNCONTAINER_NAME`.
+- `up` and `connect` replace it only while its tunnel is down, and refuse
+  with a message while it is up. The volumes are copied (`cp -a` in a
+  container with no network) into new ones labelled as compose labels its
+  own, and the old ones stay as a backup. Docker can't rename a volume, and
+  reusing the old ones under the new project would warn on every start.
+- Files that are only ever read by this repo's code are renamed in place,
+  once: `.env` keys (with a copy), the login file (with its times, which
+  say whether a `.refused` mark is current), `~/.ssh/gtvpn` (open
+  ControlMaster sockets move with it) and, on Windows, by the setup script,
+  `%USERPROFILE%\.ssh\gtvpn` and the old `gtvpn.cmd`, which now forwards.
+- Files outside this computer are left alone: on a GT server,
+  `vpncontainer-display` also writes the old `~/.gtvpn-display`, which the
+  user's shell setup there may read.
+
 ## Extending later
 
 - Other school/work VPNs: any GlobalProtect portal works today (`[vpn]

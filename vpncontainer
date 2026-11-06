@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# vpncontainer: host-side control for the isolated Georgia Tech VPN container.
-# Works on Ubuntu 24.04 and inside WSL2 (Windows). Run `./vpncontainer help`.
+# vpncontainer: host-side control for a school/work VPN in an isolated
+# container (so far: Georgia Tech's GlobalProtect). Works on Ubuntu 24.04 and
+# inside WSL2 (Windows). Run `./vpncontainer help`.
 set -euo pipefail
 
 HERE=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
@@ -23,6 +24,93 @@ compose() {
 engine() { "$ENGINE" "$@"; }
 running() { [[ $(engine inspect -f '{{.State.Running}}' "$NAME" 2>/dev/null) == true ]]; }
 need_running() { running || die "container is not running; start it with: ./vpncontainer up"; }
+
+# ---- From before the rename (gtvpn) -----------------------------------------
+# This project was called gtvpn. A gtvpn container that is still running
+# keeps working with every command, so its tunnel can stay up: `up` and
+# `connect` replace it with a vpncontainer container only while its tunnel
+# is down, and copy its volumes first (your home in there, its ssh host key).
+# .env, ~/.ssh/gtvpn and gtvpn-login.conf are renamed the first time any
+# command runs.
+NEW=vpncontainer OLD=gtvpn
+CP=$NEW   # the name of the container's own commands and folders: $CP-connect, /run/$CP
+legacy() { [[ $NAME == "$OLD" ]]; }
+legacy_detect() {
+  command -v "$ENGINE" >/dev/null || return 0
+  engine container inspect "$NEW" >/dev/null 2>&1 && return 0
+  [[ $(engine container inspect -f '{{.State.Running}}' "$OLD" 2>/dev/null) == true ]] || return 0
+  NAME=$OLD; CP=$OLD
+}
+legacy_files() {
+  local old=$HOME/.ssh/$OLD f t
+  if [[ -f .env ]] && grep -q '^GTVPN_' .env; then
+    cp -p .env .env.before-rename
+    t=$(mktemp); sed 's/^GTVPN_/VPNCONTAINER_/' .env > "$t"; cat "$t" > .env; rm -f "$t"
+    say "renamed the GTVPN_ settings in .env to VPNCONTAINER_ (the file as it was: .env.before-rename)"
+  fi
+  for f in "" .refused; do  # mv keeps the times, which say whether .refused is current
+    [[ -f $HERE/$OLD-login.conf$f && ! -e $HERE/$NEW-login.conf$f ]] || continue
+    mv "$HERE/$OLD-login.conf$f" "$HERE/$NEW-login.conf$f"
+    [[ -z $f ]] && say "renamed $OLD-login.conf to $NEW-login.conf"
+  done
+  if [[ -d $old && ! -e $SSH_DIR ]]; then
+    # Open shared connections (cm-*) keep working: a socket moves with its folder.
+    mv "$old" "$SSH_DIR"
+    # Its config with the new paths and alias, until the next one is written.
+    [[ -f $SSH_DIR/config ]] && sed -i "s|$old/|$SSH_DIR/|g; s/^Host $OLD\$/Host $NEW/; s/^\( *ProxyJump\) $OLD\$/\1 $NEW/" "$SSH_DIR/config"
+    if grep -qxF "Include $old/config" "$HOME/.ssh/config" 2>/dev/null; then
+      t=$(mktemp); sed "s|^Include $old/config\$|Include $SSH_DIR/config|" "$HOME/.ssh/config" > "$t"
+      cat "$t" > "$HOME/.ssh/config"; rm -f "$t"
+    fi
+    say "moved ~/.ssh/$OLD to ~/.ssh/$NEW (the ssh key and config for the container)"
+  fi
+  # The browser's sign-in link handler (Linux; on Windows the setup script
+  # registers it), whose old entry runs ./gtvpn: register this script.
+  f=$HOME/.local/share/applications/$OLD-callback.desktop
+  if [[ -f $f ]] && ! is_wsl && grep -q "^Exec=$HERE/$OLD " "$f"; then
+    install_url_handler >/dev/null && rm -f "$f"
+  fi
+  return 0
+}
+legacy_remove() {
+  engine stop -t 15 "$OLD" >/dev/null 2>&1 || true
+  engine rm -f "$OLD" >/dev/null || die "could not remove the $OLD container"
+  engine network rm "${OLD}_${OLD}_net" >/dev/null 2>&1 || true
+}
+# Before `up` starts this container: take the place of a gtvpn one (only with
+# no tunnel up), and copy its volumes into this one's. The old volumes are
+# kept until you remove them.
+legacy_replace() {
+  local st v img="" i copied=0
+  st=$(engine container inspect -f '{{.State.Running}}' "$OLD" 2>/dev/null) || st=""
+  if [[ $st == true ]] && engine exec "$OLD" ip link show tun0 >/dev/null 2>&1; then
+    die "your container from before the rename ($OLD) has its VPN tunnel up, so it is left as it is (every command works with it). To move to the $NEW container: ./$NEW disconnect, then ./$NEW up"
+  fi
+  if [[ -n $st ]]; then
+    say "replacing the $OLD container (from before the rename; no tunnel was up) with $NEW"
+    legacy_remove
+  fi
+  NAME=$NEW; CP=$NEW; export VPNCONTAINER_NAME=$NAME
+  for v in home state; do
+    engine volume inspect "${OLD}_$v" >/dev/null 2>&1 || continue
+    engine volume inspect "${NEW}_$v" >/dev/null 2>&1 && continue
+    if [[ -z $img ]]; then  # any image with sh and cp
+      for i in "$OLD:local" "$NEW:local"; do engine image inspect "$i" >/dev/null 2>&1 && { img=$i; break; }; done
+      [[ -n $img ]] || { compose build; img=$NEW:local; }
+    fi
+    say "copying the $v volume (${OLD}_$v) into ${NEW}_$v"
+    # Labelled as docker compose labels its own, so it uses this one as is.
+    engine volume create --label "com.docker.compose.project=$NEW" --label "com.docker.compose.volume=$v" "${NEW}_$v" >/dev/null
+    if ! engine run --rm --network none -u 0 --entrypoint sh -v "${OLD}_$v:/from:ro" -v "${NEW}_$v:/to" "$img" -c 'cp -a /from/. /to/'; then
+      engine volume rm "${NEW}_$v" >/dev/null 2>&1 || true
+      die "could not copy the $v volume; nothing was started (${OLD}_$v is unchanged)"
+    fi
+    copied=1
+  done
+  if ((copied)); then
+    say "the ${OLD}_home and ${OLD}_state volumes are kept as they were; once you're happy, remove them with: $ENGINE volume rm ${OLD}_home ${OLD}_state"
+  fi
+}
 
 # ---- Settings: vpncontainer.toml (in the repo), then .env (this computer) ---------
 # vpncontainer.toml says which VPN to use and which SSH hosts go through the
@@ -120,7 +208,7 @@ tunnel_up() { engine exec "$NAME" ip link show tun0 >/dev/null 2>&1; }
 # treat it as typed input and start a real sign-in with it).
 can_stash() {
   # shellcheck disable=SC2016  # runs in the container
-  engine exec -u root "$NAME" sh -c 'grep -q "^STASH=" /usr/local/sbin/vpncontainer-connect && [ "$(stat -f -c %T /run/vpncontainer/secret 2>/dev/null)" = tmpfs ]' >/dev/null 2>&1
+  engine exec -u root "$NAME" sh -c 'grep -q "^STASH=" "/usr/local/sbin/$1-connect" && [ "$(stat -f -c %T "/run/$1/secret" 2>/dev/null)" = tmpfs ]' sh "$CP" >/dev/null 2>&1
 }
 # Hand the saved sign-in to the container for the next vpncontainer-connect (see
 # vpncontainer-connect --stash). Prints why it did not, if it did not.
@@ -145,7 +233,7 @@ stash_signin() {
   fi
   p=$(saved_password)
   [[ -n $p ]] || return 0
-  printf '%s\n%s\n' "$u" "$p" | engine exec -i -u root "$NAME" vpncontainer-connect --stash || true
+  printf '%s\n%s\n' "$u" "$p" | engine exec -i -u root "$NAME" "$CP-connect" --stash || true
 }
 
 envset() { # key value  (in-place, keeps the rest of the file)
@@ -247,12 +335,15 @@ win_env() {
 # if Setup-VpnContainer.ps1 created it. Windows OpenSSH has no ControlMaster.
 write_win_ssh_config() {
   is_wsl || return 0
-  local prof dir win
+  local prof dir win sub
   prof=$(win_env USERPROFILE) || return 0
-  dir=$(wslpath -u "$prof" 2>/dev/null)/.ssh/vpncontainer
-  [[ -f $dir/config ]] || return 0
-  win=${prof//\\//}/.ssh/vpncontainer
-  ssh_config_text "$win/id_ed25519" "$win/known_hosts" none > "$dir/config"
+  for sub in "$NEW" "$OLD"; do  # $OLD: until Setup-VpnContainer.ps1 renames it
+    dir=$(wslpath -u "$prof" 2>/dev/null)/.ssh/$sub
+    [[ -f $dir/config ]] || continue
+    win=${prof//\\//}/.ssh/$sub
+    ssh_config_text "$win/id_ed25519" "$win/known_hosts" none > "$dir/config"
+    return 0
+  done
 }
 
 # ---- Your hosts: [[hosts]] and [ssh] in vpncontainer.toml -------------------
@@ -319,7 +410,7 @@ cmd_hosts() {
   hosts_sync || die "fix $CONF and run ./vpncontainer hosts again (nothing was changed)"
   cfg_overrides
   write_ssh_config
-  if running; then engine exec -u root "$NAME" vpncontainer-hosts >/dev/null || die "the container refused the hosts from $CONF (see above)"; fi
+  if running; then engine exec -u root "$NAME" "$CP-hosts" >/dev/null || die "the container refused the hosts from $CONF (see above)"; fi
   local a h u p n=0
   while read -r a; do
     read -r h u p < <(hosts_resolve "$a") || continue
@@ -532,6 +623,7 @@ cmd_setup() {
 
 cmd_up() {
   [[ -f .env ]] || cmd_setup
+  legacy_replace   # first: while an old tunnel is up, change nothing
   hosts_sync || warn "starting with the previous hosts; fix $CONF, then run: ./vpncontainer hosts"
   cfg_overrides
   x11_detect; x11_cookie; write_ssh_config
@@ -564,6 +656,8 @@ open_signin() {
 }
 
 cmd_connect() {
+  # The container from before the rename, with no tunnel: start this one.
+  if legacy && ! tunnel_up; then cmd_up; fi
   running || cmd_up
   # A container from before the saved sign-in: recreate it on this version,
   # but only while no tunnel is up (that would drop it).
@@ -581,7 +675,7 @@ cmd_connect() {
   ) &
   local opener=$! rc=0
   stash_signin
-  engine exec -it -u root "$NAME" vpncontainer-connect || rc=$?
+  engine exec -it -u root "$NAME" "$CP-connect" || rc=$?
   kill $opener 2>/dev/null || true
   if (( rc == 3 )); then
     touch "$REFUSED"
@@ -596,14 +690,14 @@ cmd_connect() {
 cmd_callback() {
   local data=${1:-}
   [[ -n $data ]] || IFS= read -r data
-  printf '%s\n' "$data" | engine exec -i -u root "$NAME" vpncontainer-callback
+  printf '%s\n' "$data" | engine exec -i -u root "$NAME" "$CP-callback"
   command -v notify-send >/dev/null && notify-send "GT VPN" "Sign-in handed to the vpncontainer container" 2>/dev/null || true
 }
 
 cmd_verify() {
   need_running
   local rc=0
-  engine exec -u root "$NAME" vpncontainer-verify "$@" || rc=1
+  engine exec -u root "$NAME" "$CP-verify" "$@" || rc=1
   echo
   cmd_host_verify || rc=1
   return $rc
@@ -617,7 +711,7 @@ cmd_watch() {
   say "re-verifying every ${n}s (Ctrl-C to stop)"
   while true; do
     i=$((i+1))
-    if engine exec -u root "$NAME" vpncontainer-verify --quiet >/dev/null && bash "$HERE/host/verify-host.sh" --quiet >/dev/null; then
+    if engine exec -u root "$NAME" "$CP-verify" --quiet >/dev/null && bash "$HERE/host/verify-host.sh" --quiet >/dev/null; then
       printf '%s round %d: %ssealed%s\n' "$(date +%T)" "$i" "$c_g" "$c_0"
     else
       printf '%s round %d: %sPROBLEM%s (run ./vpncontainer verify)\n' "$(date +%T)" "$i" "$c_r" "$c_0"
@@ -629,7 +723,7 @@ cmd_watch() {
 
 usage() {
   cat <<EOF
-${c_b}vpncontainer${c_0} - Georgia Tech GlobalProtect in an isolated container
+${c_b}vpncontainer${c_0} - your school/work VPN in an isolated container (so far: GT's GlobalProtect)
 
   setup            one-time: .env, SSH key + config, X11, sign-in link handler
   up               build/start the container (sealed, no tunnel yet)
@@ -660,6 +754,8 @@ EOF
 # Sourcing (tests) defines the functions without running a command.
 [[ ${BASH_SOURCE[0]} == "$0" ]] || return 0
 cmd=${1:-help}; shift || true
+case $cmd in help|-h|--help) ;; *) legacy_files; legacy_detect ;; esac
+export VPNCONTAINER_NAME=$NAME  # for host/verify-host.sh
 # Commands that use vpncontainer.toml's settings stop on a mistake in it, before
 # anything is changed.
 case $cmd in
@@ -670,8 +766,8 @@ case $cmd in
   setup) cmd_setup ;;
   up) cmd_up "$@" ;;
   connect) cmd_connect ;;
-  disconnect) need_running; engine exec -u root "$NAME" vpncontainer-disconnect ;;
-  status) need_running; engine exec -u root "$NAME" vpncontainer-status ;;
+  disconnect) need_running; engine exec -u root "$NAME" "$CP-disconnect" ;;
+  status) need_running; engine exec -u root "$NAME" "$CP-status" ;;
   verify) cmd_verify "$@" ;;
   host-verify) cmd_host_verify ;;
   watch) cmd_watch "$@" ;;
@@ -685,9 +781,9 @@ case $cmd in
       echo "showing xeyes for 10 seconds"; timeout 10 xeyes; rc=$?
       if [ $rc -eq 0 ] || [ $rc -eq 124 ]; then echo "X11 works"; else echo "X11 test failed (xeyes exit $rc)"; exit 1; fi' ;;
   display) need_running; [[ ${1:-} ]] || die "usage: vpncontainer display <host> [status|stop]"
-    engine exec -it -u dev -w /home/dev "$NAME" bash -lc "vpncontainer-display $(printf '%q ' "$@")" ;;
+    engine exec -it -u dev -w /home/dev "$NAME" bash -lc "$CP-display $(printf '%q ' "$@")" ;;
   logs) engine logs --tail 100 "$NAME"
-    engine exec -u root "$NAME" sh -c 'for f in connect gpclient; do [ -s /var/log/vpncontainer/$f.log ] || continue; echo "--- $f.log"; tail -n 50 /var/log/vpncontainer/$f.log | sed "s/\x1b\[[0-9;]*[A-Za-z]//g; s/\r//g"; done' || true ;;
+    engine exec -u root "$NAME" sh -c 'for f in connect gpclient; do [ -s "/var/log/$1/$f.log" ] || continue; echo "--- $f.log"; tail -n 50 "/var/log/$1/$f.log" | sed "s/\x1b\[[0-9;]*[A-Za-z]//g; s/\r//g"; done' sh "$CP" || true ;;
   callback) cmd_callback "$@" ;;
   hosts) cmd_hosts ;;
   route) cmd_route "$@" ;;
@@ -700,7 +796,8 @@ case $cmd in
     grep -qF "$(cut -d' ' -f2 <<<"$k")" runtime/in/authorized_keys || echo "$k" >> runtime/in/authorized_keys
     say "key authorized (takes effect on next ./vpncontainer up)" ;;
   rebuild) x11_detect; compose build --pull --no-cache; say "rebuilt; restart with ./vpncontainer down && ./vpncontainer up" ;;
-  down) compose down ;;
+  down) if legacy; then legacy_remove; say "stopped and removed the $OLD container (its volumes are kept)"
+    else compose down; fi ;;
   help|-h|--help) usage ;;
   *) usage; exit 2 ;;
 esac
