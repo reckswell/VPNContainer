@@ -206,6 +206,7 @@ namespace GtVpn
         void SetState(uint id, bool maximize, bool minimize);
         void Replaced();                      // another window manager took over
         void SetIcon(uint id, uint[] icon);   // _NET_WM_ICON changed
+        void Uncovered(int x, int y, int w, int h); // a window there went away, moved or went down
     }
 
     sealed class XWin
@@ -231,6 +232,11 @@ namespace GtVpn
         public System.Drawing.Rectangle WorkArea; // primary screen work area, X coordinates
         readonly Dictionary<uint, XWin> wins = new Dictionary<uint, XWin>();   // shown windows
         readonly Dictionary<uint, int[]> geo = new Dictionary<uint, int[]>(); // every root child: x y w h override
+        // The session's stacking: every root child, bottom to top, and the
+        // ones that show (mapped, not InputOnly). Where windows overlap, the
+        // framebuffer holds the upper one's pixels (Over).
+        readonly List<uint> stack = new List<uint>();
+        readonly HashSet<uint> drawn = new HashSet<uint>(), inputOnly = new HashSet<uint>(), sorted = new HashSet<uint>();
         uint me;
         uint A_WM_PROTOCOLS, A_WM_DELETE_WINDOW, A_WM_TAKE_FOCUS, A_WM_STATE, A_WM_CHANGE_STATE, A_NET_WM_NAME, A_UTF8_STRING,
              A_NET_SUPPORTED, A_NET_SUPPORTING_WM_CHECK, A_NET_ACTIVE_WINDOW, A_NET_WM_STATE, A_NET_WM_STATE_MAXIMIZED_VERT,
@@ -315,7 +321,11 @@ namespace GtVpn
                 catch (XError) { continue; }
                 bool over = attr[27] != 0;
                 geo[w] = new[] { (int)XConn.S16(g, 12), (int)XConn.S16(g, 14), XConn.U16(g, 16), XConn.U16(g, 18), over ? 1 : 0 };
+                stack.Add(w);                     // (QueryTree lists them bottom to top)
+                sorted.Add(w);
+                if (XConn.U16(attr, 12) == 2) inputOnly.Add(w);
                 if (attr[26] != 2) continue;      // not viewable
+                if (!inputOnly.Contains(w)) drawn.Add(w);
                 if (over) ShowPopup(w); else Manage(w, true);
             }
             var t = new Thread(EventLoop) { IsBackground = true, Name = "wm" };
@@ -344,18 +354,21 @@ namespace GtVpn
                 {
                     uint w = XConn.U32(e, 8);
                     geo[w] = new[] { (int)XConn.S16(e, 12), (int)XConn.S16(e, 14), XConn.U16(e, 16), XConn.U16(e, 18), e[22] };
+                    stack.Remove(w); stack.Add(w);    // a new window is above its siblings
                     break;
                 }
                 case 17: // DestroyNotify
                 {
                     uint w = XConn.U32(e, 8);
-                    geo.Remove(w);
+                    Uncover(w); drawn.Remove(w);
+                    geo.Remove(w); stack.Remove(w); inputOnly.Remove(w); sorted.Remove(w);
                     if (wins.Remove(w)) { sink.Remove(w); ClientList(); }
                     break;
                 }
                 case 18: // UnmapNotify
                 {
                     uint w = XConn.U32(e, 8);
+                    Uncover(w); drawn.Remove(w);
                     XWin xw;
                     if (wins.TryGetValue(w, out xw))
                     {
@@ -367,7 +380,11 @@ namespace GtVpn
                 case 19: // MapNotify
                 {
                     uint ev = XConn.U32(e, 4), w = XConn.U32(e, 8);
-                    if (ev == x.Root && e[12] != 0 && !wins.ContainsKey(w) && w != me) ShowPopup(w);
+                    if (ev != x.Root || w == me) break;
+                    if (e[12] != 0 && !wins.ContainsKey(w)) ShowPopup(w);
+                    // (once per window, after the popup is on its way)
+                    if (sorted.Add(w) && XConn.U16(x.Call(new Req(3).U32(w)), 12) == 2) inputOnly.Add(w);
+                    if (!inputOnly.Contains(w)) drawn.Add(w);
                     break;
                 }
                 case 20: // MapRequest
@@ -382,6 +399,13 @@ namespace GtVpn
                     uint ev = XConn.U32(e, 4), w = XConn.U32(e, 8);
                     if (ev != x.Root) break;
                     int gx = XConn.S16(e, 16), gy = XConn.S16(e, 18), gw = XConn.U16(e, 20), gh = XConn.U16(e, 22);
+                    int[] old; geo.TryGetValue(w, out old);
+                    int at = stack.IndexOf(w);
+                    stack.Remove(w);
+                    uint below = XConn.U32(e, 12);    // the sibling it is now just above (none: the bottom)
+                    int bi = below == 0 ? -1 : stack.IndexOf(below);
+                    stack.Insert(below != 0 && bi < 0 ? stack.Count : bi + 1, w);
+                    if (old != null && (old[0] != gx || old[1] != gy || old[2] != gw || old[3] != gh || stack.IndexOf(w) < at)) Uncover(w, old);
                     geo[w] = new[] { gx, gy, gw, gh, e[26] };
                     XWin xw;
                     if (wins.TryGetValue(w, out xw))
@@ -409,6 +433,28 @@ namespace GtVpn
                     x.Do(r);
                     XWin xw;
                     if (wins.TryGetValue(w, out xw) && !xw.Popup && (mask & 15) != 0) sink.MoveResize(w, nx, ny, nw, nh);
+                    break;
+                }
+                case 26: // CirculateNotify
+                {
+                    uint ev = XConn.U32(e, 4), w = XConn.U32(e, 8);
+                    if (ev != x.Root || !stack.Remove(w)) break;
+                    if (e[16] == 0) stack.Add(w); else { stack.Insert(0, w); Uncover(w); }
+                    break;
+                }
+                case 21: // ReparentNotify: a window leaves the root, or comes to it
+                {
+                    uint ev = XConn.U32(e, 4), w = XConn.U32(e, 8), parent = XConn.U32(e, 12);
+                    if (ev != x.Root) break;
+                    if (parent != x.Root) { Uncover(w); drawn.Remove(w); stack.Remove(w); }
+                    else
+                    {
+                        stack.Remove(w); stack.Add(w);
+                        var a = x.Call(new Req(3).U32(w)); var g = x.Call(new Req(14).U32(w));
+                        geo[w] = new[] { (int)XConn.S16(g, 12), (int)XConn.S16(g, 14), XConn.U16(g, 16), XConn.U16(g, 18), a[27] };
+                        sorted.Add(w);
+                        if (XConn.U16(a, 12) == 2) inputOnly.Add(w); else if (a[26] == 2) drawn.Add(w);
+                    }
                     break;
                 }
                 case 28: // PropertyNotify
@@ -548,6 +594,31 @@ namespace GtVpn
             var xw = new XWin { Id = w, Popup = true, X = g[0], Y = g[1], W = g[2], H = g[3] };
             wins[w] = xw;
             sink.Add(xw);
+        }
+
+        // A drawn window leaves the area g (default: where it is), or goes
+        // down: the windows under it there show again, so the viewer paints
+        // that area afresh.
+        void Uncover(uint w, int[] g = null)
+        {
+            if (!drawn.Contains(w) || (g == null && !geo.TryGetValue(w, out g))) return;
+            sink.Uncovered(g[0], g[1], g[2], g[3]);
+        }
+
+        // The session's windows above w (mapped, drawn), where they are: there
+        // the framebuffer has their pixels, not w's.
+        public List<System.Drawing.Rectangle> Over(uint w)
+        {
+            var r = new List<System.Drawing.Rectangle>();
+            lock (wins)
+            {
+                for (int j = stack.IndexOf(w) + 1; j > 0 && j < stack.Count; j++)
+                {
+                    int[] g;
+                    if (drawn.Contains(stack[j]) && geo.TryGetValue(stack[j], out g)) r.Add(new System.Drawing.Rectangle(g[0], g[1], g[2], g[3]));
+                }
+            }
+            return r;
         }
 
         void ClientList()

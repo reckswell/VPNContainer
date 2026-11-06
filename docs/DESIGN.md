@@ -398,6 +398,17 @@ the same session twice:
   session's coordinates and a restarted viewer moves nothing. Popups are
   `WS_POPUP` without a caption, which Mono makes override-redirect, so
   menus and tooltips stay where Cadence puts them.
+  Every paint there is a picture sent to WSLg's X server, which passes it
+  on to Windows, so under mono the viewer paints no part of a window that
+  another session window covers. Where windows overlap, the framebuffer
+  holds only the upper one's pixels. The viewer, as window manager, follows
+  the session's stacking from its root events, and when a window closes,
+  moves or goes down, it paints the area it uncovered again. With two
+  overlapping windows that halved the paints (the lab: 356 a second for
+  178 updates, now 178), and the pixels stayed exact. Paints also no longer
+  hold the framebuffer's lock, so updates keep arriving while a slow paint
+  is in progress. On Windows, painting a hidden area costs next to nothing,
+  so the viewer still paints every window there.
   The frames are WSLg's (Weston's) rather than Windows 11's.
   `GTVPN_VIEWER` overrides the choice; the state comes from
   `HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy`

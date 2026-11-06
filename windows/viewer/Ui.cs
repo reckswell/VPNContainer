@@ -473,6 +473,12 @@ namespace GtVpn
         readonly Dictionary<int, uint> keysDown = new Dictionary<int, uint>();
         public string Label = "GT session";
         public bool Debug = Environment.GetEnvironmentVariable("GTVPN_VIEWER_DEBUG") == "1";
+        // Under Mono, parts of a window that another session window covers
+        // are not painted: there the framebuffer has the other window's
+        // pixels, and each paint is a picture sent to this computer's X server
+        // (WSLg's sends it on to Windows). On Windows a hidden paint costs
+        // next to nothing, and painting there stays as it was.
+        readonly bool skipCovered = !Native.IsWindows;
         readonly TextWriter log;
         long paints, lastFrames, lastBytes, lastPaints; DateTime lastStat = DateTime.Now; TimeSpan lastCpu;
         // Ends the guard of a moved window when no update comes to do it.
@@ -589,13 +595,16 @@ namespace GtVpn
             foreach (var f in forms.Values)
             {
                 if (f.Guarded) continue;
+                List<Rectangle> over = null;
                 foreach (var r in rs)
                 {
                     var i = Rectangle.Intersect(r, f.XRect);
-                    if (i.Width > 0 && i.Height > 0)
+                    if (i.Width <= 0 || i.Height <= 0) continue;
+                    if (skipCovered && over == null && Wm != null) over = Wm.Over(f.Win.Id);
+                    foreach (var p in over == null || over.Count == 0 ? new List<Rectangle> { i } : Outside(i, over))
                     {
-                        f.Invalidate(new Rectangle(i.X - f.XRect.X, i.Y - f.XRect.Y, i.Width, i.Height));
-                        if (Debug) Log("invalidate " + f.Win.Id.ToString("x") + " " + i);
+                        f.Invalidate(new Rectangle(p.X - f.XRect.X, p.Y - f.XRect.Y, p.Width, p.Height));
+                        if (Debug) Log("invalidate " + f.Win.Id.ToString("x") + " " + p);
                     }
                 }
             }
@@ -703,8 +712,9 @@ namespace GtVpn
             // The part of the client area that the session's window covers comes
             // from the framebuffer; the rest (while a resize catches up) is blank.
             var inside = Rectangle.Intersect(clip, new Rectangle(0, 0, f.XRect.Width, f.XRect.Height));
-            if (inside.Width > 0 && inside.Height > 0)
-                lock (Rfb.FbLock) mirror.Paint(g, inside, f.XRect.X + inside.X, f.XRect.Y + inside.Y);
+            // (The mirror is the UI thread's own: painting it takes no lock, so
+            // updates go on arriving while a paint takes long.)
+            if (inside.Width > 0 && inside.Height > 0) mirror.Paint(g, inside, f.XRect.X + inside.X, f.XRect.Y + inside.Y);
             using (var region = new Region(clip))
             {
                 region.Exclude(inside);
@@ -970,6 +980,11 @@ namespace GtVpn
                 f.Close();
                 f.Dispose();
             });
+        }
+
+        public void Uncovered(int x, int y, int w, int h)
+        {
+            if (skipCovered) OnUpdated(new List<Rectangle> { new Rectangle(x, y, w, h) });
         }
 
         public void SetIcon(uint id, uint[] icon)
