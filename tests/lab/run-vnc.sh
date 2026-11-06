@@ -57,15 +57,17 @@ GTUID=$(srv 'id -u'); SD=/tmp/gtvpn-$GTUID
 export GTUID SD
 
 check "the server's own Xvnc and window manager are found" bash -c "[[ \$(dev 'ssh -o BatchMode=yes cadence \"exec /bin/sh -s -- check\" < /usr/local/share/gtvpn/vnc/remote.sh') == 'ok Xvnc '*' wm metacity' ]]"
+HOME0=$(srv 'cd ~ && find . -mindepth 1 ! -name .Xauthority | sort')
 OUT=$(dev 'gtvpn-vnc cadence start' 2>&1)
 N=$(sed -n 's/^display=:\([0-9]*\)$/\1/p' <<<"$OUT"); P=$(sed -n 's/^port=\([0-9]*\)$/\1/p' <<<"$OUT")
 check "gtvpn-vnc starts a session over the existing connection (display :$N, port $P)" \
   bash -c "[[ -n '$N' && '$P' == \$((15900 + ${N:-0})) ]]"
 [[ -n $N && -n $P ]] || { echo "$OUT"; exit 1; }
 export N P
-check "~/.gtvpn-display on the server names it" bash -c "[[ \$(srv 'cat ~/.gtvpn-display') == :$N ]]"
+check "the session's folder names it, and nothing new is in the home folder but the cookie" \
+  bash -c "[[ \$(srv 'cat $SD/display') == $N && \$(srv 'cd ~ && find . -mindepth 1 ! -name .Xauthority | sort') == \"\$1\" ]] && srv 'test -s ~/.Xauthority'" _ "$HOME0"
 check "starting again reuses the same session" bash -c "dev 'gtvpn-vnc cadence start' | grep -qx 'reusing your session :$N'"
-check "another session on the server (like VS Code's terminal) draws on it" srv 'DISPLAY=$(cat ~/.gtvpn-display) xdpyinfo >/dev/null'
+check "another session on the server (like VS Code's terminal) draws on it" srv "DISPLAY=:$N xdpyinfo >/dev/null"
 check "the window manager runs in it (metacity, as on ece-linlab19)" bash -c "on_srv \"pgrep -u gtuser -x metacity\" >/dev/null"
 check "Xvnc listens on no TCP port of the server" \
   bash -c "! on_srv 'ss -Hltnp' | grep -q -i -E 'vnc|:(59|60)[0-9][0-9] '"
@@ -102,18 +104,20 @@ check "after reconnecting, the port is forwarded again" \
   bash -c "dev 'exec 3<>/dev/tcp/127.0.0.1/$P; head -c 12 <&3' | grep -q '^RFB 003\.00'"
 check "stop refuses while a program has windows open" \
   bash -c "dev 'gtvpn-vnc cadence stop' >/dev/null; [[ \$? == 3 ]] && srv 'xdpyinfo -display :$N >/dev/null 2>&1'"
-check "stop --force ends it and removes ~/.gtvpn-display, its folder and its cookie" \
-  bash -c "dev 'gtvpn-vnc cadence stop --force' >/dev/null && srv '! test -e ~/.gtvpn-display && ! test -e $SD && ! xauth list | grep -q \":$N \"'"
+check "stop --force ends it and removes its folder and its cookie" \
+  bash -c "dev 'gtvpn-vnc cadence stop --force' >/dev/null && srv '! test -e $SD && ! xauth list | grep -q \":$N \"'"
 gone(){ for _ in $(seq 10); do ! on_srv "pgrep -u gtuser -f \"^Xvnc \" || pgrep -u gtuser -x metacity || pgrep -u gtuser -x xlogo" >/dev/null && return 0; sleep 0.5; done; on_srv 'pgrep -u gtuser -af "Xvnc|metacity|xlogo"'; return 1; }
 check "nothing of the session is left running on the server" gone
+check "after a whole session, the home folder holds nothing new (but ~/.Xauthority)" \
+  bash -c "[[ \$(srv 'cd ~ && find . -mindepth 1 ! -name .Xauthority | sort') == \"\$1\" ]]" _ "$HOME0"
 check "stop also closed the container's forward" bash -c "! dev '(exec 3<>/dev/tcp/127.0.0.1/$P)' 2>/dev/null"
 check "stop leaves the shared connection open (no new Duo prompt)" dev "ssh -O check cadence 2>&1 | grep -qi running"
 # A tcsh login shell (most GT accounts), at the same time as another user's
 # session: its own display number, socket and port.
-dev 'gtvpn-vnc cadence start' >/dev/null 2>&1; dev 'ssh -o BatchMode=yes gtcsh@10.66.0.1 true'; N1=$(srv 'cat ~/.gtvpn-display')
+dev 'gtvpn-vnc cadence start' >/dev/null 2>&1; dev 'ssh -o BatchMode=yes gtcsh@10.66.0.1 true'; N1=:$(srv "cat $SD/display")
 OUT2=$(dev 'gtvpn-vnc gtcsh@10.66.0.1 start' 2>&1); N2=$(sed -n 's/^display=\(:[0-9]*\)$/\1/p' <<<"$OUT2")
 check "with a tcsh login shell, beside another user's session, it gets its own display ($N1, $N2)" \
-  bash -c "[[ -n '$N2' && '$N2' != '$N1' ]] && srv 'DISPLAY=\$(cat ~/.gtvpn-display) xdpyinfo >/dev/null' gtcsh"
+  bash -c "[[ -n '$N2' && '$N2' != '$N1' ]] && srv 'DISPLAY=$N2 xdpyinfo >/dev/null' gtcsh"
 [[ -n $N2 ]] || echo "$OUT2"
 dev 'gtvpn-vnc gtcsh@10.66.0.1 stop' >/dev/null 2>&1; dev 'gtvpn-vnc cadence stop' >/dev/null 2>&1
 # The host CLI, as on a Linux computer: ./gtvpn vnc with a terminal (script),

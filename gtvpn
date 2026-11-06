@@ -546,8 +546,8 @@ cmd_vnc() {
       cat <<EOF
 Session display on $host: $d (it keeps running if the viewer, VS Code or the tunnel disconnect)
 In a terminal on $host (for example VS Code's), before starting Cadence:
-    export DISPLAY=\$(cat ~/.gtvpn-display)        # bash
-    setenv DISPLAY \`cat ~/.gtvpn-display\`        # tcsh
+    export DISPLAY=$d        # bash
+    setenv DISPLAY $d        # tcsh
 Reopen the viewer: gtvpn vnc $host attach. End the session: gtvpn vnc $host stop
 EOF
       ;;
@@ -586,7 +586,7 @@ ${c_b}gtvpn${c_0} - Georgia Tech GlobalProtect in an isolated container
   vnc <host> [start|attach|status|stop]
                    smooth Cadence: a persistent VNC session on a GT server
                    (its own TigerVNC, nothing installed), in a viewer window
-                   here (same DISPLAY step as above)
+                   here; Cadence there then needs  export DISPLAY=:N  (printed)
   logs             container + VPN client logs
   callback <url>   (used by the browser link handler)
   rebuild          rebuild the image (updates Claude Code / base packages)

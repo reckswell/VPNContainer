@@ -4,14 +4,16 @@
 #
 #   check            "ok Xvnc <version> wm <name>" or what is missing
 #   start            start your session, or find the running one; print
-#                    "display=:N" and "socket=PATH", write ":N" to ~/.gtvpn-display
+#                    "display=:N" and "socket=PATH" (N is also in
+#                    /tmp/gtvpn-<uid>/display)
 #   display          the same two lines for the running session (exit 1: none)
 #   status           the session and the programs showing windows in it
 #   stop [--force]   end it (refuses while programs other than the window
 #                    manager have windows open)
 #
-# It installs nothing: it runs the server's own TigerVNC X server (Xvnc) and
-# window manager, as you. Programs you start with DISPLAY=:N draw on the GT
+# It installs nothing and writes nothing in your home folder but the
+# display's cookie in ~/.Xauthority (as ssh -Y does): it runs the server's own
+# TigerVNC X server (Xvnc) and window manager, as you. Programs you start with DISPLAY=:N draw on the GT
 # server itself, without a round trip to your computer, and Xvnc sends
 # compressed pictures of what changed to the viewer on your computer. It keeps
 # running when the viewer, the tunnel or VS Code disconnect, and so does
@@ -25,7 +27,6 @@ set -u
 U=$(id -u)
 D=/tmp/gtvpn-$U
 SOCK=$D/vnc.sock
-DF=$HOME/.gtvpn-display
 
 say() { printf '%s\n' "$*"; }
 die() { printf 'gtvpn vnc on %s: %s\n' "$(hostname -s 2>/dev/null)" "$*" >&2; exit 1; }
@@ -41,7 +42,10 @@ start_wm() { # display
   for w in $WMS; do
     command -v "$w" >/dev/null 2>&1 || continue
     case $w in mwm) a= ;; *) a=--replace ;; esac
-    DISPLAY=":$1" setsid nohup "$w" $a >"$D/wm.log" 2>&1 </dev/null &
+    # Its settings in memory and its caches in our folder: nothing in your
+    # home folder (metacity would otherwise create ~/.cache/dconf).
+    DISPLAY=":$1" GSETTINGS_BACKEND=memory XDG_CACHE_HOME="$D/cache" XDG_CONFIG_HOME="$D/config" \
+      XDG_DATA_HOME="$D/data" setsid nohup "$w" $a >"$D/wm.log" 2>&1 </dev/null &
     p=$!; sleep 1
     kill -0 "$p" 2>/dev/null && return 0
   done
@@ -86,7 +90,8 @@ start)
     # -rfbport -1: no TCP port at all (the default would open 5900+N on this
     # server, which other users could reach). The desktop starts at 1920x1080
     # and follows the viewer's window size (-AcceptSetDesktopSize).
-    setsid nohup Xvnc ":$n" -auth "$XA" -nolisten tcp \
+    XDG_CACHE_HOME="$D/cache" XDG_CONFIG_HOME="$D/config" XDG_DATA_HOME="$D/data" \
+      setsid nohup Xvnc ":$n" -auth "$XA" -nolisten tcp \
       -rfbunixpath "$SOCK" -rfbunixmode 0600 -rfbport -1 -localhost -interface 127.0.0.1 -SecurityTypes None \
       -geometry 1920x1080 -depth 24 -dpi 96 -FrameRate 180 -AlwaysShared -AcceptSetDesktopSize=1 \
       >"$D/xvnc.log" 2>&1 </dev/null &
@@ -98,7 +103,6 @@ start)
     start_wm "$n" || say "note: no window manager started (windows have no title bars; log: $D/wm.log)"
     say "started your session :$n"
   fi
-  umask 077; printf ':%s\n' "$n" > "$DF"
   report "$n" ;;
 
 display)
@@ -123,7 +127,6 @@ stop)
   pkill -u "$U" -f "^Xvnc :$n .*-rfbunixpath $SOCK"
   i=0; while pgrep -u "$U" -f "^Xvnc :$n .*-rfbunixpath $SOCK" >/dev/null 2>&1 && [ $i -lt 20 ]; do sleep 0.25; i=$((i + 1)); done
   xauth -q -f "${XAUTHORITY:-$HOME/.Xauthority}" remove ":$n" 2>/dev/null
-  [ "$(cat "$DF" 2>/dev/null)" = ":$n" ] && rm -f "$DF"
   rm -rf "$D"
   say "stopped session :$n" ;;
 

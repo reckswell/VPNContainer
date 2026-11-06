@@ -157,6 +157,7 @@ changes on the screen too (a screen sampler, or the viewer's F8 >
   container's key-only, loopback sshd) -> the container's `127.0.0.1:P` ->
   the container's shared ssh connection -> the session's socket on the GT
   server. Your computer never talks to GT.
-- **Display name:** like `gtvpn display`, the session's display is written
-  to `~/.gtvpn-display` on the server, so VS Code terminals set `DISPLAY`
-  the same way.
+- **Display name:** `gtvpn vnc` prints it (`:N`, 100 + your uid mod 200
+  unless taken), and it is in `/tmp/gtvpn-<uid>/display` on the server
+  while the session runs. Nothing is written in your GT home except the
+  display's cookie in `~/.Xauthority`.

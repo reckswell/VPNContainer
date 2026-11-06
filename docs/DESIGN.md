@@ -276,7 +276,8 @@ runtime files in `/tmp` and one cookie in `~/.Xauthority`, as `ssh -Y` adds.
 - **Lifetime:** the session is independent of every connection; `stop`
   refuses while programs other than the window manager have windows open
   (Virtuoso would lose unsaved work) unless `--force`, then removes the
-  cookie, the folder and `~/.gtvpn-display`, and cancels the forward.
+  cookie and the folder, and cancels the forward. It never touches
+  `~/.gtvpn-display`, which belongs to `gtvpn display`.
 - **Not taken:** xpra (separate native windows, but it would have to be
   installed in the GT home), X2Go and NX (root packages on the server),
   FastX (installed on GT's servers, but its service is not running).

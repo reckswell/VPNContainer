@@ -225,19 +225,20 @@ gtvpn vnc ece-linlab19.ece.gatech.edu
 ```
 
 This starts the session on that server (or finds the running one), opens
-the viewer, and writes the session's display to `~/.gtvpn-display` on the
-server. In a terminal there (VS Code's, or `gtvpn ssh`), start Cadence on
-it:
+the viewer, and prints the session's display, `:N`. It stays the same from
+one session to the next unless someone else on the server has that number.
+In a terminal there (VS Code's, or `gtvpn ssh`), start Cadence on it:
 
 ```
-export DISPLAY=$(cat ~/.gtvpn-display)    # bash
-setenv DISPLAY `cat ~/.gtvpn-display`     # tcsh
-virtuoso &                                # or your usual start script
+export DISPLAY=:N      # bash (with the number gtvpn vnc printed)
+setenv DISPLAY :N      # tcsh
+virtuoso &             # or your usual start script
 ```
 
-The `~/.bashrc` / `~/.cshrc` lines above pick it up in every terminal. If
-you used `gtvpn display` before, `gtvpn vnc` replaces it: both write
-`~/.gtvpn-display`, and the last one started wins.
+The number is also in `/tmp/gtvpn-<your uid>/display` on the server while
+the session runs. `gtvpn vnc` writes nothing in your home folder there
+except the display's cookie in `~/.Xauthority`, as `ssh -Y` does, and it
+leaves `~/.gtvpn-display` (from `gtvpn display`) alone.
 
 | | |
 |---|---|
@@ -309,7 +310,7 @@ What is checked (details in [docs/DESIGN.md](docs/DESIGN.md#verification-recursi
 | `git@github.com` (port 22) fails | Use HTTPS remotes; the direct path is HTTPS-only |
 | Virtuoso is sluggish (panning, zooming, opening forms) | Use `gtvpn vnc <server>` instead of `ssh -Y` ([Smoother Cadence](#smoother-cadence-gtvpn-vnc)) |
 | `gtvpn vnc` says "no open connection" | The container's connection to that server closed (tunnel drop, 8 h limit). Run `gtvpn vnc <server>` again in a terminal: it signs in once and reopens the viewer; the session and Virtuoso are still there |
-| The viewer shows the desktop but not Virtuoso | `gtvpn vnc <server> status` lists the programs in the session. If Virtuoso is not among them, it was started on another display: check `echo $DISPLAY` against `cat ~/.gtvpn-display` in that terminal |
+| The viewer shows the desktop but not Virtuoso | `gtvpn vnc <server> status` lists the programs in the session. If Virtuoso is not among them, it was started on another display: check `echo $DISPLAY` in that terminal against the display `gtvpn vnc` printed |
 | The viewer says the connection was refused or closed | Run `gtvpn vnc <server> attach` again; it reopens the forwards. If it still fails, `gtvpn vnc <server>` checks the session itself |
 
 ## Layout
