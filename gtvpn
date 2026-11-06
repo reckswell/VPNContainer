@@ -468,14 +468,43 @@ xpra_viewer_cmd() { # the viewer program, or nothing
   fi
   command -v xpra
 }
-# On Windows, offer to install the viewer with winget (Windows asks for
-# admin approval). Returns 1 when it is still missing.
+# On Windows, offer to install the viewer: xpra.org's portable build, into
+# %LOCALAPPDATA%\Programs\Xpra (no admin rights). It is newer than the
+# winget package (6.3) and matches Windows' light or dark title bars. The
+# download is checked against the SHA-1 xpra.org publishes next to it, and
+# resumed if the connection drops (it is 200 MB).
+XPRA_WIN_ZIP=https://xpra.org/stable/windows/Xpra.zip
 xpra_install_viewer() {
-  local id=xpra-org.xpra
   is_wsl && [[ -t 0 ]] || return 1
-  printf 'The xpra viewer for Windows is not installed. Install it now with winget (%s)? [Y/n] ' "$id"
-  local r; read -r r; [[ -z $r || $r == [Yy]* ]] || return 1
-  (cd /mnt/c && cmd.exe /c winget install -e --id "$id" --accept-package-agreements --accept-source-agreements) || return 1
+  local la dest tmp want got r i src
+  la=$(win_env LOCALAPPDATA) || return 1
+  dest=$(wslpath -u "$la")/Programs/Xpra
+  printf 'The xpra viewer for Windows is not installed. Download it from xpra.org (200 MB, no admin rights needed) into %s\\Programs\\Xpra? [Y/n] ' "$la"
+  read -r r; [[ -z $r || $r == [Yy]* ]] || return 1
+  want=$(curl -fsSL --retry 3 "$XPRA_WIN_ZIP.sha1" | tr 'A-F' 'a-f' | grep -oE '[0-9a-f]{40}' | head -1) \
+    || { warn "could not get the viewer's checksum from xpra.org"; return 1; }
+  tmp=$(dirname "$dest")/.xpra-download; mkdir -p "$tmp" || return 1
+  for i in 1 2 3 4 5 6 7 8; do
+    got=$(sha1sum "$tmp/Xpra.zip" 2>/dev/null | cut -d' ' -f1)
+    [[ $got == "$want" ]] && break
+    [[ $i == 1 ]] || say "download interrupted, resuming ($i)"
+    # complete but wrong (e.g. a new release since the last try): start over
+    if curl -fL -C - --progress-bar -o "$tmp/Xpra.zip" "$XPRA_WIN_ZIP"; then
+      [[ $(sha1sum "$tmp/Xpra.zip" | cut -d' ' -f1) == "$want" ]] || rm -f "$tmp/Xpra.zip"
+    else sleep 2; fi
+    got=$(sha1sum "$tmp/Xpra.zip" 2>/dev/null | cut -d' ' -f1)
+  done
+  [[ $got == "$want" ]] || { rm -rf "$tmp"; warn "the viewer download failed or did not match xpra.org's checksum"; return 1; }
+  say "unpacking"
+  rm -rf "$tmp/x"
+  local wz wx; wz=$(wslpath -w "$tmp/Xpra.zip"); wx=$(wslpath -w "$tmp/x")
+  powershell.exe -NoProfile -Command "Expand-Archive -LiteralPath '${wz//\'/\'\'}' -DestinationPath '${wx//\'/\'\'}' -Force" >/dev/null \
+    || { warn "could not unpack the viewer"; return 1; }
+  src=$(find "$tmp/x" -maxdepth 2 -name Xpra.exe -printf '%h\n' | head -1)
+  [[ -n $src ]] || { warn "no Xpra.exe in the download"; return 1; }
+  [[ -e $dest ]] && mv "$dest" "$dest.old-$(date +%s)"   # not a viewer (no Xpra.exe), but not ours to delete
+  mv "$src" "$dest" && rm -rf "$tmp" || { warn "could not move the viewer to $dest"; return 1; }
+  say "xpra viewer installed in $la\\Programs\\Xpra"
   xpra_viewer_cmd >/dev/null
 }
 xpra_viewer_args() { # display host
@@ -483,8 +512,10 @@ xpra_viewer_args() { # display host
   # Tuned for CAD (docs/PERFORMANCE.md): lossless pictures for anything
   # that stays still (text, thin lines), video only for big areas that
   # change on every frame (panning, zooming), at the monitor's refresh rate.
+  # Windows keep their own titles (no " on <host>") and the native frame
+  # (no GTK header bar), like local programs.
   # shellcheck disable=SC2086
-  printf '%s\n' attach "ssh://gtvpn/${1#:}" --ssh=ssh "--remote-xpra=/home/dev/.gtvpn/xpra/$2" \
+  printf '%s\n' attach "ssh://gtvpn/${1#:}" --ssh=ssh "--remote-xpra=/home/dev/.gtvpn/xpra/$2" --title=@title@ --headerbar=no \
     --splash=no --tray=no --notifications=no --speaker=off --microphone=off --webcam=no \
     --printing=no --file-transfer=no --open-files=no --open-url=no \
     --opengl=auto --refresh-rate=auto --min-quality=70 --min-speed=50 --auto-refresh-delay=0.1 \
@@ -492,7 +523,7 @@ xpra_viewer_args() { # display host
 }
 xpra_attach() { # display host
   local exe; exe=$(xpra_viewer_cmd) || { xpra_install_viewer && exe=$(xpra_viewer_cmd); } || {
-    if is_wsl; then die "the xpra viewer for Windows is not installed. Install it with: winget install -e --id xpra-org.xpra   (or from https://xpra.org), then run: gtvpn xpra $2 attach"
+    if is_wsl; then die "the xpra viewer for Windows is not installed. Run gtvpn xpra $2 attach in a terminal to install it, or install it yourself (https://github.com/Xpra-org/xpra/wiki/Download, or: winget install -e --id xpra-org.xpra)"
     else die "xpra is not installed here. Install xpra 6 (https://github.com/Xpra-org/xpra/wiki/Download), then run: gtvpn xpra $2 attach"; fi
   }
   local -a a; mapfile -t a < <(xpra_viewer_args "$1" "$2")

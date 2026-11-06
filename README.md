@@ -205,17 +205,19 @@ Virtuoso draws on the GT server itself, in an xpra session there, and a
 viewer on your computer shows its windows as normal desktop windows, at your
 monitor's refresh rate for everything local (moving, resizing, the mouse).
 Only compressed pictures of what changed travel, through the container like
-everything else. The session keeps running when VS Code, the viewer or the
-tunnel disconnect, and so does Virtuoso: reattach and carry on.
+everything else. The windows are real Windows windows (Windows 11 title
+bars, rounded corners, snap layouts, light or dark like your other apps),
+not WSLg's Linux-style frames. The session keeps running when VS Code, the
+viewer or the tunnel disconnect, and so does Virtuoso: reattach and carry on.
 
-Once, on Windows, install the viewer (or let `gtvpn xpra` offer it):
+On Windows, the first `gtvpn xpra` offers to download the viewer: xpra.org's
+portable build (200 MB), into `%LOCALAPPDATA%\Programs\Xpra`, no admin
+rights needed, checked against xpra.org's published checksum. (`winget
+install -e --id xpra-org.xpra` works too, but winget has an older version
+whose title bars stay light in dark mode.) On Ubuntu, install xpra 6 from
+https://github.com/Xpra-org/xpra/wiki/Download.
 
-```
-winget install -e --id xpra-org.xpra
-```
-
-On Ubuntu, install xpra 6 from https://github.com/Xpra-org/xpra/wiki/Download.
-Then, on your computer:
+On your computer:
 
 ```
 gtvpn xpra ece-linlab19.ece.gatech.edu

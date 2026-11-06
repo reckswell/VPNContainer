@@ -63,26 +63,46 @@ rectangles drawn with X11 requests). `x11lat` presses a key with XTest on
 the "desktop" X server and watches XDamage there, so it measures what you
 see: key press to pixels on your screen.
 
-| Path | Qt5 canvas: key to full redraw | Qt5: frames/s while panning | Open a 40-field form | core-X canvas: key to redraw |
+| Path | Qt5 canvas: key to full redraw | Qt5: frames/s while panning | Open a 40-field form | core-X canvas: key to redraw, frames/s |
 |---|---|---|---|---|
-| Local (no network) | 4 ms | 180 | 12 ms | 12 ms |
-| `ssh -Y`, compression on (default) | 188 ms | 5.8 | 122 ms | 21 ms |
-| `ssh -Y`, compression off | 468 ms | 2.0 | 245 ms | |
+| Local (no network) | 4 ms | 180 | 12 ms | 12 ms, 112 |
+| `ssh -Y`, compression on (the default) | 188 ms | 5.8 | 122 ms | 21 ms, 114 |
+| `ssh -Y`, compression off | 468 ms | 2.0 | 245 ms | 21 ms, 81 |
 | `ssh -Y`, compression off, aes128-gcm | 468 ms | 2.0 | 242 ms | |
-| xpra (lab: software viewer on 4 shared CPUs) | 114 ms | 8.8 | 345 ms | |
+| TigerVNC (one desktop in one window) | 91 ms | 12.9 | | 63 ms, 25 |
+| xpra, lab viewer (see below) | 114 ms | 9.8 | 345 ms | |
 
-The xpra row is limited by the lab, not by the link: there the viewer
-paints with the CPU on the same four virtual CPUs that also run the
-server's video encoder. On a desktop PC the viewer paints with the GPU.
+What the numbers say:
+
+- Over `ssh -Y`, the Qt5 canvas is limited by the link: 6.4 MB per frame at
+  14 MB/s, 2.5 times less with compression. Faster ciphers change nothing.
+  Core-X drawing (small requests, drawn by your X server) is fine, which is
+  why xterm and old-style forms feel normal while layout views crawl.
+- Anything that draws on the GT server and sends compressed pictures (VNC,
+  xpra) is faster for Qt5 canvases.
+- The xpra row is limited by the lab, not by the link. `xpra info` during
+  the pan shows the server encoding a 1600x1000 frame in about 35 ms
+  (WebP, 46 Mpixel/s on the lab's shared CPUs) and the lab's viewer
+  decoding at only 9 Mpixel/s (software, no GPU, the same four virtual
+  CPUs). A desktop PC decodes 10 to 20 times faster and paints with OpenGL,
+  so the real numbers are measured on the real setup (below).
 
 Run it yourself:
 
 ```bash
+# xpra for both ends of the lab, from the same package list gtvpn installs on GT
+micromamba create -y -p /tmp/xpra-env --file image/rootfs/usr/local/share/gtvpn/xpra/xpra-linux-64.lock
 cd tests/perf
 docker build -t perf/lab .
-XENV=/path/to/xpra-env ./lab.sh        # an xpra conda env, see lab.sh
-XENV=/path/to/xpra-env ./bench.sh      # ONLY=ssh / xpra / vnc / local to pick
+XENV=/tmp/xpra-env ./lab.sh            # RTT_MS=6 MBIT=113 by default
+XENV=/tmp/xpra-env ./bench.sh          # ONLY=ssh / xpra / vnc / local to pick
 ```
+
+On a real setup, `tests/perf/xput.py` (Python 3 and numpy, both on GT's
+servers) does the same kind of full-window redraws on any `DISPLAY` and
+prints the frames per second that display path delivers:
+`python3 xput.py 12 180` in a terminal on the server, once with the `ssh -Y`
+display and once with the xpra session's.
 
 ## How `gtvpn xpra` is built
 
@@ -92,15 +112,24 @@ XENV=/path/to/xpra-env ./bench.sh      # ONLY=ssh / xpra / vnc / local to pick
   conda-forge, installed with micromamba into `~/.local/gtvpn-xpra` from a
   pinned package list (`image/rootfs/usr/local/share/gtvpn/xpra/`), each
   package checked against its MD5; no root, about 850 MB.
-- **Viewer:** xpra on your computer (Windows: `winget install -e --id
-  xpra-org.xpra`). It runs `ssh gtvpn` (the container's key-only, loopback
-  sshd) with `gtvpn-xpra-proxy`, which relays the stream over the
+- **Viewer:** xpra on your computer. On Windows `gtvpn xpra` installs
+  xpra.org's portable build in `%LOCALAPPDATA%\Programs\Xpra` (no admin;
+  the SHA-1 published next to it is checked, and the 200 MB download
+  resumes after a dropped connection, which happened on the first real
+  test). winget only has 6.3, which keeps light title bars in dark mode;
+  6.5 follows the Windows theme. The viewer runs `ssh gtvpn` (the
+  container's key-only, loopback sshd) with `gtvpn-xpra-proxy`, which relays the stream over the
   container's connection to `xpra _proxy` on the server. Nothing listens on
   the GT server or your computer, and without an open connection the proxy
   fails at once instead of signing in.
 - **Display name:** like `gtvpn display`, the session's display is written
   to `~/.gtvpn-display` on the server, so VS Code terminals set `DISPLAY`
   the same way.
+- **Windows look native:** the viewer's windows are ordinary Windows
+  windows, so Windows draws their frames (Windows 11 title bar, caption
+  buttons, rounded corners, snap layouts), and `--title=@title@` keeps each
+  window's own title instead of adding " on <host>". With `ssh -Y`, WSLg
+  draws a Linux-style frame instead.
 - **Viewer settings** (`gtvpn`, `xpra_viewer_args`): `--min-quality=70`
   keeps thin lines readable while moving, `--auto-refresh-delay=0.1` sends a
   lossless picture 0.1 s after a window stops changing, `--refresh-rate=auto`
