@@ -1,7 +1,7 @@
 # Fake GlobalProtect gateway for the sign-in test. It answers the gateway
 # prelogin and login the way GT's gateways do: the password, then a Duo-style
-# challenge (sent with HTTP 200, as GT does). Password "student"; the Duo
-# code "123456" is accepted once, and any other code (or a reused one) is
+# challenge (sent with HTTP 200, as GT does). Password "student"; each Duo
+# code in CODES is accepted once, and any other code (or a reused one) is
 # refused with HTTP 512.
 import http.server, ssl, sys, urllib.parse
 
@@ -19,6 +19,7 @@ ARGS = ['', 'AUTHCOOKIE0123456789abcdef', 'PERSIST0123456789abcdef0123456789abcd
 LOGIN = ('<?xml version="1.0" encoding="utf-8"?><jnlp><application-desc>'
          + ''.join(f'<argument>{a}</argument>' for a in ARGS)
          + '</application-desc></jnlp>')
+CODES = ('123456', '246810', '135791', '112358')
 used = set()
 
 class H(http.server.BaseHTTPRequestHandler):
@@ -39,8 +40,8 @@ class H(http.server.BaseHTTPRequestHandler):
             if not g('inputStr'):
                 if g('user') == 'gtuser' and g('passwd') == 'student':
                     return self.reply(200, CHALLENGE, "text/html")
-            elif g('inputStr') == 'f00dfeed' and g('passwd') == '123456' and '123456' not in used:
-                used.add('123456')
+            elif g('inputStr') == 'f00dfeed' and g('passwd') in CODES and g('passwd') not in used:
+                used.add(g('passwd'))
                 return self.reply(200, LOGIN, 'application/xml')
             return self.reply(512, 'Invalid username or password', 'text/html')
         self.reply(404, 'not here', 'text/plain')

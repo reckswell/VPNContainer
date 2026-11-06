@@ -98,6 +98,49 @@ for MODE in split full; do
     check "[gateway-only] a good Duo code signs in and hands the session to the tunnel step" \
       bash -c 'grep -q "signed in; starting tunnel to fakegw" <<<"$1"' _ "$GW"
     docker exec -u root gtvpn gtvpn-disconnect >/dev/null 2>&1
+
+    # Saved password (gtvpn-login.conf): `gtvpn connect` stashes it with
+    # gtvpn-connect --stash, and only the Duo code is typed. A refused saved
+    # password must stop after its one try.
+    logins() { docker logs gtvpn-lab-fakegw 2>&1 | grep -c "REQ /ssl-vpn/login.esp"; }
+    stash() { printf 'gtuser\n%s\n' "$1" | docker exec -i -u root gtvpn gtvpn-connect --stash; }
+    gwsaved() { # duo-code   (prints the output, then rc=N)
+      docker exec -i -u root -e GTVPN_AUTH=password -e GTVPN_CLIENT=openconnect -e GTVPN_SKIP_PORTAL=1 \
+        -e GTVPN_GATEWAY=fakegw -e "GTVPN_OC_AUTH_ARGS=--servercert $FAKEGW_PIN" \
+        gtvpn gtvpn-connect < <(sleep 2; printf '%s\n' "$1"; sleep 3; printf 'student\n') 2>&1 | sed 's/\x1b\[[0-9;]*m//g' \
+        | tee -a /tmp/gtvpn-lab-gwonly.log
+      echo "rc=${PIPESTATUS[0]}"
+    }
+    stash student
+    check "[saved password] the stash is root-only memory (tmpfs, 0700), not disk" \
+      bash -c "[[ \$(docker exec gtvpn stat -f -c %T /run/gtvpn/secret) == tmpfs && \$(docker exec gtvpn stat -c %a:%U /run/gtvpn/secret /run/gtvpn/secret/signin | tr '\n' ' ') == '700:root 600:root ' ]] && ! docker exec -u dev gtvpn cat /run/gtvpn/secret/signin 2>/dev/null"
+    n0=$(logins); GW=$(gwsaved 246810); n1=$(logins)
+    check "[saved password] only the Duo code is typed, and it signs in" \
+      bash -c 'grep -q "your saved GT password (gtvpn-login.conf): nothing to type" <<<"$1" && ! grep -q "\[PASSWORD\] your GT password (hidden" <<<"$1" && grep -q "signed in; starting tunnel to fakegw" <<<"$1" && (( $3 - $2 == 2 ))' _ "$GW" "$n0" "$n1"
+    check "[saved password] the stash and its pipe are gone afterwards" \
+      bash -c "[[ -z \$(docker exec gtvpn ls -A /run/gtvpn/secret) ]]"
+    docker exec -u root gtvpn gtvpn-disconnect >/dev/null 2>&1
+    stash wrong; n0=$(logins); GW=$(gwsaved 135791); n1=$(logins)
+    check "[saved password] a refused saved password stops after its one try, with exit 3" \
+      bash -c 'grep -q "GT refused your saved password" <<<"$1" && grep -q "^rc=3$" <<<"$1" && ! grep -q "Duo Mobile right now" <<<"$1" && (( $3 - $2 == 1 ))' _ "$GW" "$n0" "$n1"
+    check "[saved password] no OpenConnect or relay is left after that" \
+      bash -c "! docker exec gtvpn pgrep -x openconnect && ! docker exec gtvpn pgrep -x cat && [[ -z \$(docker exec gtvpn ls -A /run/gtvpn/secret) ]]"
+    stash student; docker exec gtvpn touch -d '-3 minutes' /run/gtvpn/secret/signin
+    GW=$(gwonly 999999)
+    check "[saved password] a stash older than 2 minutes is not used (you are asked as usual)" \
+      bash -c 'grep -q "\[PASSWORD\] your GT password (hidden" <<<"$1" && [[ -z $(docker exec gtvpn ls -A /run/gtvpn/secret) ]]' _ "$GW"
+    # With a real terminal (as from the launcher): the Duo code typed after a
+    # saved password does not echo, so it is not in the sign-in transcript,
+    # and neither password is on any command line while it waits.
+    stash student
+    ( sleep 2.5; docker exec gtvpn sh -c 'for f in /proc/[0-9]*/cmdline; do tr "\000" " " <$f; echo; done' >/tmp/gtvpn-lab-cmdlines.txt 2>/dev/null ) &
+    script -qec "docker exec -it -u root -e GTVPN_AUTH=password -e GTVPN_CLIENT=openconnect -e GTVPN_SKIP_PORTAL=1 \
+        -e GTVPN_GATEWAY=fakegw -e 'GTVPN_OC_AUTH_ARGS=--servercert $FAKEGW_PIN' gtvpn gtvpn-connect" /dev/null \
+      < <(sleep 4; printf '112358\r'; sleep 4) >/tmp/gtvpn-lab-tty.log 2>&1
+    wait
+    check "[saved password] in a terminal it signs in, the Duo code does not echo, and nothing is on a command line" \
+      bash -c "grep -q 'signed in; starting tunnel to fakegw' /tmp/gtvpn-lab-tty.log && ! grep -q 112358 /tmp/gtvpn-lab-tty.log && docker exec gtvpn grep -q 'signed in' /var/log/gtvpn/connect.log && ! docker exec gtvpn grep -q 112358 /var/log/gtvpn/connect.log && grep -q openconnect /tmp/gtvpn-lab-cmdlines.txt && ! grep -q student /tmp/gtvpn-lab-cmdlines.txt"
+    docker exec -u root gtvpn gtvpn-disconnect >/dev/null 2>&1
     # The real sign-in path (gtvpn-connect, OpenConnect: authenticate, then
     # the background tunnel from the cookie), against ocserv's protocol.
     check "[$MODE] tunnel comes up via gtvpn-connect (OpenConnect password path)" bash -c \

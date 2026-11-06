@@ -32,6 +32,69 @@ envget() {
   v=${line#*=}; v=${v%\"}; v=${v#\"}; v=${v%\'}; v=${v#\'}
   printf '%s' "$v"
 }
+# gtvpn-login.conf: your GT sign-in for this computer only (.gitignore keeps
+# it out of git; gtvpn-login.example.conf is its empty template). Keys
+# username, password and, on Windows, password_dpapi (the launcher's
+# encrypted form). Plain key=value lines, # comments, never executed; a
+# value is taken as written, minus spaces at its ends.
+LOCAL_CONF=$HERE/gtvpn-login.conf
+REFUSED=$HERE/gtvpn-login.conf.refused
+confget() {
+  local want=${1,,} line k v=''
+  [[ -f $LOCAL_CONF ]] || return 0
+  while IFS= read -r line || [[ -n $line ]]; do
+    line=${line%$'\r'}
+    [[ $line =~ ^[[:space:]]*([#\;]|$) || $line != *=* ]] && continue
+    k=${line%%=*}; k=${k//[[:space:]]/}
+    [[ ${k,,} == "$want" ]] || continue
+    v=${line#*=}
+    v=${v#"${v%%[![:space:]]*}"}; v=${v%"${v##*[![:space:]]}"}
+  done <"$LOCAL_CONF"
+  printf '%s' "$v"
+}
+# The saved password in plain text: password_dpapi decrypted by Windows for
+# the account that saved it (WSL only), else password.
+saved_password() {
+  local d p ps
+  d=$(confget password_dpapi)
+  if [[ -n $d ]] && is_wsl; then
+    ps=$(command -v powershell.exe || echo /mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe)
+    # shellcheck disable=SC2016  # PowerShell code
+    p=$(printf '%s\n' "$d" | "$ps" -NoProfile -NonInteractive -Command '
+      [Console]::OutputEncoding = New-Object Text.UTF8Encoding $false
+      $s = ConvertTo-SecureString ([Console]::In.ReadLine())
+      $b = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)
+      try { [Console]::Out.Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR($b)) }
+      finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($b) }' 2>/dev/null | tr -d '\r') || p=''
+    if [[ -n $p ]]; then printf '%s' "$p"; return 0; fi
+    warn "Windows could not decrypt password_dpapi in gtvpn-login.conf (saved by another Windows account or PC?)"
+  elif [[ -n $d ]]; then
+    warn "password_dpapi in gtvpn-login.conf can only be read on the Windows PC that saved it"
+  fi
+  confget password
+}
+# Hand the saved sign-in to the container for the next gtvpn-connect (see
+# gtvpn-connect --stash). Prints why it did not, if it did not.
+stash_signin() {
+  local u p
+  [[ -f $LOCAL_CONF ]] || return 0
+  [[ -n $(confget password)$(confget password_dpapi) ]] || return 0
+  if [[ -f $REFUSED && ! $LOCAL_CONF -nt $REFUSED ]]; then
+    warn "GT refused your saved password on $(date -r "$REFUSED" '+%b %d %H:%M'). Not using it until you change gtvpn-login.conf; type your password this time."
+    return 0
+  fi
+  u=$(confget username); [[ -n $u ]] || u=$(envget GTVPN_USER)
+  if [[ ! $u =~ ^[A-Za-z0-9._-]{1,64}$ ]]; then
+    warn "gtvpn-login.conf has a password but no valid username; type your sign-in this time"; return 0
+  fi
+  if ! is_wsl && [[ -n $(confget password) && -n $(find "$LOCAL_CONF" -perm /077 2>/dev/null) ]]; then
+    chmod 600 "$LOCAL_CONF" && say "made gtvpn-login.conf readable only by you (it holds your password)"
+  fi
+  p=$(saved_password)
+  [[ -n $p ]] || return 0
+  printf '%s\n%s\n' "$u" "$p" | engine exec -i -u root "$NAME" gtvpn-connect --stash || true
+}
+
 envset() { # key value  (in-place, keeps the rest of the file)
   local k=$1 v=$2 tmp; tmp=$(mktemp)
   if grep -qE "^${k}=" .env; then
@@ -407,9 +470,16 @@ cmd_connect() {
       sleep 0.5
     done
   ) &
-  local opener=$!
-  engine exec -it -u root "$NAME" gtvpn-connect || { kill $opener 2>/dev/null || true; die "connect failed"; }
+  local opener=$! rc=0
+  stash_signin
+  engine exec -it -u root "$NAME" gtvpn-connect || rc=$?
   kill $opener 2>/dev/null || true
+  if (( rc == 3 )); then
+    touch "$REFUSED"
+    die "connect failed: GT refused the saved password. Fix it in gtvpn-login.conf; until then you will be asked to type it."
+  fi
+  (( rc == 0 )) || die "connect failed"
+  rm -f "$REFUSED"
   echo
   cmd_host_verify || true
 }

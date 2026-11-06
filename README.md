@@ -42,9 +42,12 @@ git clone https://github.com/reckswell/VPNContainer ~/VPNContainer && cd ~/VPNCo
      your Ubuntu distro.
    - **Docker Engine inside WSL:** in the Ubuntu terminal, run the `apt`
      and `usermod` lines from the Ubuntu section above.
-3. Clone the repo wherever you keep projects, for example
+3. Clone or download the repo wherever you keep projects, for example
    `Documents\Projects` (Git for Windows is fine; `.gitattributes` keeps the
-   scripts' Linux line endings), and run the setup script from it:
+   scripts' Linux line endings). Then either double-click
+   **`Start-GtVpn.cmd`** in it, which runs the setup below the first time and
+   signs you in (see [One click](#one-click-on-windows)), or run the setup
+   script yourself:
 
    ```powershell
    cd $HOME\Documents\Projects
@@ -120,6 +123,40 @@ shows a new one.
 Everything, including the sign-in, happens inside the container. (For VPN
 portals that use browser SSO instead, `connect` opens the login page in your
 browser and a *globalprotectcallback* link hands the result back.)
+
+**Saved sign-in (optional):** put your GT username and password in
+`gtvpn-login.conf` in the repo folder (the first start copies it from
+`gtvpn-login.example.conf`), and `connect` asks only for the Duo code:
+
+```
+username=gburdell3
+password=your GT password, as is, no quotes
+```
+
+That file never leaves your computer: `.gitignore` keeps it out of git, and
+the example in the repo stays empty. On Windows the launcher encrypts the
+password the first time it runs (`password_dpapi`, readable only by your
+Windows account on that PC) and empties the plain line; on Linux the file
+is made readable only by you. The password goes to the sign-in over a pipe
+into the container's root-only memory (never a command line, a log or the
+disk) and is deleted there at once. If GT refuses it, `connect` stops after
+that one try and asks you to type your password until you change the file,
+so a wrong saved password cannot lock your account. The Duo code is never
+stored.
+
+### One click on Windows
+
+Double-click **`Start-GtVpn.cmd`** in the repo folder. It:
+
+1. starts Docker Desktop if it isn't running, and waits for it,
+2. the first time, runs `windows\Setup-GtVpn.ps1` (above),
+3. encrypts a plain-text password in `gtvpn-login.conf`,
+4. runs `gtvpn connect`: it starts the container if needed, signs in with
+   your saved username and password, and asks only for the `[DUO CODE]`.
+
+`Start-GtVpn.cmd -SavePassword` asks for your password and saves it
+encrypted, and `Start-GtVpn.cmd -Check` shows what is set up and running
+without starting anything.
 
 ### VS Code
 
@@ -244,6 +281,8 @@ What is checked (details in [docs/DESIGN.md](docs/DESIGN.md#verification-recursi
 | Connect asks which gateway to use | That is the portal sign-in (`GTVPN_SKIP_PORTAL=0`). Type `DC Gateway`, or set `GTVPN_GATEWAY_NAME` in `.env` |
 | Connect asks for your password and a Duo code twice | That is the portal sign-in: the gateway runs its own. Set `GTVPN_SKIP_PORTAL=1` and `GTVPN_GATEWAY=dc-ext-gw.vpn.gatech.edu` in `.env`, then `gtvpn down && gtvpn up`. If you keep it, use a new Duo code the second time |
 | "GT refused the sign-in" or "The gateway refused the sign-in" | Usually a Duo code that was already used (each works once) or expired, or a mistyped password. Run `gtvpn connect` again with a new code from Duo Mobile. Don't retry many times in a row: GT can lock your account |
+| "GT refused your saved password" | `username` or `password` in `gtvpn-login.conf` is wrong (or your GT password changed). Fix it, or run `Start-GtVpn.cmd -SavePassword`; until the file changes, `connect` asks you to type the password |
+| "password_dpapi ... cannot be decrypted" | It was saved by another Windows account or PC. Run `Start-GtVpn.cmd -SavePassword` again on this one |
 | The connect window closed before you could read the error | `gtvpn logs` shows the last sign-in transcript (passwords are never in it) |
 | No windows on Ubuntu | Run `./gtvpn up` from a desktop terminal (it needs `$DISPLAY`); `sudo apt install xauth` |
 | No windows on Windows | `ls /mnt/wslg/.X11-unix` in Ubuntu should show `X0`. If not: `wsl --update`, then `wsl --shutdown`. Then `gtvpn down && gtvpn up` and `gtvpn x11test` |
@@ -263,11 +302,14 @@ What is checked (details in [docs/DESIGN.md](docs/DESIGN.md#verification-recursi
 gtvpn                         host CLI (Linux / WSL)
 compose.yaml, .env.example    container definition and settings
 hosts.conf.example            template for hosts.conf, your GT servers (ssh config syntax)
+gtvpn-login.example.conf      template for gtvpn-login.conf, your saved sign-in (never committed)
+Start-GtVpn.cmd               Windows one-click start: setup, Docker, sign-in
 image/                        Dockerfile + in-container scripts
   rootfs/usr/local/sbin/      gtvpn-firewall (kill-switch), gtvpn-connect, gtvpn-egress, ...
   rootfs/usr/local/bin/       gtvpn-verify (container-side checks)
 host/verify-host.sh           host-side checks
 windows/Setup-GtVpn.ps1       Windows setup
+windows/Start-GtVpn.ps1       what Start-GtVpn.cmd runs
 vscode/                       VS Code settings + Dev Containers attach config
 tests/lab/                    end-to-end lab with a real tunnel (see below)
 docs/DESIGN.md                design, threat model, alternatives

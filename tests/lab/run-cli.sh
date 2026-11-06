@@ -156,6 +156,47 @@ check "after a gateway refusal no second password prompt is shown" bash -c '! gr
 P=$(printf 'Unexpected 512 result from server\nPassword: ' | docker exec -i -u root gtvpn gtvpn-prompts 2>&1)
 check "a portal refusal explains it and asks once more" bash -c 'grep -q "GT refused that" <<<"$1" && grep -q "\[PASSWORD\]" <<<"$1"' _ "$P"
 
+# gtvpn-login.conf (saved sign-in): read as data, never run, and handed to
+# the container only on stdin. engine() is replaced here, so nothing is sent.
+export LCT; LCT=$(mktemp -d)
+printf '# password=not-this-one\r\n  Username = gtuser \r\npassword_dpapi=\r\npassword=p@ss w$rd`touch %s/ran` ;x=y \r\n' "$LCT" > gtvpn-login.conf
+chmod 644 gtvpn-login.conf
+printf 'gtuser\np@ss w$rd`touch %s/ran` ;x=y\n' "$LCT" > "$LCT/want"
+stash_test() { rm -f "$LCT/sent"; bash -c 'source ./gtvpn; engine() { [[ "$*" == *--stash* ]] && cat >"$LCT/sent"; true; }; stash_signin' 2>&1; }
+O=$(stash_test)
+check "login config: the saved sign-in is read as written (comments, spaces, CRLF) and never run" \
+  bash -c 'cmp -s "$LCT/sent" "$LCT/want" && [[ ! -e $LCT/ran ]]'
+check "login config: a file holding a password is made readable only by you" bash -c '[[ $(stat -c %a gtvpn-login.conf) == 600 ]]'
+check "login config: .gitignore keeps it and its refusal marker out of git; the example has every field empty" bash -c \
+  'grep -qx gtvpn-login.conf .gitignore && grep -qx gtvpn-login.conf.refused .gitignore && [[ -f gtvpn-login.example.conf ]] && ! grep -Eq "^[[:space:]]*(username|password|password_dpapi)[[:space:]]*=[[:space:]]*[^[:space:]]" gtvpn-login.example.conf'
+touch -d '-1 minute' gtvpn-login.conf; touch gtvpn-login.conf.refused
+O=$(stash_test)
+check "login config: after GT refused the saved password it is not sent again" \
+  bash -c '[[ ! -e $LCT/sent ]] && grep -q "GT refused your saved password" <<<"$1"' _ "$O"
+touch -d '-1 minute' gtvpn-login.conf.refused; touch gtvpn-login.conf
+O=$(stash_test)
+check "login config: once you change the file it is used again" bash -c 'cmp -s "$LCT/sent" "$LCT/want"'
+printf 'password=x\n' > gtvpn-login.conf
+O=$(stash_test)
+check "login config: a password without a username is not sent" \
+  bash -c '[[ ! -e $LCT/sent ]] && grep -q "no valid username" <<<"$1"' _ "$O"
+printf 'username=gtuser\npassword_dpapi=AQAAANCMnd8\n' > gtvpn-login.conf
+O=$(stash_test)
+check "login config: an encrypted password off Windows is not sent, and says why" \
+  bash -c '[[ ! -e $LCT/sent ]] && grep -q "only be read on the Windows PC" <<<"$1"' _ "$O"
+printf 'username=gtuser\npassword=x\n' > gtvpn-login.conf; rm -f gtvpn-login.conf.refused
+conn_test() { # exit code of gtvpn-connect
+  CRC=$1 bash -c 'source ./gtvpn; running() { true; }; cmd_host_verify() { :; }
+    engine() { [[ "$*" == *--stash* ]] && { cat >/dev/null; return 0; }; [[ "$*" == *gtvpn-connect* ]] && return "$CRC"; true; }
+    cmd_connect' 2>&1
+}
+O=$(conn_test 3)
+check "connect: when GT refuses the saved password it says so and remembers it" \
+  bash -c '[[ -e gtvpn-login.conf.refused ]] && grep -q "GT refused the saved password" <<<"$1"' _ "$O"
+O=$(conn_test 0)
+check "connect: a good sign-in clears that" bash -c '[[ ! -e gtvpn-login.conf.refused ]]'
+rm -rf gtvpn-login.conf gtvpn-login.conf.refused "$LCT"
+
 check "connect refuses GTVPN_SKIP_PORTAL=1 without a gateway" bash -c \
   "docker exec -u root -e GTVPN_SKIP_PORTAL=1 -e GTVPN_GATEWAY= gtvpn gtvpn-connect 2>&1 | grep -q 'needs GTVPN_GATEWAY'"
 
