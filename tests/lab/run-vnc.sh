@@ -218,10 +218,16 @@ check "attach reopens the viewer and reuses that forward" \
 check "gtvpn vnc status shows it" bash -c "cli vnc cadence status | grep -q 'session :$NC is running'"
 if command -v mono >/dev/null && command -v mcs >/dev/null; then
   srv "DISPLAY=:$NC nohup xlogo -title gtvpn-lab-xlogo2 >/dev/null 2>&1 &"
+  # Viewer options from .env (only when this checkout has no .env of its own).
+  ENVT=0; [[ -e .env ]] || { printf 'GTVPN_VIEWER_ARGS=--encoding tight\n' > .env; ENVT=1; }
   OUT=$(DISPLAY=$D XAUTHORITY=$XA XDG_CACHE_HOME=$KEYDIR/cache TMPDIR=$KEYDIR cli vnc cadence windows)
   check "gtvpn vnc windows (host CLI) builds the viewer and shows the session's windows here" \
     bash -c "grep -q 'appears here as a window of its own' <<<\"\$1\" && shown gtvpn-lab-xlogo2" _ "$OUT"
   grep -q 'appears here as a window of its own' <<<"$OUT" || echo "$OUT"
+  if [[ $ENVT == 1 ]]; then
+    rm -f .env
+    check "viewer options from .env reach it (GTVPN_VIEWER_ARGS)" grep -q 'tight compress 1' "$KEYDIR/gtvpn-viewer.log"
+  fi
   pkill -f -- "$KEYDIR/cache/gtvpn/gtvpn-viewer.exe"; srv 'pkill -x xlogo'; sleep 1
 fi
 check "gtvpn vnc stop ends it" bash -c "cli vnc cadence stop | grep -q 'stopped session :$NC'"

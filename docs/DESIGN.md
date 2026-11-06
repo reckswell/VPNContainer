@@ -314,6 +314,55 @@ runtime files in `/tmp` and one cookie in `~/.Xauthority`, as `ssh -Y` adds.
   FastX (installed on GT's servers, but its service is not running).
   Details in [PERFORMANCE.md](PERFORMANCE.md).
 
+#### gtvpn's own viewer (`gtvpn vnc <host> windows`)
+
+TigerVNC's viewer shows the session as one desktop. To give every Cadence
+window a native Windows window instead, without anything new on the GT
+server, `windows/viewer` (C# 5, about 2000 lines, no dependencies) talks to
+the same session twice:
+
+- **Pictures:** an RFB client of Xvnc. It asks for ZRLE first (lossless;
+  on CAD pictures, with few colours and fine hatching, its 1-, 2- and
+  4-bit packed palettes give Xvnc about half the zlib work of Tight's 8-bit
+  indices, and the link 30% fewer bytes), at compression level 1, with
+  Tight (and JPEG) as the fallback. Continuous updates with Fence answers
+  let Xvnc stream frames without a request per frame, paced by its own
+  congestion control. The cursor shape comes along, so the pointer is drawn
+  by Windows at the monitor's refresh rate. zlib is .NET's native
+  `DeflateStream`. The desktop is resized to the size of Windows' virtual
+  screen (ExtendedDesktopSize), so X coordinates are Windows coordinates.
+- **Windows:** an X11 client of the session's display, as its window
+  manager. `gtvpn-vnc windows` starts the session without metacity (or the
+  viewer takes the `WM_S0` selection and metacity steps aside), and asks
+  the master for a second forward, `127.0.0.1:Q` (Q = 16300 + N) to the
+  display's socket `/tmp/.X11-unix/XN`. The viewer authenticates with the
+  display's cookie, which `gtvpn-vnc cookie` reads from `~/.Xauthority` and
+  which reaches the viewer only in an environment variable. It redirects
+  the root's map and configure requests, does not reparent (the frame is
+  Windows'), and keeps the EWMH basics (`_NET_SUPPORTING_WM_CHECK`,
+  `_NET_ACTIVE_WINDOW`, `_NET_WM_STATE` maximize, `_NET_CLOSE_WINDOW`,
+  `_NET_CLIENT_LIST`).
+- **One native window per X window:** a Windows Forms window whose client
+  area is the X window's rectangle and which shows that part of the
+  framebuffer (a DIB section and `BitBlt`). Title, moves, resizes,
+  activation, minimize, maximize and close go both ways (moving a Windows
+  window moves the X window; Cadence opening a dialog opens a Windows
+  window, owned by its parent). Override-redirect windows (menus,
+  tooltips, combo-box lists) become borderless, topmost windows that never
+  take focus. Windows 11's dark title bar follows the system theme.
+- **Input:** mouse and keys go to Xvnc as RFB events at root coordinates
+  (Windows virtual keys become X keysyms, with Ctrl and Alt kept as
+  modifiers); focus goes through the window manager. Text copied on
+  either side is offered on the other (RFB cut text).
+- **Build and lifetime:** `gtvpn vnc <host> windows` compiles it on first
+  use (and again when its sources change) with the `csc.exe` of .NET
+  Framework 4, which is part of Windows 10 and 11, into
+  `%LOCALAPPDATA%\gtvpn`; nothing is downloaded. When it closes, Xvnc and
+  every program keep running; `attach` starts metacity again for the
+  TigerVNC viewer (`gtvpn-vnc wm`). The lab runs it under mono and checks
+  that the native windows show the session's exact pixels, that typing and
+  clicks arrive, and that it is the session's window manager.
+
 ## SSH hosts (`hosts.conf`)
 
 One file in standard OpenSSH syntax lists your GT servers, and both sides

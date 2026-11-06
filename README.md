@@ -245,10 +245,12 @@ manager, so **nothing is installed on the GT server**. It keeps running when
 VS Code, the viewer or the tunnel disconnect, and so does Virtuoso: reopen
 the viewer and carry on.
 
-The trade-off: the session is one desktop, shown in one viewer window on
-your computer, and Cadence's windows inside it have the server's title bars
-(metacity), not Windows ones. Full screen (F8, then "Full screen") makes it
-feel like sitting at a lab machine.
+With TigerVNC's viewer the session is one desktop, shown in one viewer
+window on your computer, and Cadence's windows inside it have the server's
+title bars (metacity), not Windows ones. Full screen (F8, then "Full
+screen") makes it feel like sitting at a lab machine. On Windows,
+`gtvpn vnc <host> windows` instead shows every Cadence window as a native
+Windows window ([below](#each-cadence-window-as-a-window-of-its-own-windows)).
 
 On Windows, the first `gtvpn vnc` offers to download TigerVNC's viewer
 (`vncviewer64-1.15.0.exe`, one 24 MB file from TigerVNC's releases) into
@@ -304,6 +306,14 @@ downloaded. It talks to the session twice through the container: as a VNC
 client for the pictures (streamed, without a round trip per frame) and as
 the session's window manager (in place of metacity) to learn where each
 window is. Text you copy goes both ways between Windows and the session.
+
+On the test PC this shows a panning layout-like view at 20-33 full
+redraws per second, pixel-exact (6 with `ssh -Y`); the pointer and moving
+or resizing windows run at the monitor's refresh rate, since Windows draws
+them. The pictures are lossless (ZRLE). To trade exactness in photo-like
+areas for JPEG, or to tune compression, set `GTVPN_VIEWER_ARGS` in `.env`
+(for example `--encoding tight`; details in
+[PERFORMANCE.md](docs/PERFORMANCE.md#on-the-real-setup)).
 
 To switch back to the desktop view, close the viewer (its icon in the
 notification area, "Quit") and run `gtvpn vnc <host> attach`: metacity comes

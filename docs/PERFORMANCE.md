@@ -5,11 +5,15 @@ shown on your computer. This page is about making that display path fast.
 It changes nothing in Cadence.
 
 **Short version:** use `gtvpn vnc <host>` instead of `ssh -Y` for
-Virtuoso. Virtuoso then draws on the GT server itself, in a VNC session of
-the server's own TigerVNC (nothing is installed there), and only compressed
-pictures of what changed cross the tunnel, to a viewer on your computer.
-The session keeps running when the tunnel or VS Code disconnects. Setup and
-daily use are in the [README](../README.md#smoother-cadence-gtvpn-vnc).
+Virtuoso, and on Windows `gtvpn vnc <host> windows`. Virtuoso then draws on
+the GT server itself, in a VNC session of the server's own TigerVNC
+(nothing is installed there), and only compressed pictures of what changed
+cross the tunnel, to a viewer on your computer that shows each Cadence
+window as a native Windows window. Panning a layout-like view goes from 6
+to 20-33 full redraws per second, pixel-exact, and the pointer and window
+moves are drawn by Windows at your monitor's refresh rate. The session
+keeps running when the tunnel or VS Code disconnects. Setup and daily use
+are in the [README](../README.md#smoother-cadence-gtvpn-vnc).
 
 ## Why Virtuoso is slow over `ssh -Y`
 
@@ -57,7 +61,8 @@ running).
 | Faster ssh cipher (aes128-gcm) | No gain: the link, not encryption, is the limit |
 | WSLg at 144 Hz (`.wslgconfig`) | Raises a ceiling X11 never reaches here; needs `wsl --shutdown`, which also stops Docker Desktop and the tunnel. Not worth it |
 | VcXsrv, X410 or MobaXterm instead of WSLg | The same X11 protocol over the same tunnel, so the same limits, plus an X server listening on your computer |
-| **TigerVNC** (chosen): the server's own `Xvnc` | X server on the GT server, compressed updates (Tight: JPEG while moving, lossless when still), sessions survive disconnects. One desktop in one window, with Linux-style title bars inside |
+| **TigerVNC** (chosen): the server's own `Xvnc` | X server on the GT server, compressed updates, sessions survive disconnects. TigerVNC's viewer shows one desktop in one window, with Linux-style title bars inside |
+| **gtvpn's own viewer** for that Xvnc (chosen on Windows) | Each Cadence window becomes a native Windows window: the viewer is a VNC client for the pictures and the session's window manager for the window list. Nothing new on the server; built from source with the C# compiler in Windows |
 | xpra | The best fit otherwise: separate native windows on your computer, video compression while moving. But it is not on GT's servers, and a home-folder install (850 MB) is ruled out |
 | FastX 4 | Installed on ece-linlab19, with native windows; but its server is not running (only port 22 answers), and it needs its own sign-in. Worth asking GT ECE about |
 | X2Go / NoMachine (NX) | Good compression, but the server side must be installed by GT's admins (not on ece-linlab19) |
@@ -69,12 +74,20 @@ running).
 
 With `ssh -Y`, each Cadence window is a WSLg window, and WSLg's compositor
 (Weston) draws its frame: square corners, Linux-style buttons. WSLg has no
-setting for it (microsoft/wslg issues 530 and 1371). With `gtvpn vnc`, the
-viewer is one ordinary Windows window (Windows 11 title bar, rounded
-corners, snap layouts), and Cadence's windows inside it get metacity's
-frames. Native frames for each Cadence window need a viewer that turns
-remote windows into local ones (xpra or FastX), which needs a server side
-GT does not run today.
+setting for it (microsoft/wslg issues 530 and 1371). With TigerVNC's
+viewer, the viewer is one ordinary Windows window and Cadence's windows
+inside it get metacity's frames.
+
+`gtvpn vnc <host> windows` gives every Cadence window Windows 11's own
+frame: rounded corners, the dark or light title bar of your theme, snap
+layouts, the taskbar and Alt+Tab. It works like xpra or FastX (remote
+windows become local ones) but needs nothing on the server beyond Xvnc:
+gtvpn's viewer takes the session's window-manager role, so it learns where
+every window is and opens a native window for it, filled from the VNC
+picture. Because Windows draws the frames, moving and resizing a window,
+and the pointer, run at the monitor's refresh rate (179 Hz on the test
+PC); only the window's content waits for the server. How it works is in
+[DESIGN.md](DESIGN.md#gtvpns-own-viewer-gtvpn-vnc-host-windows).
 
 ## Measurements
 
@@ -132,8 +145,40 @@ ssh ece-linlab19.ece.gatech.edu 'DISPLAY=:N python3 - 12 180' < tests/perf/xput.
 
 For the VNC session, xput.py's number is how fast the server-side X server
 takes frames; what reaches your screen is what the viewer shows, so count
-changes on the screen too (a screen sampler, or the viewer's F8 >
-"Connection info", which shows the measured line speed and encoding).
+changes on the screen too (a screen sampler, TigerVNC's F8 > "Connection
+info", or the `updates/s` lines in `%TEMP%\gtvpn-viewer.log` of gtvpn's
+viewer).
+
+### On the real setup
+
+A Windows 11 PC (2560x1440 at 179 Hz) through the container's tunnel to
+ece-linlab19 (TigerVNC 1.15), `xput.py` panning a 1600x1000 hatched layout
+picture, frames counted on the PC's screen (a 64x64 patch sampled 180
+times a second):
+
+| Path | Full redraws on your screen per second | Data | Server CPU |
+|---|---|---|---|
+| `ssh -Y` (WSLg) | 6.2 | ~40 MB/s, the link's limit | |
+| `gtvpn vnc windows`, ZRLE (the default), program drawing at 60/s | 27-33 | 5-10 MB/s | Xvnc 54-94% of one core, sshd 19-33% |
+| the same, program drawing at 30/s | 25 | 6-8 MB/s | Xvnc 57%, sshd 20% |
+| `gtvpn vnc windows --encoding tight`, program at 60/s | 20-21 | 7-9 MB/s | Xvnc 63-92%, sshd 28-39% |
+| the same, program at 30/s | 30 | 11-13 MB/s | Xvnc 88%, sshd 42% |
+| either, program flooding (180/s) | 20-31 | 6-14 MB/s | Xvnc up to 94% |
+
+Both encodings arrive pixel-exact on this picture (it has 11 colours, so
+even Tight sends it as a palette); for photo-like areas Tight switches to
+JPEG and ZRLE stays lossless. ZRLE needs 30-40% fewer bytes, and less of
+the server's CPU per frame, so it is the default. Run-to-run noise is about
+4 frames per second.
+
+What limits it now is the GT server's Xvnc: it encodes on one thread, the
+same thread that runs the X server for Virtuoso, and its congestion
+control (which counts a frame as delivered when the viewer answers for it)
+also paces frames by round trips, which is why Xvnc is not always busy. A program
+that floods it (xput at 180/s) takes encoder time away and gets fewer
+frames on screen than one drawing at 60/s. The viewer itself never used
+more than a third of one core of the PC. `--compress 0` moves the limit to
+the server's sshd (92% CPU at 19 MB/s) without more frames.
 
 ## How `gtvpn vnc` is built
 
@@ -145,7 +190,16 @@ changes on the screen too (a screen sampler, or the viewer's F8 >
   metacity for title bars and moving windows. Started by `gtvpn-vnc` in
   the container over its shared connection (one Duo prompt per host for 8
   hours, as for `ssh`).
-- **Viewer:** TigerVNC's viewer on your computer, which `gtvpn vnc` starts
+- **Viewer, `windows` (Windows):** gtvpn's own (`windows/viewer`), built on
+  first use with the .NET Framework 4 C# compiler that is part of Windows.
+  It asks for ZRLE at compression level 1, streams frames (continuous
+  updates), draws the cursor locally, and becomes the session's window
+  manager over a second forward to the display (`127.0.0.1:Q`, Q = 16300 +
+  N). Options via `GTVPN_VIEWER_ARGS` in `.env`: `--encoding tight`,
+  `--compress 0-9`, `--quality 0-9`. Its log is `%TEMP%\gtvpn-viewer.log`.
+  Xvnc before 1.14 ignored the client's level for ZRLE (zlib's default
+  halves the frame rate), so `gtvpn vnc` starts those with `-ZlibLevel=1`.
+- **Viewer, desktop (`attach`):** TigerVNC's viewer on your computer, which `gtvpn vnc` starts
   with `-AutoSelect=1` (it measures the line and picks the encoding and
   picture quality) and `-RemoteResize=1`. Add
   your own options with `GTVPN_VNC_VIEWER_ARGS` in `.env`, for example
