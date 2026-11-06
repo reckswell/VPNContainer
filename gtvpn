@@ -684,7 +684,7 @@ vnc_windows_container() { # cookie viewer-options...
   local -a o=(--name "$NAME-viewer" --network "container:$NAME" --user "$(id -u):$(id -g)" -e HOME=/tmp
     -e DISPLAY="${d:-:0}" -v "${x:-/tmp/.X11-unix}:/tmp/.X11-unix:ro")
   [[ -s runtime/in/xauth ]] && o+=(-v "$HERE/runtime/in/xauth:/xauth:ro" -e XAUTHORITY=/xauth)
-  engine run -d --rm "${o[@]}" "$VIEWER_IMAGE" sleep infinity >/dev/null || die "could not start the viewer's container"
+  engine run -d --rm --init "${o[@]}" "$VIEWER_IMAGE" sleep infinity >/dev/null || die "could not start the viewer's container"
   # The cookie goes through stdin: never on a command line or in the container's settings.
   printf '%s\n' "$c" | engine exec -i "$NAME-viewer" sh -c \
     'read -r c; GTVPN_X_COOKIE=$c setsid -f mono /opt/gtvpn/gtvpn-viewer.exe "$@" >/dev/null 2>&1 </dev/null' sh "$@" \

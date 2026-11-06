@@ -371,7 +371,11 @@ namespace GtVpn
                 var want = new Point(x + v.OriginX, y + v.OriginY);
                 ClientSize = new Size(Math.Max(1, w), Math.Max(1, h));
                 Location = want;
-                if (!Win.Popup)
+                // Windows knows the frame before the window shows. Mono under
+                // an X window manager (WSLg's) does not, and reports the client
+                // area's place inside the window instead: there the window
+                // manager places the frame at want, and moves follow from there.
+                if (!Win.Popup && (Native.IsWindows || Visible))
                 {
                     var c = PointToScreen(Point.Empty);
                     Location = new Point(Location.X - (c.X - want.X), Location.Y - (c.Y - want.Y));
@@ -895,10 +899,11 @@ namespace GtVpn
                 f.CreateControl();
                 var h = f.Handle;
                 f.Place(gx, gy, gw, gh);
-                if (!w.Popup)
+                if (!w.Popup && Native.IsWindows)
                 {
                     // Record where the native window really is (Windows may
                     // have adjusted it) and move the session's window there.
+                    // (Under Mono that is known once it shows: OnMove reports it.)
                     var c = f.PointToScreen(Point.Empty);
                     int nx = c.X - OriginX, ny = c.Y - OriginY;
                     w.W = gw; w.H = gh; w.X = nx; w.Y = ny;
