@@ -94,7 +94,8 @@ namespace GtVpn
                 k.Pid = 9; ps.SetValue(ref k, pv);                                   // PreventPinning
                 // These before the ID, which makes the taskbar read them.
                 SetString(ps, k, 2, "\"" + Application.ExecutablePath + "\"", pv);   // RelaunchCommand
-                SetString(ps, k, 4, program, pv);                                    // RelaunchDisplayNameResource
+                // "virtuoso" -> "Virtuoso", as Windows programs' names read.
+                SetString(ps, k, 4, char.ToUpperInvariant(program[0]) + program.Substring(1), pv); // RelaunchDisplayNameResource
                 SetString(ps, k, 5, id.ToString(), pv);                              // ID
             }
             catch (Exception) { }
