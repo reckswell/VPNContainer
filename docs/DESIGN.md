@@ -203,6 +203,11 @@ gpclient for password portals that it handles.
   file is newer than that marker. A Duo-code refusal ends the sign-in as
   usual, and the next connect uses the saved password again, so each
   connect makes at most one try with it.
+- **Older containers.** A container from before this change would read a
+  stash as typed input and start a real sign-in with it. So `gtvpn connect`
+  first checks that the container has `gtvpn-connect --stash` and the
+  tmpfs. If it doesn't, connect recreates it on the current image when no
+  tunnel is up, and otherwise sends nothing.
 
 **SSO portals (SAML):** `gpauth --browser manual` normally prints a URL on
 a random local port and waits for a pasted `globalprotectcallback:` link.

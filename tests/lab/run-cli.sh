@@ -162,7 +162,11 @@ export LCT; LCT=$(mktemp -d)
 printf '# password=not-this-one\r\n  Username = gtuser \r\npassword_dpapi=\r\npassword=p@ss w$rd`touch %s/ran` ;x=y \r\n' "$LCT" > gtvpn-login.conf
 chmod 644 gtvpn-login.conf
 printf 'gtuser\np@ss w$rd`touch %s/ran` ;x=y\n' "$LCT" > "$LCT/want"
-stash_test() { rm -f "$LCT/sent"; bash -c 'source ./gtvpn; engine() { [[ "$*" == *--stash* ]] && cat >"$LCT/sent"; true; }; stash_signin' 2>&1; }
+stash_test() { # [rc of the container's can-stash check]
+  rm -f "$LCT/sent"
+  CAN=${1:-0} bash -c 'source ./gtvpn; engine() { [[ "$*" == *"gtvpn-connect --stash"* ]] && { cat >"$LCT/sent"; return 0; }
+    [[ "$*" == *"sh -c"* ]] && return "$CAN"; true; }; stash_signin' 2>&1
+}
 O=$(stash_test)
 check "login config: the saved sign-in is read as written (comments, spaces, CRLF) and never run" \
   bash -c 'cmp -s "$LCT/sent" "$LCT/want" && [[ ! -e $LCT/ran ]]'
@@ -185,11 +189,19 @@ O=$(stash_test)
 check "login config: an encrypted password off Windows is not sent, and says why" \
   bash -c '[[ ! -e $LCT/sent ]] && grep -q "only be read on the Windows PC" <<<"$1"' _ "$O"
 printf 'username=gtuser\npassword=x\n' > gtvpn-login.conf; rm -f gtvpn-login.conf.refused
-conn_test() { # exit code of gtvpn-connect
-  CRC=$1 bash -c 'source ./gtvpn; running() { true; }; cmd_host_verify() { :; }
-    engine() { [[ "$*" == *--stash* ]] && { cat >/dev/null; return 0; }; [[ "$*" == *gtvpn-connect* ]] && return "$CRC"; true; }
+O=$(stash_test 1)
+check "login config: a container from before the saved sign-in never gets the password" \
+  bash -c '[[ ! -e $LCT/sent ]] && grep -q "container is older than the saved sign-in" <<<"$1"' _ "$O"
+conn_test() { # exit code of gtvpn-connect; [rc of can-stash]; [rc of the tunnel check]
+  CRC=$1 CAN=${2:-0} TUN=${3:-1} bash -c 'source ./gtvpn; running() { true; }; cmd_host_verify() { :; }; cmd_up() { echo CMD_UP; }
+    engine() { [[ "$*" == *"gtvpn-connect --stash"* ]] && { cat >/dev/null; return 0; }; [[ "$*" == *"sh -c"* ]] && return "$CAN"
+      [[ "$*" == *"ip link show"* ]] && return "$TUN"; [[ "$*" == *gtvpn-connect* ]] && return "$CRC"; true; }
     cmd_connect' 2>&1
 }
+O=$(conn_test 0 1 1)
+check "connect: an old container is updated first when no tunnel is up" grep -q '^CMD_UP' <<<"$O"
+O=$(conn_test 0 1 0)
+check "connect: an old container is left alone while the tunnel is up" bash -c '! grep -q "^CMD_UP" <<<"$1"' _ "$O"
 O=$(conn_test 3)
 check "connect: when GT refuses the saved password it says so and remembers it" \
   bash -c '[[ -e gtvpn-login.conf.refused ]] && grep -q "GT refused the saved password" <<<"$1"' _ "$O"

@@ -73,12 +73,23 @@ saved_password() {
   fi
   confget password
 }
+has_saved_signin() { [[ -f $LOCAL_CONF && -n $(confget password)$(confget password_dpapi) ]]; }
+tunnel_up() { engine exec "$NAME" ip link show tun0 >/dev/null 2>&1; }
+# Whether the running container takes a stashed sign-in (an older one would
+# treat it as typed input and start a real sign-in with it).
+can_stash() {
+  # shellcheck disable=SC2016  # runs in the container
+  engine exec -u root "$NAME" sh -c 'grep -q "^STASH=" /usr/local/sbin/gtvpn-connect && [ "$(stat -f -c %T /run/gtvpn/secret 2>/dev/null)" = tmpfs ]' >/dev/null 2>&1
+}
 # Hand the saved sign-in to the container for the next gtvpn-connect (see
 # gtvpn-connect --stash). Prints why it did not, if it did not.
 stash_signin() {
   local u p
-  [[ -f $LOCAL_CONF ]] || return 0
-  [[ -n $(confget password)$(confget password_dpapi) ]] || return 0
+  has_saved_signin || return 0
+  if ! can_stash; then
+    warn "this container is older than the saved sign-in, so it is not used; type your password this time (it is updated at the next connect without a tunnel, or: gtvpn down && gtvpn up)"
+    return 0
+  fi
   if [[ -f $REFUSED && ! $LOCAL_CONF -nt $REFUSED ]]; then
     warn "GT refused your saved password on $(date -r "$REFUSED" '+%b %d %H:%M'). Not using it until you change gtvpn-login.conf; type your password this time."
     return 0
@@ -462,6 +473,12 @@ open_signin() {
 
 cmd_connect() {
   running || cmd_up
+  # A container from before the saved sign-in: recreate it on this version,
+  # but only while no tunnel is up (that would drop it).
+  if has_saved_signin && ! tunnel_up && ! can_stash; then
+    say "updating the container to this version for the saved sign-in (no tunnel is up)"
+    cmd_up
+  fi
   rm -f runtime/out/login.url
   # Open the GT sign-in page in the host browser when the container asks.
   (

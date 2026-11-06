@@ -106,13 +106,17 @@ if ($SavePassword) {
 # ---- -Check ------------------------------------------------------------------------------
 $cfg = Read-Conf
 if ($Check) {
-  Say "repo:      $Repo (WSL: $(if ($distro) { "$distro, $wslRepo" } else { 'NO Ubuntu distro found' }))"
+  Say "repo:      $Repo (WSL distro: $(if ($distro) { $distro } else { 'NONE: no Ubuntu distro found' }))"
   Say "config:    $Conf $(if (Test-Path -LiteralPath $Conf) { '(found)' } else { '(missing: you are asked for everything)' })"
   Say "username:  $(if ($cfg['username']) { $cfg['username'] } else { '(not set)' })"
-  $pwState = if ($cfg['password_dpapi']) { if (Test-Dpapi $cfg['password_dpapi']) { 'saved, encrypted (DPAPI), readable here' } else { 'password_dpapi CANNOT be decrypted by this account' } }
-             elseif ($cfg['password']) { 'saved in plain text (the next start encrypts it)' } else { '(not set: you are asked)' }
+  $dpOk = $cfg['password_dpapi'] -and (Test-Dpapi $cfg['password_dpapi'])
+  $pwState = if ($dpOk) { 'saved, encrypted (DPAPI), readable here' }
+             elseif ($cfg['password']) { 'saved in plain text (the next start encrypts it)' }
+             elseif ($cfg['password_dpapi']) { 'password_dpapi CANNOT be decrypted by this account (run -SavePassword)' }
+             else { '(not set: you are asked)' }
   Say "password:  $pwState"
-  if ($cfg['password_dpapi'] -and $cfg['password']) { Warn "gtvpn-login.conf also has a plain-text password; the encrypted one is used, so you can empty the password= line" }
+  if ($dpOk -and $cfg['password']) { Warn "gtvpn-login.conf also has a plain-text password; the encrypted one is used, so you can empty the password= line" }
+  if ($cfg['password_dpapi'] -and -not $dpOk -and $cfg['password']) { Warn "password_dpapi holds no usable encrypted value; the next start replaces it with one made from password=" }
   Say "setup:     $(if ((Test-Path $gtvpnCmd) -and (Test-Path (Join-Path $Repo '.env'))) { 'done' } else { 'not yet (the first start runs it)' })"
   if (Test-Docker) {
     $st = & $docker inspect -f "{{.State.Running}}" gtvpn 2>$null
@@ -160,14 +164,19 @@ if (-not (Test-Path -LiteralPath $Conf)) {
   Say "(or run Start-GtVpn.cmd -SavePassword) to type only the Duo code from now on."
   $cfg = Read-Conf
 }
-if ($cfg['password'] -and -not $cfg['password_dpapi']) {
+$dpOk = $cfg['password_dpapi'] -and (Test-Dpapi $cfg['password_dpapi'])
+if ($cfg['password'] -and -not $dpOk) {
+  # A plain-text password, and no working encrypted one: encrypt it. (This
+  # also replaces a password_dpapi that is not really an encrypted value.)
   $s = ConvertTo-SecureString $cfg['password'] -AsPlainText -Force
   Set-ConfValue "password_dpapi" (ConvertFrom-SecureString $s)
   Set-ConfValue "password" ""
   $s = $null; $cfg = Read-Conf
   Say "encrypted the password in gtvpn-login.conf for your Windows account (password_dpapi); the plain-text line is now empty"
-} elseif ($cfg['password'] -and $cfg['password_dpapi']) {
-  Warn "gtvpn-login.conf has both an encrypted and a plain-text password. The encrypted one is used; empty the password= line."
+} elseif ($cfg['password'] -and $dpOk) {
+  Warn "gtvpn-login.conf has both an encrypted and a plain-text password. The encrypted one is used; you can empty the password= line."
+} elseif ($cfg['password_dpapi'] -and -not $dpOk) {
+  Warn "password_dpapi in gtvpn-login.conf cannot be decrypted by this Windows account, so you will be asked for your password. Fix: Start-GtVpn.cmd -SavePassword"
 }
 if (($cfg['password'] -or $cfg['password_dpapi']) -and -not $cfg['username']) {
   Warn "gtvpn-login.conf has a password but no username= line filled in, so it is not used this time."
