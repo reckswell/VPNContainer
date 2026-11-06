@@ -165,7 +165,7 @@ printf 'gtuser\np@ss w$rd`touch %s/ran` ;x=y\n' "$LCT" > "$LCT/want"
 stash_test() { # [rc of the container's can-stash check]
   rm -f "$LCT/sent"
   CAN=${1:-0} bash -c 'source ./gtvpn; engine() { [[ "$*" == *"gtvpn-connect --stash"* ]] && { cat >"$LCT/sent"; return 0; }
-    [[ "$*" == *"sh -c"* ]] && return "$CAN"; true; }; stash_signin' 2>&1
+    [[ "$*" == *"sh -c"* ]] && return "$CAN"; [[ "$*" == *"ip link show"* ]] && return 1; true; }; stash_signin' 2>&1
 }
 O=$(stash_test)
 check "login config: the saved sign-in is read as written (comments, spaces, CRLF) and never run" \

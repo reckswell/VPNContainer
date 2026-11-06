@@ -86,6 +86,7 @@ can_stash() {
 stash_signin() {
   local u p
   has_saved_signin || return 0
+  tunnel_up && return 0   # already connected: gtvpn-connect just says so
   if ! can_stash; then
     warn "this container is older than the saved sign-in, so it is not used; type your password this time (it is updated at the next connect without a tunnel, or: gtvpn down && gtvpn up)"
     return 0
