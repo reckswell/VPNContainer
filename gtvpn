@@ -729,6 +729,9 @@ cmd_vnc() {
   local host=${1:-} action=${2:-start} p d
   local u="usage: gtvpn vnc <host> [start|windows|attach|status|stop [--force]]"
   [[ $host =~ ^[A-Za-z0-9][A-Za-z0-9._@-]*$ ]] || die "$u"
+  # A container from a checkout before `gtvpn vnc` has no session helper.
+  engine exec "$NAME" sh -c 'command -v gtvpn-vnc' >/dev/null 2>&1 \
+    || die "the running $NAME container is from before gtvpn vnc: rebuild it from this checkout with ./gtvpn up, then ./gtvpn connect (the VPN signs in again)"
   case $action in
     start)
       # In the terminal (it may ask for the GT password and Duo once), then

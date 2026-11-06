@@ -270,6 +270,9 @@ check "gtvpn vnc stop ends it" bash -c "cli vnc cadence stop | grep -q 'stopped 
 check "attach without a session says so" bash -c "cli vnc cadence attach | grep -q 'no session on cadence'"
 check "a bad host name is refused" bash -c "cli vnc 'a;b' | grep -q 'usage: gtvpn vnc'"
 check "an unknown action is refused" bash -c "cli vnc cadence bogus | grep -q 'usage: gtvpn vnc'"
+docker exec gtvpn mv /usr/local/bin/gtvpn-vnc /usr/local/bin/gtvpn-vnc.away
+check "a container from before gtvpn vnc gets told to rebuild" bash -c "cli vnc cadence status | grep -q 'rebuild it from this checkout'"
+docker exec gtvpn mv /usr/local/bin/gtvpn-vnc.away /usr/local/bin/gtvpn-vnc
 pkill -f -- "-L 127.0.0.1:$PC:127.0.0.1:$PC [g]tvpn" 2>/dev/null
 docker exec gtvpn pkill -9 openconnect; sleep 2
 check "after tunnel death the GT server is unreachable" \
