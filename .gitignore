@@ -9,3 +9,6 @@ tests/lab/fakeapi/*.pem
 tests/lab/fakeportal/*.pem
 tests/lab/last-run.txt
 hosts.conf
+# Your saved GT sign-in (gtvpn-login.example.conf is its template): never commit
+gtvpn-login.conf
+gtvpn-login.conf.refused

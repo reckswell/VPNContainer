@@ -178,6 +178,37 @@ The password prompt does not echo, so the terminal transcript
 closed window) never contains it. `GTVPN_CLIENT=gpclient` switches back to
 gpclient for password portals that it handles.
 
+**Saved password** (`gtvpn-login.conf`, optional, never committed):
+
+- **Where it lives.** On Windows, `Start-GtVpn.cmd` turns a plain-text
+  password into `password_dpapi` (DPAPI, current user), and `gtvpn` in WSL
+  decrypts it with `powershell.exe` when it signs in. On Linux the file is
+  kept at 0600.
+- **How it gets in.** Before the sign-in, `gtvpn connect` pipes the username
+  and password to `gtvpn-connect --stash`, which writes them to
+  `/run/gtvpn/secret/signin`. That is a tmpfs that compose mounts root-only
+  (0700), so it never reaches disk, and `dev` cannot read it. The sign-in
+  takes it only if it is under two minutes old, and deletes it before
+  anything else runs.
+- **How OpenConnect gets it.** OpenConnect runs with `--passwd-on-stdin`.
+  Its stdin is a FIFO in the same tmpfs, fed by a relay that writes the
+  password and then `exec`s `cat` on the terminal, so the Duo code typed
+  next reaches OpenConnect the same way. Echo is off for that time, so the
+  code is not in the transcript. Neither value is ever an argument or an
+  environment variable.
+- **Refusals.** `gtvpn-prompts --saved-password` tells the two refusals
+  apart. A 512 before any Duo challenge is the password, so it stops at
+  once, and `gtvpn-connect` exits 3. The host CLI then writes
+  `gtvpn-login.conf.refused` and stops using the saved password until the
+  file is newer than that marker. A Duo-code refusal ends the sign-in as
+  usual, and the next connect uses the saved password again, so each
+  connect makes at most one try with it.
+- **Older containers.** A container from before this change would read a
+  stash as typed input and start a real sign-in with it. So `gtvpn connect`
+  first checks that the container has `gtvpn-connect --stash` and the
+  tmpfs. If it doesn't, connect recreates it on the current image when no
+  tunnel is up, and otherwise sends nothing.
+
 **SSO portals (SAML):** `gpauth --browser manual` normally prints a URL on
 a random local port and waits for a pasted `globalprotectcallback:` link.
 We automate both ends:

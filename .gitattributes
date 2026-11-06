@@ -4,3 +4,5 @@
 * text=auto eol=lf
 *.png binary
 *.tar.gz binary
+# cmd.exe needs CRLF in batch files.
+*.cmd text eol=crlf

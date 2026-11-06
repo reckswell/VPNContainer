@@ -15,8 +15,33 @@
 # Password flow, which is what Georgia Tech uses: OpenConnect prompts in this
 # terminal for your GT password, then the Duo passcode (the 6-digit code shown
 # in Duo Mobile). gtvpn-prompts labels each prompt [PASSWORD] or [DUO CODE].
+#
+# Saved password (gtvpn-login.conf on your computer): `gtvpn connect` first
+# runs `gtvpn-connect --stash`, which takes the GT username and password on
+# stdin and keeps them in root-only memory (/run/gtvpn/secret, a tmpfs) for
+# up to two minutes. The sign-in then takes them from there, deletes them,
+# and asks only for the Duo code. If GT refuses the saved password, this
+# stops after that one try and exits 3, and `gtvpn connect` stops using it
+# until you change the file: a wrong saved password must not lock your
+# account by being retried.
 set -euo pipefail
 [[ $(id -u) == 0 ]] || { echo "run as root: docker exec -it -u root gtvpn gtvpn-connect" >&2; exit 1; }
+
+SECRET=/run/gtvpn/secret
+STASH=$SECRET/signin
+if [[ ${1:-} == --stash ]]; then
+  # Never on disk: only on the tmpfs that compose.yaml mounts here.
+  [[ $(stat -f -c %T "$SECRET" 2>/dev/null) == tmpfs && ! -L $SECRET ]] \
+    || { echo "[gtvpn] this container has no root-only memory for a saved password; restart it (gtvpn down && gtvpn up) to use one" >&2; exit 2; }
+  chmod 700 "$SECRET"
+  IFS= read -r u || true; IFS= read -r p || true
+  u=${u%$'\r'}; p=${p%$'\r'}
+  rm -f "$STASH"
+  [[ -n $p ]] || exit 0
+  [[ $u =~ ^[A-Za-z0-9._-]{1,64}$ ]] || { echo "[gtvpn] a saved password needs your GT username too (letters, digits, . _ -)" >&2; exit 2; }
+  (umask 077; printf '%s\n%s\n' "$u" "$p" >"$STASH.tmp") && mv -f "$STASH.tmp" "$STASH"
+  exit 0
+fi
 
 # Keep a transcript of this sign-in (what the terminal showed), so an error
 # is not lost when the window closes: /var/log/gtvpn/connect.log, root-only,
@@ -27,6 +52,16 @@ if [[ -z ${GTVPN_IN_TRANSCRIPT:-} && -t 0 && -t 1 ]] && command -v script >/dev/
   rm -f "$TRANSCRIPT"; install -m 0600 /dev/null "$TRANSCRIPT"
   SHELL=/bin/bash GTVPN_IN_TRANSCRIPT=1 exec script -qefc "$(printf '%q ' "$0" "$@")" "$TRANSCRIPT"
 fi
+
+# Take a stashed sign-in (see --stash above) and delete it right away, so it
+# lives here only for this one attempt, whatever happens next.
+saved_user='' saved_pw=''
+if [[ -f $STASH && ! -L $STASH ]]; then
+  if [[ -n $(find "$STASH" -mmin -2 2>/dev/null) ]]; then
+    { IFS= read -r saved_user; IFS= read -r saved_pw; } <"$STASH" || true
+  fi
+fi
+rm -f "$STASH" "$STASH.tmp"
 
 PORTAL=${GTVPN_PORTAL:-vpn.gatech.edu}
 AUTH=${GTVPN_AUTH:-auto}
@@ -102,6 +137,10 @@ CLIENT=${GTVPN_CLIENT:-auto}
 [[ $CLIENT == auto ]] && { [[ $AUTH == password ]] && CLIENT=openconnect || CLIENT=gpclient; }
 [[ $CLIENT == openconnect && $AUTH != password ]] && die "GTVPN_CLIENT=openconnect supports password sign-in only (GTVPN_AUTH=password)"
 
+if [[ -n $saved_pw && ! ( $AUTH == password && $CLIENT == openconnect ) ]]; then
+  say "the saved password works only with the OpenConnect password sign-in (GT's); not using it here"
+  saved_pw=''
+fi
 if [[ $AUTH == password && $CLIENT == openconnect ]]; then
   # 1) Sign in interactively. Through the portal: password, then the Duo
   #    challenge, then the gateway, which at GT runs its own password + Duo
@@ -116,7 +155,8 @@ if [[ $AUTH == password && $CLIENT == openconnect ]]; then
   # shellcheck disable=SC2206
   [[ -n ${GTVPN_OC_ARGS:-} ]] && oc+=($GTVPN_OC_ARGS)
   ocauth=() prompts=()
-  [[ -n ${GTVPN_USER:-} ]] && ocauth+=(-u "$GTVPN_USER")
+  user=${saved_user:-${GTVPN_USER:-}}
+  [[ -n $user ]] && ocauth+=(-u "$user")
   if [[ $SERVER != "$PORTAL" ]]; then
     ocauth+=(--usergroup=gateway); prompts+=(--gateway-only)
   else
@@ -125,10 +165,16 @@ if [[ $AUTH == password && $CLIENT == openconnect ]]; then
   fi
   # shellcheck disable=SC2206
   [[ -n ${GTVPN_OC_AUTH_ARGS:-} ]] && ocauth+=($GTVPN_OC_AUTH_ARGS)
-  say "signing in at $SERVER, in this order (the password and the Duo code are hidden as you type):"
-  [[ -z ${GTVPN_USER:-} ]] && printf '   %s\n' "GT username"
-  printf '   %b\n' "\033[1;36m[PASSWORD]\033[0m your GT password" \
-    "\033[1;35m[DUO CODE]\033[0m the 6-digit code shown in Duo Mobile at that moment (not your password)"
+  if [[ -n $saved_pw ]]; then
+    say "signing in at $SERVER as $user, in this order:"
+    printf '   %b\n' "\033[1;36m[PASSWORD]\033[0m your saved GT password (gtvpn-login.conf): nothing to type" \
+      "\033[1;35m[DUO CODE]\033[0m the 6-digit code shown in Duo Mobile at that moment (hidden as you type)"
+  else
+    say "signing in at $SERVER, in this order (the password and the Duo code are hidden as you type):"
+    [[ -z $user ]] && printf '   %s\n' "GT username"
+    printf '   %b\n' "\033[1;36m[PASSWORD]\033[0m your GT password" \
+      "\033[1;35m[DUO CODE]\033[0m the 6-digit code shown in Duo Mobile at that moment (not your password)"
+  fi
   if [[ $SERVER == "$PORTAL" ]]; then
     printf '   %b\n' "then the gateway may ask for both again: \033[1;36m[PASSWORD]\033[0m your GT password," \
       "and \033[1;35m[DUO CODE]\033[0m a NEW code (wait until Duo Mobile shows a different one)"
@@ -137,8 +183,40 @@ if [[ $AUTH == password && $CLIENT == openconnect ]]; then
   fi
   # gtvpn-prompts relabels each prompt and ends the sign-in if the gateway
   # refuses it. Its stdout stays on this capture so $(...) waits for it.
-  info=$(as_vpn openconnect "${oc[@]}" "${ocauth[@]}" --timestamp --authenticate "$SERVER" \
-           2> >(/usr/local/sbin/gtvpn-prompts "${prompts[@]}")) || die "sign-in failed (see above)"
+  status=$SECRET/status; rm -f "$status"
+  if [[ -n $saved_pw ]]; then
+    # OpenConnect reads the saved password, then whatever is typed here (the
+    # Duo code), from one pipe: a relay writes the password, then becomes a
+    # plain copy of this terminal. Echo is off while it runs, so the code
+    # does not show and is not in the transcript.
+    prompts+=(--saved-password --status "$status")
+    ocauth+=(--passwd-on-stdin)
+    feed=$SECRET/feed; rm -f "$feed"; mkfifo -m 600 "$feed"
+    tty_state=$( [[ -t 0 ]] && stty -g 2>/dev/null || true)
+    exec {kbd}<&0
+    { printf '%s\n' "$saved_pw"; exec cat <&"$kbd"; } >"$feed" &
+    relay=$!
+    saved_pw=x; unset saved_pw
+    endrelay() {
+      kill "$relay" 2>/dev/null || true; wait "$relay" 2>/dev/null || true
+      rm -f "$feed"
+      [[ -n $tty_state ]] && stty "$tty_state" 2>/dev/null || true
+    }
+    trap endrelay EXIT
+    [[ -n $tty_state ]] && stty -echo 2>/dev/null || true
+    rc=0
+    info=$(as_vpn openconnect "${oc[@]}" "${ocauth[@]}" --timestamp --authenticate "$SERVER" \
+             2> >(/usr/local/sbin/gtvpn-prompts "${prompts[@]}") <"$feed") || rc=$?
+    endrelay; trap - EXIT; exec {kbd}<&-
+    if (( rc )); then
+      # 3: GT refused the saved password itself (before any Duo code).
+      [[ $(cat "$status" 2>/dev/null) == password ]] && { rm -f "$status"; exit 3; }
+      rm -f "$status"; die "sign-in failed (see above)"
+    fi
+  else
+    info=$(as_vpn openconnect "${oc[@]}" "${ocauth[@]}" --timestamp --authenticate "$SERVER" \
+             2> >(/usr/local/sbin/gtvpn-prompts "${prompts[@]}")) || die "sign-in failed (see above)"
+  fi
   declare -A sess=()
   while IFS= read -r line; do
     [[ $line =~ ^(COOKIE|HOST|CONNECT_URL|FINGERPRINT|RESOLVE)=\'(.*)\'$ ]] || continue

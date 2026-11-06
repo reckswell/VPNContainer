@@ -38,6 +38,10 @@ services:
       - no-new-privileges:true
     devices:
       - /dev/net/tun:/dev/net/tun
+    # Root-only memory for a saved GT password on its way to the sign-in
+    # (gtvpn-login.conf): it is never written to disk, and is gone at once.
+    tmpfs:
+      - /run/gtvpn/secret:mode=0700,size=64k,noexec,nosuid,nodev
     sysctls:
       net.ipv6.conf.all.disable_ipv6: 1
       net.ipv6.conf.default.disable_ipv6: 1
