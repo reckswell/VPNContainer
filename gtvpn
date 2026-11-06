@@ -640,7 +640,7 @@ vnc_viewer_exe() { # print the built viewer's path
         /r:System.Windows.Forms.dll /r:System.Drawing.dll "${w[@]}") >&2 || die "could not build the viewer"
     else
       if ! command -v mcs >/dev/null || ! command -v mono >/dev/null; then
-        die "gtvpn's viewer is for Windows (on Linux it needs mono); use: gtvpn vnc <host> attach"
+        die "gtvpn's viewer needs mono and mcs here; or set GTVPN_VIEWER=container in .env"
       fi
       mcs -langversion:5 -optimize+ -target:winexe -out:"$out" -r:System.Windows.Forms.dll -r:System.Drawing.dll "${cs[@]}" >&2 \
         || die "could not build the viewer"
@@ -649,17 +649,66 @@ vnc_viewer_exe() { # print the built viewer's path
   fi
   printf '%s\n' "$out"
 }
+# Smart App Control (Windows 11) blocks programs that are not signed and that
+# it has not seen before, and the viewer built on this PC is one of them.
+sac_on() { # Windows: Smart App Control is on (not off, not evaluating)
+  reg.exe query 'HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy' /v VerifiedAndReputablePolicyState 2>/dev/null \
+    | tr -d '\r' | grep -qE 'REG_DWORD[[:space:]]+0x0*1$'
+}
+# Where gtvpn's viewer runs (GTVPN_VIEWER): native = a program on this
+# computer (Windows' own frames; mono on Linux); container = under mono in a
+# container of its own, its windows shown by WSLg (Windows) or this display.
+vnc_viewer_mode() {
+  local m; m=$(envget GTVPN_VIEWER); m=${m:-auto}
+  case $m in
+    native|container) printf '%s\n' "$m"; return 0 ;;
+    auto) ;;
+    *) die "GTVPN_VIEWER in .env must be auto, native or container" ;;
+  esac
+  if is_wsl; then
+    if sac_on; then echo container; else echo native; fi
+  elif command -v mono >/dev/null && command -v mcs >/dev/null; then echo native
+  else echo container; fi
+}
+VIEWER_IMAGE=gtvpn-viewer:local
+vnc_windows_container() { # cookie viewer-options...
+  local c=$1 base x d; shift
+  base=${GTVPN_BASE_IMAGE:-$(envget GTVPN_BASE_IMAGE)}; x=$(envget GTVPN_X11_DIR); d=$(envget GTVPN_DISPLAY)
+  engine image inspect "$VIEWER_IMAGE" >/dev/null 2>&1 \
+    || say "building the viewer's container image (once: it downloads mono, about 180 MB)" >&2
+  engine build -q --build-arg BASE_IMAGE="${base:-ubuntu:24.04}" -t "$VIEWER_IMAGE" "$HERE/windows/viewer" >/dev/null \
+    || die "could not build the viewer's container image (windows/viewer/Dockerfile)"
+  # One viewer at a time, in a new container each time: it shares the gtvpn
+  # container's network as it is now (the forwards are its 127.0.0.1 ports).
+  engine rm -f "$NAME-viewer" >/dev/null 2>&1 || true
+  local -a o=(--name "$NAME-viewer" --network "container:$NAME" --user "$(id -u):$(id -g)" -e HOME=/tmp
+    -e DISPLAY="${d:-:0}" -v "${x:-/tmp/.X11-unix}:/tmp/.X11-unix:ro")
+  [[ -s runtime/in/xauth ]] && o+=(-v "$HERE/runtime/in/xauth:/xauth:ro" -e XAUTHORITY=/xauth)
+  engine run -d --rm "${o[@]}" "$VIEWER_IMAGE" sleep infinity >/dev/null || die "could not start the viewer's container"
+  # The cookie goes through stdin: never on a command line or in the container's settings.
+  printf '%s\n' "$c" | engine exec -i "$NAME-viewer" sh -c \
+    'read -r c; GTVPN_X_COOKIE=$c setsid -f mono /opt/gtvpn/gtvpn-viewer.exe "$@" >/dev/null 2>&1 </dev/null' sh "$@" \
+    || die "could not start the viewer"
+}
 vnc_windows() { # host display: open the viewer on the session
-  local host=$1 n=${2#:} exe c p q
-  exe=$(vnc_viewer_exe) || exit 1
+  local host=$1 n=${2#:} exe c p q mode
+  mode=$(vnc_viewer_mode) || exit 1
   p=$((15900 + n)); q=$((16300 + n))
   c=$({ engine exec -u dev "$NAME" gtvpn-vnc "$host" cookie 2>/dev/null || true; } | tr -d '\r' | sed -n 's/^cookie=//p')
   [[ $c =~ ^[0-9a-f]{32}$ ]] || die "could not read the session's cookie from $host"
-  vnc_local_forward "$p"; vnc_local_forward "$q"
   local args="--vnc 127.0.0.1:$p --x11 127.0.0.1:$q --label $host:$n" extra
   extra=$(envget GTVPN_VIEWER_ARGS)
   [[ $extra =~ ^[-a-zA-Z0-9\ ._]*$ ]] || die "GTVPN_VIEWER_ARGS in .env may hold only options such as: --encoding tight"
   [[ -z $extra ]] || args+=" $extra"
+  if [[ $mode == container ]]; then
+    # shellcheck disable=SC2086
+    vnc_windows_container "$c" $args
+    if is_wsl; then say "viewer opening in a container (Smart App Control is on): WSLg shows each window of the session as a window of its own"
+    else say "viewer opening in a container: each window of the session appears here as a window of its own"; fi
+    return 0
+  fi
+  exe=$(vnc_viewer_exe) || exit 1
+  vnc_local_forward "$p"; vnc_local_forward "$q"
   # The cookie goes in the environment, never on a command line.
   if is_wsl; then
     local w; w=$(wslpath -w "$exe")
@@ -711,7 +760,9 @@ EOF
     attach)
       p=$(vnc_session "$host" port)
       [[ $p =~ ^[0-9]+$ ]] || die "no session on $host (or no open connection to it); start one with: gtvpn vnc $host"
-      # Title bars inside the desktop again if gtvpn's own viewer was the window manager.
+      # Title bars inside the desktop again if gtvpn's own viewer was the
+      # window manager (in its container, it is closed here first).
+      engine rm -f "$NAME-viewer" >/dev/null 2>&1 || true
       engine exec -u dev "$NAME" gtvpn-vnc "$host" wm >/dev/null 2>&1 || true
       vnc_attach "$p" "$host" ;;
     status) engine exec -it -u dev -w /home/dev "$NAME" gtvpn-vnc "$host" status ;;
@@ -747,7 +798,8 @@ ${c_b}gtvpn${c_0} - Georgia Tech GlobalProtect in an isolated container
                    (its own TigerVNC, nothing installed), in a viewer window
                    here; Cadence there then needs  export DISPLAY=:N  (printed).
                    windows: each Cadence window as a window of its own here
-                   (gtvpn's viewer for Windows) instead of one desktop
+                   (gtvpn's viewer; in a container through WSLg when Smart
+                   App Control is on) instead of one desktop
   logs             container + VPN client logs
   callback <url>   (used by the browser link handler)
   rebuild          rebuild the image (updates Claude Code / base packages)
@@ -791,7 +843,7 @@ case $cmd in
     grep -qF "$(cut -d' ' -f2 <<<"$k")" runtime/in/authorized_keys || echo "$k" >> runtime/in/authorized_keys
     say "key authorized (takes effect on next ./gtvpn up)" ;;
   rebuild) x11_detect; compose build --pull --no-cache; say "rebuilt; restart with ./gtvpn down && ./gtvpn up" ;;
-  down) compose down ;;
+  down) engine rm -f "$NAME-viewer" >/dev/null 2>&1 || true; compose down ;;
   help|-h|--help) usage ;;
   *) usage; exit 2 ;;
 esac

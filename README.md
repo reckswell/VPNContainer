@@ -325,6 +325,21 @@ To switch back to the desktop view, close the viewer (its icon in the
 notification area, "Quit") and run `gtvpn vnc <host> attach`: metacity comes
 back. Its log is `%TEMP%\gtvpn-viewer.log`.
 
+**With Smart App Control on** (Windows 11), Windows blocks programs that are
+not signed and that it has not seen before, and the viewer built on your PC
+is one of them. `gtvpn vnc <host> windows` then runs the same viewer in a
+container of its own instead (`windows/viewer/Dockerfile`, built on first
+use, which downloads mono, about 180 MB), and WSLg, Windows' own support for
+Linux windows, shows each Cadence window on your desktop. Nothing new runs
+as a Windows program. On the test PC this redrew 57 times a second, and
+dragging and snapping behave as with the native viewer. What differs is the
+frame: WSLg draws its own light title bar and adds " (Ubuntu)" to the title,
+and the taskbar buttons say "Remote Desktop". `GTVPN_VIEWER` in `.env`
+chooses: `auto` (the default: the container when Smart App Control is on),
+`native` or `container`. That viewer has no notification-area icon: `gtvpn
+vnc <host> attach` closes it (and opens TigerVNC), and its log is `docker
+exec gtvpn-viewer cat /tmp/gtvpn-viewer.log`.
+
 ### Claude Code for future projects
 
 `./gtvpn claude` (or `claude` in any container terminal). Your projects can
@@ -390,7 +405,7 @@ What is checked (details in [docs/DESIGN.md](docs/DESIGN.md#verification-recursi
 | `gtvpn vnc` says "no open connection" | The container's connection to that server closed (tunnel drop, 8 h limit). Run `gtvpn vnc <server>` again in a terminal: it signs in once and reopens the viewer; the session and Virtuoso are still there |
 | The viewer shows the desktop but not Virtuoso | `gtvpn vnc <server> status` lists the programs in the session. If Virtuoso is not among them, it was started on another display: check `echo $DISPLAY` in that terminal against the display `gtvpn vnc` printed |
 | The viewer says the connection was refused or closed | Run `gtvpn vnc <server> attach` again; it reopens the forwards. If it still fails, `gtvpn vnc <server>` checks the session itself |
-| `gtvpn vnc <server> windows` shows nothing, and Windows says "An Application Control policy has blocked this file" (or Event Viewer has Code Integrity events 3033/3077) | Smart App Control is on, and it blocks programs that are not signed and that it has not seen before. gtvpn builds its viewer on your PC, so each new build is one of those. Use `gtvpn vnc <server> attach` (the TigerVNC viewer, which is signed) until the viewer is signed |
+| `gtvpn vnc <server> windows` shows nothing, and Windows says "An Application Control policy has blocked this file" (or Event Viewer has Code Integrity events 3033/3077) | Smart App Control blocked the viewer built on your PC (it is not signed). gtvpn runs the viewer in a container instead when Smart App Control is on; if Windows still blocks it, set `GTVPN_VIEWER=container` in `.env` ([with Smart App Control on](#each-cadence-window-as-a-window-of-its-own-windows)). `gtvpn vnc <server> attach` (TigerVNC, which is signed) always works |
 
 ## Layout
 
@@ -406,7 +421,7 @@ image/                        Dockerfile + in-container scripts
 host/verify-host.sh           host-side checks
 windows/Setup-GtVpn.ps1       Windows setup
 windows/Start-GtVpn.ps1       what Start-GtVpn.cmd runs
-windows/viewer/               gtvpn vnc <host> windows: the viewer (C#, built on first use)
+windows/viewer/               gtvpn vnc <host> windows: the viewer (C#, built on first use; its Dockerfile for the container route)
 vscode/                       VS Code settings + Dev Containers attach config
 tests/lab/                    end-to-end lab with a real tunnel (see below)
 docs/DESIGN.md                design, threat model, alternatives

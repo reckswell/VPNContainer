@@ -377,6 +377,24 @@ the same session twice:
   mouse selection (PRIMARY) does not replace the Windows clipboard. A
   session started before that option is changed with `vncconfig -set` when
   it is reused, where the server has vncconfig.
+- **With Smart App Control on:** Windows 11's Smart App Control blocks
+  programs that are not signed and that it has not seen before; every
+  build of the viewer on the PC is one. Signing would take a paid
+  certificate (or a free open-source one, which needs a release history
+  first), and running it in memory through PowerShell would get around a
+  protection the user chose to keep. So `windows` then runs the same
+  viewer under mono in a container of its own (`gtvpn-viewer`, image from
+  `windows/viewer/Dockerfile`), in the gtvpn container's network namespace
+  (the forwards are its loopback ports, and nothing listens on the PC),
+  with the X socket the gtvpn container gets: WSLg shows each of its X
+  windows as a window on the Windows desktop (a RemoteApp of Microsoft's
+  signed msrdc). The cookie reaches it through stdin. Under mono the
+  viewer's message loop runs without a main form, since Mono's WinForms
+  timers wait for the main form to load, and keys come from WM_CHAR.
+  The frames are WSLg's (Weston's) rather than Windows 11's.
+  `GTVPN_VIEWER` overrides the choice; the state comes from
+  `HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy`
+  `VerifiedAndReputablePolicyState` (1 = on).
 - **Build and lifetime:** `gtvpn vnc <host> windows` compiles it on first
   use (and again when its sources change) with the `csc.exe` of .NET
   Framework 4, which is part of Windows 10 and 11, into

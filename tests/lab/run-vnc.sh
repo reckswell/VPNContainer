@@ -16,13 +16,14 @@ DC() { docker compose -p gtvpn-lab "${FILES[@]}" "$@"; }
 FAILED=0; ok(){ printf '\033[32mPASS\033[0m %s\n' "$*"; }; bad(){ printf '\033[31mFAIL\033[0m %s\n' "$*"; FAILED=1; }
 check(){ local d=$1; shift; if "$@"; then ok "$d"; else bad "$d"; fi; }
 D=:79; XA=$(mktemp); KEYDIR=$(mktemp -d); XPID=
-cleanup(){ [[ ${KEEP:-0} == 1 ]] && return; pkill -f -- '-L 127.0.0.1:1[56][0-9][0-9][0-9]:127.0.0.1:.* [g]tvpn$' 2>/dev/null; docker rm -f gtvpn-lab-viewer gtvpn-lab-fwd >/dev/null 2>&1; DC down -v --remove-orphans >/dev/null 2>&1
+cleanup(){ [[ ${KEEP:-0} == 1 ]] && return; pkill -f -- '-L 127.0.0.1:1[56][0-9][0-9][0-9]:127.0.0.1:.* [g]tvpn$' 2>/dev/null; docker rm -f gtvpn-lab-viewer gtvpn-lab-fwd gtvpn-viewer >/dev/null 2>&1; DC down -v --remove-orphans >/dev/null 2>&1
   [[ -n $XPID ]] && kill "$XPID" 2>/dev/null; rm -rf "$XA" "$KEYDIR" runtime/in/xauth runtime/in/hosts.conf; }
 trap cleanup EXIT
 
 docker build -q --network "$BNET" --build-arg BASE_IMAGE="$BASE" -t gtvpn:local image >/dev/null || exit 1
 docker build -q --network "$BNET" --build-arg BASE_IMAGE="$BASE" -t lab/ocserv tests/lab/ocserv >/dev/null || exit 1
 docker build -q --network "$BNET" -t lab/gtvpn-client -f tests/lab/Dockerfile.client tests/lab >/dev/null || exit 1
+docker build -q --network "$BNET" --build-arg BASE_IMAGE="$BASE" -t gtvpn-viewer:local windows/viewer >/dev/null || exit 1
 
 # The "desktop" of this computer, and the ssh key/config for `ssh gtvpn`.
 # Its X and ssh clients come from the lab image, so this computer needs only
@@ -241,6 +242,26 @@ if command -v mono >/dev/null && command -v mcs >/dev/null; then
     check "viewer options from .env reach it (GTVPN_VIEWER_ARGS)" grep -q 'tight compress 1' "$KEYDIR/gtvpn-viewer.log"
   fi
   pkill -f -- "$KEYDIR/cache/gtvpn/gtvpn-viewer.exe"; srv 'pkill -x xlogo'; sleep 1
+fi
+# The viewer in a container of its own (GTVPN_VIEWER=container; auto picks it
+# on Windows when Smart App Control is on, and there WSLg shows its windows):
+# mono comes with its image, and it runs in the gtvpn container's network.
+if [[ ! -e .env ]]; then
+  printf 'GTVPN_VIEWER=container\nGTVPN_DISPLAY=%s\nGTVPN_X11_DIR=/tmp/.X11-unix\n' "$D" > .env
+  xauth -f "$XA" nlist "$D" | sed -e 's/^..../ffff/' | xauth -f runtime/in/xauth nmerge - 2>/dev/null
+  srv "DISPLAY=:$NC nohup xlogo -title gtvpn-lab-xlogo3 >/dev/null 2>&1 &"
+  OUT=$(GTVPN_BASE_IMAGE=$BASE cli vnc cadence windows)
+  inwin(){ for _ in $(seq 60); do desk xwininfo -root -tree 2>/dev/null | grep -q '"gtvpn-lab-xlogo3"' && return 0; sleep 0.5; done
+    docker exec gtvpn-viewer cat /tmp/gtvpn-viewer.log 2>&1 | tail -5; return 1; }
+  export -f inwin
+  check "with GTVPN_VIEWER=container, gtvpn vnc windows runs the viewer in a container of its own, and the session's windows appear here" \
+    bash -c "grep -q 'viewer opening in a container' <<<\"\$1\" && inwin" _ "$OUT"
+  grep -q 'viewer opening in a container' <<<"$OUT" || echo "$OUT"
+  check "the cookie is not in that container's settings" bash -c "! docker inspect gtvpn-viewer | grep -q '$(dev "gtvpn-vnc cadence cookie" | sed -n 's/^cookie=//p')'"
+  cli vnc cadence attach >/dev/null
+  check "attach closes the viewer's container and brings metacity back" \
+    bash -c "! docker inspect gtvpn-viewer >/dev/null 2>&1 && on_srv 'pgrep -u gtuser -x metacity' >/dev/null"
+  rm -f .env runtime/in/xauth; srv 'pkill -x xlogo'
 fi
 check "gtvpn vnc stop ends it" bash -c "cli vnc cadence stop | grep -q 'stopped session :$NC'"
 check "attach without a session says so" bash -c "cli vnc cadence attach | grep -q 'no session on cadence'"
