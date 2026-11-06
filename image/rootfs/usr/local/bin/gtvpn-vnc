@@ -6,6 +6,10 @@
 #
 #   gtvpn-vnc <host> start          start or reuse the session; print display=:N port=P
 #   gtvpn-vnc <host> display        the same, for the running session
+#   gtvpn-vnc <host> windows        start or reuse it for gtvpn's viewer for Windows
+#                                   (no window manager there: the viewer is one);
+#                                   also forward the session's X display: xport=Q
+#   gtvpn-vnc <host> cookie         cookie=HEX, the session's X cookie (for that viewer)
 #   gtvpn-vnc <host> status
 #   gtvpn-vnc <host> stop [--force]
 #
@@ -25,7 +29,7 @@
 set -uo pipefail
 umask 077
 host=${1:-}; action=${2:-start}
-usage() { echo "usage: gtvpn-vnc <host> [start|display|status|stop [--force]]" >&2; exit 2; }
+usage() { echo "usage: gtvpn-vnc <host> [start|display|windows|cookie|status|stop [--force]]" >&2; exit 2; }
 die() { printf 'gtvpn vnc: %s\n' "$*" >&2; exit 1; }
 [[ $host =~ ^[A-Za-z0-9][A-Za-z0-9._@-]*$ ]] || usage
 [[ $(id -un) == dev ]] || die "run it as dev (gtvpn vnc <host> on your computer does that)"
@@ -61,6 +65,19 @@ forward() { # display socket
   fi
   echo "port=$port"
 }
+# 127.0.0.1:Q here -> the session's X display on <host> (its Unix socket,
+# Q = 16300+N), for the viewer's window manager. The display still wants
+# the session's cookie.
+xforward() { # display
+  local n=${1#:} port=$((16300 + ${1#:}))
+  if ! port_open "$port"; then
+    ssh "${mux[@]}" -o LogLevel=error -O forward -L "127.0.0.1:$port:/tmp/.X11-unix/X$n" "$host" </dev/null >/dev/null \
+      || die "could not forward port $port to the session's display"
+    for _ in 1 2 3 4 5 6 7 8 9 10; do port_open "$port" && break; sleep 0.2; done
+    port_open "$port" || die "the forward to the session's display did not open"
+  fi
+  echo "xport=$port"
+}
 show() { # remote output of start/display: print it, then display= and port=
   local out=$1 d s
   d=$(printf '%s\n' "$out" | sed -n 's/^display=//p'); s=$(printf '%s\n' "$out" | sed -n 's/^socket=//p')
@@ -77,6 +94,14 @@ case $action in
     out=$(remote start) || { printf '%s\n' "$out"; exit 1; }
     show "$out" ;;
   display) connected || exit 1; out=$(remote display) || exit 1; show "$out" ;;
+  windows)
+    sign_in
+    c=$(remote check) || die "$host cannot run a VNC session: $c"
+    out=$(remote start nowm) || { printf '%s\n' "$out"; exit 1; }
+    show "$out" || exit 1
+    d=$(printf '%s\n' "$out" | sed -n 's/^display=//p')
+    xforward "$d" || exit 1 ;;
+  cookie) connected || exit 1; remote cookie ;;
   status) connected || { echo "no open connection to $host"; exit 1; }; remote status ;;
   stop)
     connected || die "no open connection to $host"
@@ -86,6 +111,7 @@ case $action in
     remote stop "${3:-}"; rc=$?
     if [[ $rc == 0 && -n ${d:-} ]]; then
       ssh "${mux[@]}" -O cancel -L "127.0.0.1:$((15900 + ${d#:})):$s" "$host" >/dev/null 2>&1 || true
+      ssh "${mux[@]}" -O cancel -L "127.0.0.1:$((16300 + ${d#:})):/tmp/.X11-unix/X${d#:}" "$host" >/dev/null 2>&1 || true
     fi
     exit $rc ;;
   *) usage ;;

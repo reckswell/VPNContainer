@@ -3,9 +3,12 @@
 # (your login shell may be tcsh):   sh -s -- ACTION [ARG]
 #
 #   check            "ok Xvnc <version> wm <name>" or what is missing
-#   start            start your session, or find the running one; print
+#   start [nowm]     start your session, or find the running one; print
 #                    "display=:N" and "socket=PATH" (N is also in
-#                    /tmp/gtvpn-<uid>/display)
+#                    /tmp/gtvpn-<uid>/display). It also makes sure a window
+#                    manager runs, unless nowm (gtvpn's own viewer for
+#                    Windows is the window manager then)
+#   cookie           "cookie=HEX": the session's X cookie, for that viewer
 #   display          the same two lines for the running session (exit 1: none)
 #   status           the session and the programs showing windows in it
 #   stop [--force]   end it (refuses while programs other than the window
@@ -47,9 +50,20 @@ start_wm() { # display
     DISPLAY=":$1" GSETTINGS_BACKEND=memory XDG_CACHE_HOME="$D/cache" XDG_CONFIG_HOME="$D/config" \
       XDG_DATA_HOME="$D/data" setsid nohup "$w" $a >"$D/wm.log" 2>&1 </dev/null &
     p=$!; sleep 1
-    kill -0 "$p" 2>/dev/null && return 0
+    kill -0 "$p" 2>/dev/null && { say "$p" > "$D/wm.pid"; return 0; }
   done
   return 1
+}
+# Whether a window manager runs on display :$1: the window that the
+# _NET_SUPPORTING_WM_CHECK property names still exists (it goes away with its
+# window manager), or, without xprop, the one we started is alive.
+wm_running() {
+  if command -v xprop >/dev/null 2>&1; then
+    id=$(DISPLAY=":$1" xprop -root _NET_SUPPORTING_WM_CHECK 2>/dev/null | sed -n 's/.*window id # *//p')
+    [ -n "$id" ] && DISPLAY=":$1" xprop -id "$id" _NET_SUPPORTING_WM_CHECK >/dev/null 2>&1
+  else
+    [ -s "$D/wm.pid" ] && kill -0 "$(cat "$D/wm.pid")" 2>/dev/null
+  fi
 }
 # Display number of the running session (its Xvnc serves our socket).
 live() {
@@ -71,6 +85,11 @@ start)
   command -v Xvnc >/dev/null 2>&1 || die "this server has no Xvnc (TigerVNC server)"
   if n=$(live); then
     say "reusing your session :$n"
+    # gtvpn's viewer for Windows was the window manager and has quit: bring
+    # title bars back for the VNC viewer.
+    if [ "${2:-}" != nowm ] && ! wm_running "$n"; then
+      if start_wm "$n"; then say "window manager restarted"; else say "note: no window manager started (log: $D/wm.log)"; fi
+    fi
   else
     umask 077
     # Our folder must be ours and private (it is in the shared /tmp).
@@ -100,7 +119,7 @@ start)
       i=$((i + 1)); [ $i -lt 40 ] || { tail -n 15 "$D/xvnc.log" >&2; die "Xvnc did not start (log: $D/xvnc.log)"; }
       sleep 0.25
     done
-    start_wm "$n" || say "note: no window manager started (windows have no title bars; log: $D/wm.log)"
+    [ "${2:-}" = nowm ] || start_wm "$n" || say "note: no window manager started (windows have no title bars; log: $D/wm.log)"
     say "started your session :$n"
   fi
   report "$n" ;;
@@ -108,6 +127,12 @@ start)
 display)
   n=$(live) || exit 1
   report "$n" ;;
+
+cookie)
+  n=$(live) || exit 1
+  c=$(xauth -q -f "${XAUTHORITY:-$HOME/.Xauthority}" list ":$n" 2>/dev/null | awk '$2 == "MIT-MAGIC-COOKIE-1" { print $3; exit }')
+  [ -n "$c" ] || die "the session's cookie is not in ${XAUTHORITY:-$HOME/.Xauthority}"
+  say "cookie=$c" ;;
 
 status)
   if n=$(live); then
