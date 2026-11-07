@@ -238,6 +238,9 @@ check "one background ssh gtvpn serves this computer's port" bash -c "[[ \$(pgre
 cli vnc cadence attach >/dev/null; sleep 2
 check "attach reopens the viewer and reuses that forward" \
   bash -c "[[ \$(grep -c 'RFB 003' $KEYDIR/viewer-greeting) == 2 && \$(pgrep -fc -- '-L 127.0.0.1:$PC:127.0.0.1:$PC [g]tvpn') == 1 ]]"
+notty(){ local out; out=$(timeout 60 env PATH="$B:$PATH" ./gtvpn vnc cadence status </dev/null 2>&1) && ! grep -qiE 'not a terminal|TTY' <<<"$out" \
+  || { echo "$out"; return 1; }; }
+check "gtvpn vnc runs without a terminal too (from a script or a launcher)" notty
 check "gtvpn vnc status shows it" bash -c "cli vnc cadence status | grep -q 'session :$NC is running'"
 if command -v mono >/dev/null && command -v mcs >/dev/null; then
   srv "DISPLAY=:$NC nohup xlogo -title gtvpn-lab-xlogo2 >/dev/null 2>&1 &"
@@ -284,6 +287,16 @@ wslgcfg(){ local d r=0; d=$(mktemp -d)
   printf '[system-distro-env]\r\nWESTON_RDP_MONITOR_REFRESH_RATE=179\r\nWESTON_RDPRAIL_SHELL_LOCAL_MOVE=true\r\n' | cmp -s - "$d/new" || r=1
   (( r == 0 )) || { cat -A "$d/had" "$d/new"; }; rm -rf "$d"; return $r; }
 check "on Windows it adds WSLg's refresh rate and local moves to .wslgconfig once, keeping its other lines" wslgcfg
+# The same through wslg_settings, as on Windows (its Windows tools stubbed):
+# with a rate already set it must stay quiet, not stop on an unset variable.
+wslgset(){ local d out; d=$(mktemp -d)
+  printf '[system-distro-env]\r\nWESTON_RDP_MONITOR_REFRESH_RATE=180\r\n' > "$d/.wslgconfig"
+  out=$(D=$d bash -c 'source ./gtvpn; win_env(){ echo C:/Users/t; }; wslpath(){ printf "%s" "$D"; }
+    powershell.exe(){ echo 179; }; wslg_settings' 2>&1)
+  grep -q 'WESTON_RDPRAIL_SHELL_LOCAL_MOVE=true' "$d/.wslgconfig" && grep -q 'RATE=180' "$d/.wslgconfig" \
+    && grep -q 'set WESTON_RDPRAIL_SHELL_LOCAL_MOVE=true in' <<<"$out" && ! grep -qiE 'unbound|could not' <<<"$out"
+  local r=$?; (( r == 0 )) || echo "$out"; rm -rf "$d"; return $r; }
+check "on Windows, gtvpn vnc windows writes those settings (a rate already there stays)" wslgset
 check "a bad host name is refused" bash -c "cli vnc 'a;b' | grep -q 'usage: gtvpn vnc'"
 check "an unknown action is refused" bash -c "cli vnc cadence bogus | grep -q 'usage: gtvpn vnc'"
 docker exec gtvpn mv /usr/local/bin/gtvpn-vnc /usr/local/bin/gtvpn-vnc.away

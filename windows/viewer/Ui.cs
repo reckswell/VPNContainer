@@ -402,19 +402,22 @@ namespace GtVpn
         }
 
         // Mono: fills the part of clip (client-area coordinates) outside the
-        // session window's size with that window's edge carried outwards: its
-        // last column to the right, its last row below, its corner pixel in
-        // the corner. While a resize catches up, the border being dragged then
+        // session window's size with that window's edge carried outwards: a
+        // column near its right edge to the right, a row near its bottom
+        // below, that corner in the corner (a few pixels in, past the thin
+        // border lines many widgets draw at their edge). While a resize
+        // catches up, the border being dragged then
         // shows the window's own edge, not a grey band. xr is the session
         // window in the framebuffer. False if it cannot, and then nothing is
         // drawn.
         public long Edges;                   // edge fills drawn, for the stats
+        public const int EdgeInset = 3;
 
         public bool PutEdges(IntPtr win, Rectangle xr, Rectangle clip)
         {
             if (ximg == IntPtr.Zero || win == IntPtr.Zero || xr.Width <= 0 || xr.Height <= 0) return false;
-            int ex = xr.Right - 1, ey = xr.Bottom - 1;
-            if (xr.X < 0 || xr.Y < 0 || ex >= w || ey >= h) return false;   // its edge is not in the framebuffer
+            if (xr.X < 0 || xr.Y < 0 || xr.Right > w || xr.Bottom > h) return false;   // its edge is not in the framebuffer
+            int ex = xr.Right - 1 - Math.Min(EdgeInset, xr.Width - 1), ey = xr.Bottom - 1 - Math.Min(EdgeInset, xr.Height - 1);
             Edges++;
             const int far = 1 << 20;
             var right = Rectangle.Intersect(clip, new Rectangle(xr.Width, 0, far, far));
@@ -424,7 +427,7 @@ namespace GtVpn
                 var t = Scratch(right.Width * right.Height);
                 for (int y = 0; y < right.Height; y++)
                 {
-                    int c = px[(xr.Y + Math.Min(right.Y + y, xr.Height - 1)) * w + ex];
+                    int c = px[Math.Min(xr.Y + right.Y + y, ey) * w + ex];
                     for (int x = 0, o = y * right.Width; x < right.Width; x++) t[o + x] = c;
                 }
                 PutScratch(win, right);
@@ -815,7 +818,7 @@ namespace GtVpn
                         if (direct && mirror.Put(f.XClient, local, p.X, p.Y))
                         {
                             put = true; paints++;
-                            if (p.Right == f.XRect.Right || p.Bottom == f.XRect.Bottom) edge = true;
+                            if (p.Right >= f.XRect.Right - Mirror.EdgeInset || p.Bottom >= f.XRect.Bottom - Mirror.EdgeInset) edge = true;
                         }
                         else f.Invalidate(local);
                         if (Debug) Log((direct ? "put " : "invalidate ") + f.Win.Id.ToString("x") + " " + p);

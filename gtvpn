@@ -702,7 +702,7 @@ wslg_config() { # file refresh-Hz (empty or 60 or less: leave the rate alone)
   printf '%s\n' "${add[@]}"
 }
 wslg_settings() { # Windows: the settings above, in %USERPROFILE%\.wslgconfig
-  local up f hz added
+  local up f hz="" added
   up=$(win_env USERPROFILE) || return 0
   f=$(wslpath -u "$up")/.wslgconfig
   # The monitor's refresh rate (the highest, with several), unless one is set.
@@ -780,11 +780,14 @@ cmd_vnc() {
   # A container from a checkout before `gtvpn vnc` has no session helper.
   engine exec "$NAME" sh -c 'command -v gtvpn-vnc' >/dev/null 2>&1 \
     || die "the running $NAME container is from before gtvpn vnc: rebuild it from this checkout with ./gtvpn up, then ./gtvpn connect (the VPN signs in again)"
+  # A terminal when there is one (a sign-in may ask for the password and
+  # Duo); without one (a script or a launcher) it runs all the same.
+  local t=-i; [[ -t 0 ]] && t=-it
   case $action in
     start)
       # In the terminal (it may ask for the GT password and Duo once), then
       # ask for the port without one.
-      engine exec -it -u dev -w /home/dev "$NAME" gtvpn-vnc "$host" start || die "could not start the session"
+      engine exec "$t" -u dev -w /home/dev "$NAME" gtvpn-vnc "$host" start || die "could not start the session"
       p=$(vnc_session "$host" port); [[ $p =~ ^[0-9]+$ ]] || die "no session reported by $host"
       d=$(vnc_session "$host" display)
       vnc_attach "$p" "$host"
@@ -797,7 +800,7 @@ Reopen the viewer: gtvpn vnc $host attach. End the session: gtvpn vnc $host stop
 EOF
       ;;
     windows)
-      engine exec -it -u dev -w /home/dev "$NAME" gtvpn-vnc "$host" windows || die "could not start the session"
+      engine exec "$t" -u dev -w /home/dev "$NAME" gtvpn-vnc "$host" windows || die "could not start the session"
       d=$(vnc_session "$host" display); [[ $d =~ ^:[0-9]+$ ]] || die "no session reported by $host"
       vnc_windows "$host" "$d"
       cat <<EOF
@@ -816,8 +819,8 @@ EOF
       engine rm -f "$NAME-viewer" >/dev/null 2>&1 || true
       engine exec -u dev "$NAME" gtvpn-vnc "$host" wm >/dev/null 2>&1 || true
       vnc_attach "$p" "$host" ;;
-    status) engine exec -it -u dev -w /home/dev "$NAME" gtvpn-vnc "$host" status ;;
-    stop) engine exec -it -u dev -w /home/dev "$NAME" gtvpn-vnc "$host" stop "${3:-}" ;;
+    status) engine exec "$t" -u dev -w /home/dev "$NAME" gtvpn-vnc "$host" status ;;
+    stop) engine exec "$t" -u dev -w /home/dev "$NAME" gtvpn-vnc "$host" stop "${3:-}" ;;
     *) die "$u" ;;
   esac
 }
