@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# gtvpn-vnc: a persistent VNC session on a GT server for smooth Cadence
+# windows, with the server's own TigerVNC (nothing is installed there). Run
+# as dev in the container; `gtvpn vnc <host>` on your computer calls it and
+# then opens the viewer.
+#
+#   gtvpn-vnc <host> start          start or reuse the session; print display=:N port=P
+#   gtvpn-vnc <host> display        the same, for the running session
+#   gtvpn-vnc <host> windows        start or reuse it for gtvpn's viewer for Windows
+#                                   (no window manager there: the viewer is one);
+#                                   also forward the session's X display: xport=Q
+#   gtvpn-vnc <host> cookie         cookie=HEX, the session's X cookie (for that viewer)
+#   gtvpn-vnc <host> wm             metacity again in the session, if that viewer has quit
+#   gtvpn-vnc <host> status
+#   gtvpn-vnc <host> stop [--force]
+#
+# Why: with ssh -Y every X11 request of Virtuoso crosses the tunnel, and
+# Qt5 (Virtuoso's toolkit) sends whole windows as uncompressed pictures, so
+# a full redraw of a layout window is ~6 MB and takes about 0.16 s at the
+# tunnel's speed (6 frames/s). In a VNC session Virtuoso draws on the GT
+# server itself, and only compressed pictures of what changed travel. The
+# session also survives a dropped tunnel.
+#
+# All of it goes over the container's shared connection to <host> (no extra
+# Duo prompt): Xvnc listens on a private Unix socket on the server, and the
+# shared connection forwards 127.0.0.1:P in this container to it
+# (P = 15900+N, clear of the 6000+ ports that X servers use). The viewer on
+# your computer reaches that port through `ssh gtvpn` (the key-only,
+# loopback sshd), so your computer still never talks to GT.
+set -uo pipefail
+umask 077
+host=${1:-}; action=${2:-start}
+usage() { echo "usage: gtvpn-vnc <host> [start|display|windows|cookie|wm|status|stop [--force]]" >&2; exit 2; }
+die() { printf 'gtvpn vnc: %s\n' "$*" >&2; exit 1; }
+[[ $host =~ ^[A-Za-z0-9][A-Za-z0-9._@-]*$ ]] || usage
+[[ $(id -un) == dev ]] || die "run it as dev (gtvpn vnc <host> on your computer does that)"
+share=/usr/local/share/gtvpn/vnc
+# The shared connection to <host>, as in ssh_config.d/50-gtvpn.conf.
+# shellcheck disable=SC2088  # ssh expands the ~
+mux=(-o ControlPath='~/.ssh/cm-%C')
+
+connected() { ssh "${mux[@]}" -O check "$host" >/dev/null 2>&1; }
+sign_in() {
+  connected && return 0
+  [[ -t 0 ]] || die "no open connection to $host; run 'gtvpn vnc $host' in a terminal on your computer (it asks for your GT password and Duo once)"
+  echo "Signing in to $host first (your GT password and Duo, as for any ssh there)."
+  ssh "${mux[@]}" -o ControlMaster=auto -o ControlPersist=8h "$host" true || die "could not sign in to $host"
+}
+# Run remote.sh on <host> with ACTION [ARG], over the shared connection.
+remote() {
+  ssh "${mux[@]}" -o ControlMaster=no -o BatchMode=yes -o ForwardX11=no -o LogLevel=error "$host" \
+    "exec /bin/sh -s -- $*" < "$share/remote.sh"
+}
+port_open() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
+# 127.0.0.1:P here -> the session's socket on <host>. `-O forward` adds it
+# to the shared connection and returns; it lasts as long as that connection
+# (until it closes, e.g. when the tunnel drops), so nothing keeps running.
+forward() { # display socket
+  local port=$((15900 + ${1#:})) sock=$2
+  [[ $sock =~ ^/tmp/gtvpn-[0-9]+/vnc\.sock$ ]] || die "unexpected socket path from $host: $sock"
+  if ! port_open "$port"; then
+    ssh "${mux[@]}" -o LogLevel=error -O forward -L "127.0.0.1:$port:$sock" "$host" </dev/null >/dev/null \
+      || die "could not forward port $port to the session"
+    for _ in 1 2 3 4 5 6 7 8 9 10; do port_open "$port" && break; sleep 0.2; done
+    port_open "$port" || die "the forward to the session did not open"
+  fi
+  echo "port=$port"
+}
+# 127.0.0.1:Q here -> the session's X display on <host> (its Unix socket,
+# Q = 16300+N), for the viewer's window manager. The display still wants
+# the session's cookie.
+xforward() { # display
+  local n=${1#:} port=$((16300 + ${1#:}))
+  if ! port_open "$port"; then
+    ssh "${mux[@]}" -o LogLevel=error -O forward -L "127.0.0.1:$port:/tmp/.X11-unix/X$n" "$host" </dev/null >/dev/null \
+      || die "could not forward port $port to the session's display"
+    for _ in 1 2 3 4 5 6 7 8 9 10; do port_open "$port" && break; sleep 0.2; done
+    port_open "$port" || die "the forward to the session's display did not open"
+  fi
+  echo "xport=$port"
+}
+show() { # remote output of start/display: print it, then display= and port=
+  local out=$1 d s
+  d=$(printf '%s\n' "$out" | sed -n 's/^display=//p'); s=$(printf '%s\n' "$out" | sed -n 's/^socket=//p')
+  [[ $d =~ ^:[0-9]+$ && -n $s ]] || { printf '%s\n' "$out"; die "the server reported no session"; }
+  printf '%s\n' "$out" | grep -v -E '^(display|socket)='
+  forward "$d" "$s" || exit 1
+  echo "display=$d"
+}
+
+case $action in
+  start)
+    sign_in
+    c=$(remote check) || die "$host cannot run a VNC session: $c"
+    out=$(remote start) || { printf '%s\n' "$out"; exit 1; }
+    show "$out" ;;
+  display) connected || exit 1; out=$(remote display) || exit 1; show "$out" ;;
+  windows)
+    sign_in
+    c=$(remote check) || die "$host cannot run a VNC session: $c"
+    out=$(remote start nowm) || { printf '%s\n' "$out"; exit 1; }
+    show "$out" || exit 1
+    d=$(printf '%s\n' "$out" | sed -n 's/^display=//p')
+    xforward "$d" || exit 1 ;;
+  cookie) connected || exit 1; remote cookie ;;
+  wm) connected || exit 1; remote wm ;;
+  status) connected || { echo "no open connection to $host"; exit 1; }; remote status ;;
+  stop)
+    connected || die "no open connection to $host"
+    out=$(remote display) && {
+      d=$(printf '%s\n' "$out" | sed -n 's/^display=//p'); s=$(printf '%s\n' "$out" | sed -n 's/^socket=//p')
+    }
+    remote stop "${3:-}"; rc=$?
+    if [[ $rc == 0 && -n ${d:-} ]]; then
+      ssh "${mux[@]}" -O cancel -L "127.0.0.1:$((15900 + ${d#:})):$s" "$host" >/dev/null 2>&1 || true
+      ssh "${mux[@]}" -O cancel -L "127.0.0.1:$((16300 + ${d#:})):/tmp/.X11-unix/X${d#:}" "$host" >/dev/null 2>&1 || true
+    fi
+    exit $rc ;;
+  *) usage ;;
+esac

@@ -536,6 +536,299 @@ cmd_watch() {
   done
 }
 
+# ---- vnc: smooth Cadence windows -------------------------------------------
+# The session is the GT server's own TigerVNC X server (gtvpn-vnc in the
+# container starts it; nothing is installed there). The container's shared
+# connection forwards its 127.0.0.1:P to the session's private socket; here
+# a hidden `ssh gtvpn` forwards this computer's 127.0.0.1:P to that port, and
+# the TigerVNC viewer connects to it. This computer never talks to GT.
+# TigerVNC's viewer for Windows is one signed file; this exact one is pinned.
+VNC_WIN_VERSION=1.15.0
+VNC_WIN_URL=https://downloads.sourceforge.net/project/tigervnc/stable/$VNC_WIN_VERSION/vncviewer64-$VNC_WIN_VERSION.exe
+VNC_WIN_SHA256=fe55c1a0ff15c6ee8aa3f77ac98318504b6ab50257182f7df6a12f9b2d90e1f3
+vnc_viewer_cmd() { # the viewer program, or nothing
+  local v d f l; v=$(envget GTVPN_VNC_VIEWER)
+  if [[ -n $v ]]; then [[ -f $v ]] && { printf '%s\n' "$v"; return 0; }; return 1; fi
+  if is_wsl; then
+    l=$(win_env LOCALAPPDATA) && l=$(wslpath -u "$l" 2>/dev/null) || l=
+    for d in ${l:+"$l/Programs/TigerVNC"} "/mnt/c/Program Files/TigerVNC" "/mnt/c/Program Files (x86)/TigerVNC"; do
+      for f in "$d"/vncviewer64-*.exe "$d"/vncviewer.exe "$d"/vncviewer64.exe; do
+        [[ -f $f ]] && { printf '%s\n' "$f"; return 0; }
+      done
+    done
+    return 1
+  fi
+  command -v vncviewer || command -v xtigervncviewer
+}
+# On Windows, offer to download the viewer into %LOCALAPPDATA%\Programs\TigerVNC
+# (no admin rights; 24 MB), checked against the pinned SHA-256.
+vnc_install_viewer() {
+  is_wsl && [[ -t 0 ]] || return 1
+  local la dest r; la=$(win_env LOCALAPPDATA) || return 1
+  dest=$(wslpath -u "$la")/Programs/TigerVNC
+  printf 'The TigerVNC viewer for Windows is not installed. Download it (%s, 24 MB, no admin rights needed) into %s\\Programs\\TigerVNC? [Y/n] ' "$VNC_WIN_VERSION" "$la"
+  read -r r; [[ -z $r || $r == [Yy]* ]] || return 1
+  mkdir -p "$dest" || return 1
+  curl -fL --retry 5 --retry-all-errors --progress-bar -o "$dest/.download" "$VNC_WIN_URL" \
+    || { rm -f "$dest/.download"; warn "the download failed: $VNC_WIN_URL"; return 1; }
+  [[ $(sha256sum "$dest/.download" | cut -d' ' -f1) == "$VNC_WIN_SHA256" ]] \
+    || { rm -f "$dest/.download"; warn "the downloaded viewer does not match its pinned checksum; not installed"; return 1; }
+  mv "$dest/.download" "$dest/vncviewer64-$VNC_WIN_VERSION.exe" || return 1
+  say "TigerVNC viewer installed in $la\\Programs\\TigerVNC"
+}
+# This computer's 127.0.0.1:P -> the container's 127.0.0.1:P, through the
+# container's sshd (key-only, loopback), in the background.
+vnc_local_forward() { # port
+  local p=$1
+  if is_wsl; then
+    local probe="\$c=New-Object Net.Sockets.TcpClient; try { if (\$c.ConnectAsync('127.0.0.1',$p).Wait(700)) { exit 0 } } catch {}; exit 1"
+    powershell.exe -NoProfile -Command "$probe" >/dev/null 2>&1 && return 0
+    powershell.exe -NoProfile -Command "Start-Process -WindowStyle Hidden -FilePath ssh -ArgumentList '-N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -L 127.0.0.1:${p}:127.0.0.1:$p gtvpn'" >/dev/null 2>&1 \
+      || die "could not start the forward to the container (Windows ssh)"
+    local _; for _ in 1 2 3 4 5 6 7 8; do sleep 0.5; powershell.exe -NoProfile -Command "$probe" >/dev/null 2>&1 && return 0; done
+    die "the forward through ssh gtvpn did not open; check that 'ssh gtvpn' works in PowerShell (gtvpn setup configures it)"
+  else
+    (exec 3<>"/dev/tcp/127.0.0.1/$p") 2>/dev/null && return 0
+    ssh -f -N -o BatchMode=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o LogLevel=error \
+      -L "127.0.0.1:$p:127.0.0.1:$p" gtvpn </dev/null >/dev/null 2>&1 \
+      || die "could not start the forward to the container (ssh gtvpn; check that ssh gtvpn works)"
+  fi
+}
+vnc_attach() { # port host
+  local exe; exe=$(vnc_viewer_cmd) || { vnc_install_viewer && exe=$(vnc_viewer_cmd); } || {
+    if is_wsl; then die "the TigerVNC viewer for Windows is not installed. Run gtvpn vnc $2 attach in a terminal to install it, or get vncviewer64-$VNC_WIN_VERSION.exe from https://sourceforge.net/projects/tigervnc/files/stable/$VNC_WIN_VERSION/ into %LOCALAPPDATA%\\Programs\\TigerVNC"
+    else die "no VNC viewer here. Install one (Ubuntu: sudo apt install tigervnc-viewer), then run: gtvpn vnc $2 attach"; fi
+  }
+  vnc_local_forward "$1"
+  # AutoSelect picks the compression from the measured line speed;
+  # RemoteResize makes the GT desktop follow the viewer window's size.
+  local extra; extra=$(envget GTVPN_VNC_VIEWER_ARGS)
+  local -a a=(-SecurityTypes=None -AutoSelect=1 -RemoteResize=1 -AcceptClipboard=1 -SendClipboard=1)
+  # shellcheck disable=SC2206
+  a+=($extra "127.0.0.1::$1")
+  if is_wsl; then
+    local w j; w=$(wslpath -w "$exe"); j="${a[*]}"
+    powershell.exe -NoProfile -Command "Start-Process -FilePath '${w//\'/\'\'}' -ArgumentList '${j//\'/\'\'}'" >/dev/null 2>&1 \
+      || die "could not start the VNC viewer ($w)"
+  else
+    setsid -f "$exe" "${a[@]}" >/dev/null 2>&1 < /dev/null || die "could not start the VNC viewer"
+  fi
+  say "viewer opening: the GT desktop with your Cadence windows appears in a window here"
+}
+# gtvpn's own viewer (windows/viewer): every Cadence window as a window of its
+# own here, with Windows' title bars, instead of one desktop in a viewer
+# window. It is built from source on first use with the C# compiler that
+# comes with Windows (.NET Framework 4); elsewhere mono runs it (for tests).
+vnc_viewer_exe() { # print the built viewer's path
+  local src="$HERE/windows/viewer" out f
+  local -a cs=("$src"/*.cs)
+  [[ -f ${cs[0]} ]] || die "the viewer's source is missing ($src)"
+  if is_wsl; then
+    local la win csc; la=$(win_env LOCALAPPDATA) || die "could not read %LOCALAPPDATA%"
+    out=$(wslpath -u "$la")/gtvpn/gtvpn-viewer.exe
+    win=$(win_env WINDIR) || win='C:\Windows'
+    csc=$(wslpath -u "$win")/Microsoft.NET/Framework64/v4.0.30319/csc.exe
+  else
+    out=${XDG_CACHE_HOME:-$HOME/.cache}/gtvpn/gtvpn-viewer.exe
+  fi
+  if [[ ! -f $out || -n $(find "$src" -name '*.cs' -newer "$out" 2>/dev/null) ]]; then
+    mkdir -p "${out%/*}" || die "could not create ${out%/*}"
+    if is_wsl; then
+      [[ -f $csc ]] || die "the C# compiler of .NET Framework 4 is missing ($csc); it is part of Windows 10 and 11"
+      local -a w=(); for f in "${cs[@]}"; do w+=("$(wslpath -w "$f")"); done
+      (cd "${out%/*}" && "$csc" /nologo /target:winexe /optimize+ /out:gtvpn-viewer.exe \
+        /r:System.Windows.Forms.dll /r:System.Drawing.dll "${w[@]}") >&2 || die "could not build the viewer"
+    else
+      if ! command -v mcs >/dev/null || ! command -v mono >/dev/null; then
+        die "gtvpn's viewer needs mono and mcs here; or set GTVPN_VIEWER=container in .env"
+      fi
+      mcs -langversion:5 -optimize+ -target:winexe -out:"$out" -r:System.Windows.Forms.dll -r:System.Drawing.dll "${cs[@]}" >&2 \
+        || die "could not build the viewer"
+    fi
+    say "built the viewer: $out" >&2
+  fi
+  printf '%s\n' "$out"
+}
+# Smart App Control (Windows 11) blocks programs that are not signed and that
+# it has not seen before, and the viewer built on this PC is one of them.
+sac_on() { # Windows: Smart App Control is on (not off, not evaluating)
+  reg.exe query 'HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy' /v VerifiedAndReputablePolicyState 2>/dev/null \
+    | tr -d '\r' | grep -qE 'REG_DWORD[[:space:]]+0x0*1$'
+}
+# Where gtvpn's viewer runs (GTVPN_VIEWER): native = a program on this
+# computer (Windows' own frames; mono on Linux); container = under mono in a
+# container of its own, its windows shown by WSLg (Windows) or this display.
+vnc_viewer_mode() {
+  local m; m=$(envget GTVPN_VIEWER); m=${m:-auto}
+  case $m in
+    native|container) printf '%s\n' "$m"; return 0 ;;
+    auto) ;;
+    *) die "GTVPN_VIEWER in .env must be auto, native or container" ;;
+  esac
+  if is_wsl; then
+    if sac_on; then echo container; else echo native; fi
+  elif command -v mono >/dev/null && command -v mcs >/dev/null; then echo native
+  else echo container; fi
+}
+# WSLg (Windows' support for Linux windows, which shows the viewer's windows
+# when it runs in a container) reads %USERPROFILE%\.wslgconfig when WSL
+# starts. Two of its settings matter here: the monitor's refresh rate (WSLg
+# assumes 60 Hz and sends no more frames than that), and local moves (a
+# dragged window then moves on Windows' side, at the screen's rate, rather
+# than one step at a time through WSLg, about 24 a second). wslg_config adds
+# what is missing under [system-distro-env], keeps every other line (and a
+# value set by hand), and prints what it added.
+wslg_config() { # file refresh-Hz (empty or 60 or less: leave the rate alone)
+  local f=$1 hz=${2:-} cr="" kv tmp
+  local -a want=(WESTON_RDPRAIL_SHELL_LOCAL_MOVE=true) add=()
+  [[ $hz =~ ^[0-9]+$ ]] && (( hz > 60 )) && want=("WESTON_RDP_MONITOR_REFRESH_RATE=$hz" "${want[@]}")
+  for kv in "${want[@]}"; do
+    grep -qiE "^[[:space:]]*${kv%%=*}[[:space:]]*=" "$f" 2>/dev/null || add+=("$kv")
+  done
+  (( ${#add[@]} )) || return 0
+  # Windows' line ends, as the file has them (or for a new one).
+  if [[ ! -s $f ]] || grep -q $'\r$' "$f"; then cr=$'\r'; fi
+  tmp=$(mktemp)
+  if grep -qiE '^[[:space:]]*\[system-distro-env\]' "$f" 2>/dev/null; then
+    ADD=$(printf "%s$cr\n" "${add[@]}") awk '
+      { print }
+      !done && tolower($0) ~ /^[ \t]*\[system-distro-env\]/ { printf "%s\n", ENVIRON["ADD"]; done = 1 }' "$f" > "$tmp"
+  else
+    { if [[ -s $f ]]; then cat "$f"; [[ -z $(tail -c1 "$f") ]] || printf '%s\n' "$cr"; fi
+      printf '[system-distro-env]%s\n' "$cr"; printf "%s$cr\n" "${add[@]}"; } > "$tmp"
+  fi
+  if ! cat "$tmp" > "$f"; then rm -f "$tmp"; return 1; fi
+  rm -f "$tmp"
+  printf '%s\n' "${add[@]}"
+}
+wslg_settings() { # Windows: the settings above, in %USERPROFILE%\.wslgconfig
+  local up f hz="" added
+  up=$(win_env USERPROFILE) || return 0
+  f=$(wslpath -u "$up")/.wslgconfig
+  # The monitor's refresh rate (the highest, with several), unless one is set.
+  grep -qiE '^[[:space:]]*WESTON_RDP_MONITOR_REFRESH_RATE[[:space:]]*=' "$f" 2>/dev/null \
+    || hz=$(powershell.exe -NoProfile -Command '(Get-CimInstance Win32_VideoController | Measure-Object -Property CurrentRefreshRate -Maximum).Maximum' 2>/dev/null | tr -d '\r')
+  added=$(wslg_config "$f" "$hz") || { warn "could not update $up\\.wslgconfig"; return 0; }
+  [[ -z $added ]] || say "set $(echo $added) in $up\\.wslgconfig, for smoother redraws and window drags. WSLg reads it when WSL starts: run wsl --shutdown when convenient (it also stops Docker Desktop and the VPN), then start again"
+}
+VIEWER_IMAGE=gtvpn-viewer:local
+vnc_windows_container() { # cookie continuous-updates viewer-options...
+  local c=$1 cu=$2 base x d; shift 2
+  base=${GTVPN_BASE_IMAGE:-$(envget GTVPN_BASE_IMAGE)}; x=$(envget GTVPN_X11_DIR); d=$(envget GTVPN_DISPLAY)
+  local img=${GTVPN_VIEWER_IMAGE:-$VIEWER_IMAGE}
+  # GTVPN_VIEWER_IMAGE in the environment: run that image as it is (to
+  # compare builds), rather than this checkout's.
+  if [[ -z ${GTVPN_VIEWER_IMAGE:-} ]]; then
+    engine image inspect "$VIEWER_IMAGE" >/dev/null 2>&1 \
+      || say "building the viewer's container image (once: it downloads mono, about 180 MB)" >&2
+    engine build -q --build-arg BASE_IMAGE="${base:-ubuntu:24.04}" -t "$VIEWER_IMAGE" "$HERE/windows/viewer" >/dev/null \
+      || die "could not build the viewer's container image (windows/viewer/Dockerfile)"
+  fi
+  # One viewer at a time, in a new container each time: it shares the gtvpn
+  # container's network as it is now (the forwards are its 127.0.0.1 ports).
+  engine rm -f "$NAME-viewer" >/dev/null 2>&1 || true
+  local -a o=(--name "$NAME-viewer" --network "container:$NAME" --user "$(id -u):$(id -g)" -e HOME=/tmp
+    -e DISPLAY="${d:-:0}" -v "${x:-/tmp/.X11-unix}:/tmp/.X11-unix:ro")
+  [[ -s runtime/in/xauth ]] && o+=(-v "$HERE/runtime/in/xauth:/xauth:ro" -e XAUTHORITY=/xauth)
+  engine run -d --rm --init "${o[@]}" "$img" sleep infinity >/dev/null || die "could not start the viewer's container"
+  # The cookie goes through stdin: never on a command line or in the container's settings.
+  printf '%s\n' "$c" | engine exec -i -e GTVPN_VIEWER_CU="$cu" "$NAME-viewer" sh -c \
+    'read -r c; GTVPN_X_COOKIE=$c setsid -f mono /opt/gtvpn/gtvpn-viewer.exe "$@" >/dev/null 2>&1 </dev/null' sh "$@" \
+    || die "could not start the viewer"
+}
+vnc_windows() { # host display: open the viewer on the session
+  local host=$1 n=${2#:} exe c p q mode
+  mode=$(vnc_viewer_mode) || exit 1
+  p=$((15900 + n)); q=$((16300 + n))
+  c=$({ engine exec -u dev "$NAME" gtvpn-vnc "$host" cookie 2>/dev/null || true; } | tr -d '\r' | sed -n 's/^cookie=//p')
+  [[ $c =~ ^[0-9a-f]{32}$ ]] || die "could not read the session's cookie from $host"
+  local args="--vnc 127.0.0.1:$p --x11 127.0.0.1:$q --label $host:$n" extra
+  # GTVPN_VIEWER_ARGS in the environment, for one start, goes before .env's.
+  extra=${GTVPN_VIEWER_ARGS-$(envget GTVPN_VIEWER_ARGS)}
+  [[ $extra =~ ^[-a-zA-Z0-9\ ._]*$ ]] || die "GTVPN_VIEWER_ARGS in .env may hold only options such as: --encoding tight"
+  [[ -z $extra ]] || args+=" $extra"
+  # GTVPN_VIEWER_CU (environment or .env), to compare: 0 = no continuous
+  # updates, nofence = no Fence either. Unset, the viewer uses both.
+  local cu=${GTVPN_VIEWER_CU-$(envget GTVPN_VIEWER_CU)}
+  [[ $cu =~ ^(0|1|nofence)?$ ]] || die "GTVPN_VIEWER_CU may be 0 (no continuous updates), nofence (no Fence either) or 1"
+  if [[ $mode == container ]]; then
+    ! is_wsl || wslg_settings
+    # shellcheck disable=SC2086
+    vnc_windows_container "$c" "$cu" $args
+    if is_wsl; then say "viewer opening in a container (Smart App Control is on): WSLg shows each window of the session as a window of its own"
+    else say "viewer opening in a container: each window of the session appears here as a window of its own"; fi
+    return 0
+  fi
+  exe=$(vnc_viewer_exe) || exit 1
+  vnc_local_forward "$p"; vnc_local_forward "$q"
+  # The cookie goes in the environment, never on a command line.
+  if is_wsl; then
+    local w; w=$(wslpath -w "$exe")
+    GTVPN_X_COOKIE=$c GTVPN_VIEWER_CU=$cu WSLENV=GTVPN_X_COOKIE:GTVPN_VIEWER_CU powershell.exe -NoProfile -Command \
+      "Start-Process -FilePath '${w//\'/\'\'}' -ArgumentList '$args'" >/dev/null 2>&1 \
+      || die "could not start the viewer ($w)"
+  else
+    # shellcheck disable=SC2086
+    GTVPN_X_COOKIE=$c GTVPN_VIEWER_CU=$cu setsid -f mono "$exe" $args >/dev/null 2>&1 < /dev/null || die "could not start the viewer"
+  fi
+  say "viewer opening: each window of the session appears here as a window of its own"
+}
+vnc_session() { # host field: the running session's port= or display= value, from the container
+  { engine exec -u dev "$NAME" gtvpn-vnc "$1" display 2>/dev/null || true; } | tr -d '\r' | sed -n "s/^$2=//p"
+}
+cmd_vnc() {
+  need_running
+  local host=${1:-} action=${2:-start} p d
+  local u="usage: gtvpn vnc <host> [start|windows|attach|status|stop [--force]]"
+  [[ $host =~ ^[A-Za-z0-9][A-Za-z0-9._@-]*$ ]] || die "$u"
+  # A container from a checkout before `gtvpn vnc` has no session helper.
+  engine exec "$NAME" sh -c 'command -v gtvpn-vnc' >/dev/null 2>&1 \
+    || die "the running $NAME container is from before gtvpn vnc: rebuild it from this checkout with ./gtvpn up, then ./gtvpn connect (the VPN signs in again)"
+  # A terminal when there is one (a sign-in may ask for the password and
+  # Duo); without one (a script or a launcher) it runs all the same.
+  local t=-i; [[ -t 0 ]] && t=-it
+  case $action in
+    start)
+      # In the terminal (it may ask for the GT password and Duo once), then
+      # ask for the port without one.
+      engine exec "$t" -u dev -w /home/dev "$NAME" gtvpn-vnc "$host" start || die "could not start the session"
+      p=$(vnc_session "$host" port); [[ $p =~ ^[0-9]+$ ]] || die "no session reported by $host"
+      d=$(vnc_session "$host" display)
+      vnc_attach "$p" "$host"
+      cat <<EOF
+Session display on $host: $d (it keeps running if the viewer, VS Code or the tunnel disconnect)
+In a terminal on $host (for example VS Code's), before starting Cadence:
+    export DISPLAY=$d        # bash
+    setenv DISPLAY $d        # tcsh
+Reopen the viewer: gtvpn vnc $host attach. End the session: gtvpn vnc $host stop
+EOF
+      ;;
+    windows)
+      engine exec "$t" -u dev -w /home/dev "$NAME" gtvpn-vnc "$host" windows || die "could not start the session"
+      d=$(vnc_session "$host" display); [[ $d =~ ^:[0-9]+$ ]] || die "no session reported by $host"
+      vnc_windows "$host" "$d"
+      cat <<EOF
+Session display on $host: $d (it keeps running if the viewer, VS Code or the tunnel disconnect)
+In a terminal on $host (for example VS Code's), before starting Cadence:
+    export DISPLAY=$d        # bash
+    setenv DISPLAY $d        # tcsh
+Reopen the windows: gtvpn vnc $host windows. End the session: gtvpn vnc $host stop
+EOF
+      ;;
+    attach)
+      p=$(vnc_session "$host" port)
+      [[ $p =~ ^[0-9]+$ ]] || die "no session on $host (or no open connection to it); start one with: gtvpn vnc $host"
+      # Title bars inside the desktop again if gtvpn's own viewer was the
+      # window manager (in its container, it is closed here first).
+      engine rm -f "$NAME-viewer" >/dev/null 2>&1 || true
+      engine exec -u dev "$NAME" gtvpn-vnc "$host" wm >/dev/null 2>&1 || true
+      vnc_attach "$p" "$host" ;;
+    status) engine exec "$t" -u dev -w /home/dev "$NAME" gtvpn-vnc "$host" status ;;
+    stop) engine exec "$t" -u dev -w /home/dev "$NAME" gtvpn-vnc "$host" stop "${3:-}" ;;
+    *) die "$u" ;;
+  esac
+}
+
 usage() {
   cat <<EOF
 ${c_b}gtvpn${c_0} - Georgia Tech GlobalProtect in an isolated container
@@ -558,6 +851,13 @@ ${c_b}gtvpn${c_0} - Georgia Tech GlobalProtect in an isolated container
                    keep an X display open on a GT server for terminals that
                    ssh -Y did not open (VS Code Remote-SSH): Cadence there
                    then needs  export DISPLAY=\$(cat ~/.gtvpn-display)
+  vnc <host> [start|windows|attach|status|stop]
+                   smooth Cadence: a persistent VNC session on a GT server
+                   (its own TigerVNC, nothing installed), in a viewer window
+                   here; Cadence there then needs  export DISPLAY=:N  (printed).
+                   windows: each Cadence window as a window of its own here
+                   (gtvpn's viewer; in a container through WSLg when Smart
+                   App Control is on) instead of one desktop
   logs             container + VPN client logs
   callback <url>   (used by the browser link handler)
   rebuild          rebuild the image (updates Claude Code / base packages)
@@ -588,6 +888,7 @@ case $cmd in
       if [ $rc -eq 0 ] || [ $rc -eq 124 ]; then echo "X11 works"; else echo "X11 test failed (xeyes exit $rc)"; exit 1; fi' ;;
   display) need_running; [[ ${1:-} ]] || die "usage: gtvpn display <host> [status|stop]"
     engine exec -it -u dev -w /home/dev "$NAME" bash -lc "gtvpn-display $(printf '%q ' "$@")" ;;
+  vnc) cmd_vnc "$@" ;;
   logs) engine logs --tail 100 "$NAME"
     engine exec -u root "$NAME" sh -c 'for f in connect gpclient; do [ -s /var/log/gtvpn/$f.log ] || continue; echo "--- $f.log"; tail -n 50 /var/log/gtvpn/$f.log | sed "s/\x1b\[[0-9;]*[A-Za-z]//g; s/\r//g"; done' || true ;;
   callback) cmd_callback "$@" ;;
@@ -600,7 +901,7 @@ case $cmd in
     grep -qF "$(cut -d' ' -f2 <<<"$k")" runtime/in/authorized_keys || echo "$k" >> runtime/in/authorized_keys
     say "key authorized (takes effect on next ./gtvpn up)" ;;
   rebuild) x11_detect; compose build --pull --no-cache; say "rebuilt; restart with ./gtvpn down && ./gtvpn up" ;;
-  down) compose down ;;
+  down) engine rm -f "$NAME-viewer" >/dev/null 2>&1 || true; compose down ;;
   help|-h|--help) usage ;;
   *) usage; exit 2 ;;
 esac

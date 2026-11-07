@@ -274,6 +274,252 @@ where the portal would issue a real cookie.
     cookie in your `~/.Xauthority` is required, the same exposure as any
     `ssh -Y` session.
 
+### VNC sessions (`gtvpn vnc`)
+
+X11 over ssh is slow for Virtuoso (Qt5 sends full-window pictures, every
+request crosses the tunnel; numbers in [PERFORMANCE.md](PERFORMANCE.md)).
+`gtvpn vnc <host>` moves the X server to the GT host instead, using only
+what GT's servers already have: nothing is installed or stored there beyond
+runtime files in `/tmp` and one cookie in `~/.Xauthority`, as `ssh -Y` adds.
+
+- **Server side** (`share/gtvpn/vnc/remote.sh`, sent over the shared
+  connection and run with `/bin/sh -s`, since login shells may be tcsh):
+  the server's own TigerVNC `Xvnc` on a display picked per user (100 + uid
+  mod 200, skipping used ones), with the server's window manager (metacity,
+  else mwm or mutter). Xvnc has no TCP port at all (`-rfbport -1`,
+  `-nolisten tcp`); it listens only on a Unix socket in `/tmp/gtvpn-<uid>`,
+  which must be a real directory owned by the user with mode 0700 (the
+  socket is 0600), so no other user of the shared server can reach it. VNC
+  authentication is off (`-SecurityTypes None`) because that socket is the
+  boundary; the X display itself needs the cookie, like any X server.
+- **Transport:** `gtvpn-vnc` in the container, as a client of the shared
+  connection (`ControlMaster no`, same `ControlPath`), asks the master to
+  forward the container's `127.0.0.1:P` (P = 15900 + N) to that socket.
+  The forward lives in the master, so nothing extra keeps running, and it
+  ends with the connection. On the computer, a background `ssh -N -L
+  127.0.0.1:P:127.0.0.1:P gtvpn` (the container's key-only loopback sshd,
+  the same one VS Code uses) brings it to the viewer. The computer still
+  never talks to GT, and nothing new listens on any network.
+- **Sign-in:** `gtvpn vnc` runs `gtvpn-vnc start` with a terminal, so a
+  missing connection is opened the usual way (`ssh true` with
+  `ControlPersist`, one Duo prompt), exactly like `gtvpn display`. `attach`
+  and `display` never sign in.
+- **Lifetime:** the session is independent of every connection; `stop`
+  refuses while programs other than the window manager have windows open
+  (Virtuoso would lose unsaved work) unless `--force`, then removes the
+  cookie and the folder, and cancels the forward. It never touches
+  `~/.gtvpn-display`, which belongs to `gtvpn display`.
+- **Not taken:** xpra (separate native windows, but it would have to be
+  installed in the GT home), X2Go and NX (root packages on the server),
+  FastX (installed on GT's servers, but its service is not running).
+  Details in [PERFORMANCE.md](PERFORMANCE.md).
+
+#### gtvpn's own viewer (`gtvpn vnc <host> windows`)
+
+TigerVNC's viewer shows the session as one desktop. To give every Cadence
+window a native Windows window instead, without anything new on the GT
+server, `windows/viewer` (C# 5, about 2000 lines, no dependencies) talks to
+the same session twice:
+
+- **Pictures:** an RFB client of Xvnc. It asks for ZRLE first (lossless;
+  on CAD pictures, with few colours and fine hatching, its 1-, 2- and
+  4-bit packed palettes give Xvnc about half the zlib work of Tight's 8-bit
+  indices, and the link 30% fewer bytes), at compression level 1, with
+  Tight (and JPEG) as the fallback. Continuous updates with Fence answers
+  let Xvnc stream frames without a request per frame, paced by its own
+  congestion control. The cursor shape comes along, so the pointer is drawn
+  by Windows at the monitor's refresh rate. zlib is .NET's native
+  `DeflateStream`. The desktop is resized to the size of Windows' virtual
+  screen (ExtendedDesktopSize), so X coordinates are Windows coordinates.
+- **Windows:** an X11 client of the session's display, as its window
+  manager. `gtvpn-vnc windows` starts the session without metacity (or the
+  viewer takes the `WM_S0` selection and metacity steps aside), and asks
+  the master for a second forward, `127.0.0.1:Q` (Q = 16300 + N) to the
+  display's socket `/tmp/.X11-unix/XN`. The viewer authenticates with the
+  display's cookie, which `gtvpn-vnc cookie` reads from `~/.Xauthority` and
+  which reaches the viewer only in an environment variable. It redirects
+  the root's map and configure requests, does not reparent (the frame is
+  Windows'), and keeps the EWMH basics (`_NET_SUPPORTING_WM_CHECK`,
+  `_NET_ACTIVE_WINDOW`, `_NET_WM_STATE` maximize, `_NET_CLOSE_WINDOW`,
+  `_NET_CLIENT_LIST`).
+- **One native window per X window:** a Windows Forms window whose client
+  area is the X window's rectangle and which shows that part of the
+  framebuffer (a DIB section and `BitBlt`). Title, moves, resizes,
+  activation, minimize, maximize and close go both ways (moving a Windows
+  window moves the X window; Cadence opening a dialog opens a Windows
+  window, owned by its parent). Override-redirect windows (menus,
+  tooltips, combo-box lists) become borderless, topmost windows that never
+  take focus. Windows 11's dark title bar follows the system theme, also
+  when you switch it while windows are open. Dialogs (transient or
+  `_NET_WM_WINDOW_TYPE_DIALOG`) get no maximize button, as on Windows;
+  `_MOTIF_WM_HINTS` can take away minimize, maximize or the whole frame,
+  and splash screens have none. A window that opens while another program
+  is in front flashes its taskbar button (Windows does not let it take the
+  foreground). Windows are grouped on the taskbar by their program: each
+  gets the AppUserModelID `GtVpn.X.<WM_CLASS>`, named after its WM_CLASS
+  (the relaunch display name; no pinning, since a pinned button could not
+  start it), and its `_NET_WM_ICON` as its icon.
+- **Dragging:** while you drag a window by its title bar, Windows moves its
+  picture with the frame and the X window stays put; at the drop the
+  viewer moves the X window once. Moving it at every step would paint the
+  window from framebuffer pixels a network round trip behind its frame,
+  so the content trailed the frame. Until Xvnc's copy of the moved window
+  arrives (35-57 ms on the real setup, at most 300 ms), the viewer shows
+  its own copy there and keeps the framebuffer's older updates for that
+  rectangle out of the picture. Snaps, keyboard moves and a program moving
+  its own window go the same way. A resize by a border is sent at most
+  every 15 ms.
+- **Input:** mouse and keys go to Xvnc as RFB events at root coordinates
+  (Windows virtual keys become X keysyms, with Ctrl and Alt kept as
+  modifiers); focus goes through the window manager. Text copied on
+  either side is offered on the other (RFB cut text). Xvnc runs with
+  `-SendPrimary=0`, so only the CLIPBOARD selection comes to Windows: a
+  mouse selection (PRIMARY) does not replace the Windows clipboard. A
+  session started before that option is changed with `vncconfig -set` when
+  it is reused, where the server has vncconfig.
+- **With Smart App Control on:** Windows 11's Smart App Control blocks
+  programs that are not signed and that it has not seen before; every
+  build of the viewer on the PC is one. Signing would take a paid
+  certificate (or a free open-source one, which needs a release history
+  first), and running it in memory through PowerShell would get around a
+  protection the user chose to keep. So `windows` then runs the same
+  viewer under mono in a container of its own (`gtvpn-viewer`, image from
+  `windows/viewer/Dockerfile`), in the gtvpn container's network namespace
+  (the forwards are its loopback ports, and nothing listens on the PC),
+  with the X socket the gtvpn container gets: WSLg shows each of its X
+  windows as a window on the Windows desktop (a RemoteApp of Microsoft's
+  signed msrdc). The cookie reaches it through stdin. Under mono the
+  viewer's message loop runs without a main form, since Mono's WinForms
+  timers wait for the main form to load, and keys come from WM_CHAR.
+  WSLg's window manager places a new window by the size hints Mono writes
+  when it creates it, frame first: the viewer places windows before they
+  exist, learns the frame's size from the first one that lands and keeps
+  it on the session's root (`_GTVPN_FRAME`), so client areas land on the
+  session's coordinates and a restarted viewer moves nothing. The frame is
+  kept per X server on this side (a key from its vendor and release), since
+  another one, such as MobaXterm's, frames windows differently or not at
+  all. A new window that stays where it was put to allow for the kept
+  frame, 2 s after it showed, has none: the session's window follows it,
+  and no frame is kept for that X server from then on. Popups are
+  `WS_POPUP` without a caption, which Mono makes override-redirect, so
+  menus and tooltips stay where Cadence puts them.
+  Every paint there is a picture sent to WSLg's X server, which passes it
+  on to Windows, so under mono the viewer paints no part of a window that
+  another session window covers. Where windows overlap, the framebuffer
+  holds only the upper one's pixels. The viewer, as window manager, follows
+  the session's stacking from its root events, and when a window closes,
+  moves or goes down, it paints the area it uncovered again. With two
+  overlapping windows that halved the paints (the lab: 356 a second for
+  178 updates, now 178), and the pixels stayed exact. Paints also no longer
+  hold the framebuffer's lock, so updates keep arriving while a slow paint
+  is in progress. On Windows, painting a hidden area costs next to nothing,
+  so the viewer still paints every window there.
+  Under mono the viewer also paints without System.Drawing: there each
+  paint went through libgdiplus and cairo (a pixmap, an upload and a
+  composite in the X server). On the test PC at 400x300 the viewer
+  painted 183 times a second that way, but only about 51 changes a
+  second reached the screen, while a plain XPutImage from another
+  program reached 164-169. So the viewer finds Mono's own X connection
+  and each form's X window (by reflection into Mono's WinForms), wraps
+  its copy of the framebuffer in one XImage, and puts each changed
+  rectangle straight into the window from the update itself, with no
+  paint message (paint messages, after an expose, use the same put).
+  Xvnc sends a large change as bands of at most 65536 pixels, which the
+  viewer joins again, so one change is one XPutImage. In the lab that cut
+  the X server's work by about a third, with the pixels exact. If Mono's
+  internals or the X visual are not as expected, or with
+  `GTVPN_VIEWER_ARGS=--paint gdi`, it paints through System.Drawing as
+  before; its log says which.
+  WSLg resizes a window step by step, and under mono each step reaches the
+  viewer as a resize (there is no Windows move/size loop to throttle). One
+  resize at a time goes to the session: the newest size waits until the
+  session confirms the one before, or 100 ms. Asking for every step had
+  Cadence draw sizes already gone (lab, one drag over an 80 ms round trip:
+  20 resizes in the session, now 6). Until the session's window has the
+  new size, the part of the native window beyond it shows the window's
+  edge carried outwards (its last column and row) instead of a grey band,
+  and a window that grows gets that at once rather than after the X
+  server's expose. Once the session's window has the new size, the session
+  first clears it to its background (all of it for a window without bit
+  gravity, the new strip for one with it) and only then does the program
+  draw. So from the moment it asks for the new size, for up to 250 ms
+  (500 ms in a long drag), the viewer keeps changes there that are all one
+  colour out of its picture, and shows the old picture and the edge until
+  the program's own pixels arrive (lab, a window drawing 80 ms after each
+  expose: the new strip was black in 18-24% of the samples, now 1-4%).
+  In the new strip, a one-colour change in another colour than the first
+  one (the session's clear) is the program's own plain background, and is
+  shown at once (lab: 108 ms instead of the hold's end at 313 ms).
+  The program's picture can come in pieces a round trip or more apart
+  (Xvnc sends what it has, in bands of up to 65536 pixels), and the first
+  piece used to end the hold, so what the program had not drawn yet showed
+  the session's clear (lab: in 3 of 9 runs, most of the new strip black
+  for ~50 ms). So once the program's pixels start, the old picture stays
+  until the program has drawn over everything the session cleared, or
+  100 ms (lab: 10 of 10 runs clean, two with the pieces 47-49 ms apart).
+  In a drag the program draws sizes already gone, so a drawing that stays
+  inside the part shown while the window has grown beyond it does not end
+  the hold either: it had let the clear of the next size in (lab, slowdraw
+  dragged one step every 30 ms: the whole window black in 13% of the
+  samples before, none more than half black now, 3% of its pixels black on
+  average instead of 15%). The viewer's log counts pictures that came in
+  pieces every 5 s ("came in pieces").
+  Holding only from the session's word of the new size was not enough:
+  over the X connection that word can come after the cleared background
+  has come over VNC (the lab, the X connection 20 ms slower: 18-21%
+  black).
+  Under Linux the viewer sets TCP_QUICKACK on its connections again after
+  every read. ssh's local forward to the session's Unix socket does not
+  set TCP_NODELAY on its side of the connection to the viewer, so ssh's
+  writes go out under Nagle: the last small piece of an update (and Xvnc's
+  one-byte round-trip ping after it) waited for the ACK of the piece before,
+  which Linux delays up to 40 ms while the viewer has nothing to send.
+  Xvnc's congestion control saw those late pings as a slow link. Through a
+  real OpenSSH forward in the lab, 400x300 at 180 frames a second came at
+  about 42 updates a second without quick ACKs and 163-176 with them; on
+  the test PC it had flipped between the two from one run to the next.
+  `gtvpn vnc <host> windows` also adds two settings to
+  `%USERPROFILE%\.wslgconfig` under `[system-distro-env]`, keeping every
+  other line and any value set by hand: `WESTON_RDP_MONITOR_REFRESH_RATE`
+  (the monitor's rate from `Win32_VideoController`; WSLg assumes 60) and
+  `WESTON_RDPRAIL_SHELL_LOCAL_MOVE=true`, with which msrdc moves a dragged
+  window itself, at the screen's rate, and Weston hears of the move once,
+  at the drop; without it Weston moves the window about 24 steps a second.
+  At the drop Weston's window manager moves the window's frame and tells
+  the window nothing: no ConfigureNotify, which ICCCM asks for, so Mono
+  never saw the move and the session's window stayed where the drag
+  began, its menus opening there. So under mono the viewer looks where
+  each window's client area is every 100 ms (one XTranslateCoordinates
+  each), moves the session's window when it moved, and sends Mono's
+  window the ConfigureNotify the window manager left out, so Mono knows
+  its place for the next move. Mono itself also takes a ConfigureNotify
+  that moves a window while a mouse button looks held (XQueryPointer) for
+  the start of a drag (ResizeBegin) and ends it only at a later one with
+  the buttons up; at WSLg's drop there is none, so moves were held back as
+  if inside Windows' move loop. Under mono that loop is not waited for, and
+  a window that stays apart from the session's for 500 ms has its move sent
+  again. A move a program makes itself goes to
+  WSLg's window manager as the frame's place, so the viewer allows for
+  the frame it measured; it used to read the window's place right after
+  asking, before the window manager had moved it, and moved the window
+  off by the distance. The lab checks both under `tests/lab/fakewm.cs`, a
+  stand-in for WSLg's window manager that frames windows and moves them
+  the same way. WSLg reads the file when WSL starts, and `wsl
+  --shutdown` would also stop Docker Desktop and the tunnel, so the CLI
+  says so and leaves the restart to the user.
+  The frames are WSLg's (Weston's) rather than Windows 11's.
+  `GTVPN_VIEWER` overrides the choice; the state comes from
+  `HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy`
+  `VerifiedAndReputablePolicyState` (1 = on).
+- **Build and lifetime:** `gtvpn vnc <host> windows` compiles it on first
+  use (and again when its sources change) with the `csc.exe` of .NET
+  Framework 4, which is part of Windows 10 and 11, into
+  `%LOCALAPPDATA%\gtvpn`; nothing is downloaded. When it closes, Xvnc and
+  every program keep running; `attach` starts metacity again for the
+  TigerVNC viewer (`gtvpn-vnc wm`). The lab runs it under mono and checks
+  that the native windows show the session's exact pixels, that typing and
+  clicks arrive, and that it is the session's window manager.
+
 ## SSH hosts (`hosts.conf`)
 
 One file in standard OpenSSH syntax lists your GT servers, and both sides
@@ -329,7 +575,11 @@ read it:
   that a jump cannot reach the internet or LAN.
 - **Also possible: Remote-SSH to `gtvpn`** (`127.0.0.1:2222`, key-only, host
   key pinned by `gtvpn setup`). With `remote.SSH.localServerDownload:
-  always`, VS Code downloads its server on the host and copies it in.
+  auto`, the container's own download of VS Code's server is rejected at
+  once by the firewall, and VS Code falls back to downloading it on the
+  host and copying it in (over SFTP, which the container's sshd has). Not
+  `always`: that also copies the server into GT servers, and on those
+  with SFTP turned off (ece-linlab19) the install then waits forever.
 
 ## Direct egress for Claude Code
 
