@@ -106,6 +106,11 @@ check "the viewer on this computer shows the session through ssh gtvpn" viewer
 resized(){ for _ in $(seq 40); do srv "xdpyinfo -display :$N | grep -q 'dimensions: *1400x900 '" && return 0; sleep 0.5; done; srv "xdpyinfo -display :$N | grep dimensions"; docker logs gtvpn-lab-viewer 2>&1 | tail -3; return 1; }
 check "the session's desktop follows the viewer window's size" resized
 check "status lists the programs in the session" bash -c "dev 'gtvpn-vnc cadence status' | grep -q 'program: xlogo'"
+# The terminal profile of vscode/settings-snippet.jsonc, as a new VS Code
+# terminal on the server runs it (no DISPLAY): its shell gets the session's.
+PROFILE=$(python3 -c 'import json,sys; s=open(sys.argv[1]).read(); print(json.loads("\n".join(l for l in s.splitlines() if not l.strip().startswith("//")))["terminal.integrated.profiles.linux"]["gtvpn display"]["args"][1])' vscode/settings-snippet.jsonc)
+check "a new VS Code terminal there (the snippet's profile) gets the session's DISPLAY by itself" \
+  bash -c "printf '%s' \"\$1\" | docker exec -i -u gtuser -e HOME=/home/gtuser -e SHELL=/usr/bin/printenv gtvpn-lab-ocserv env -u DISPLAY sh -c 'sh -c \"\$(cat)\"' | grep -qx 'DISPLAY=:$N'" _ "$PROFILE"
 docker rm -f gtvpn-lab-viewer gtvpn-lab-fwd >/dev/null
 dev 'ssh -O exit cadence' >/dev/null 2>&1; sleep 1
 check "without an open connection, display reports nothing (and does not sign in)" bash -c "! dev 'gtvpn-vnc cadence display </dev/null' >/dev/null 2>&1"

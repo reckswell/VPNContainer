@@ -225,7 +225,10 @@ Two ways to start Cadence:
   your desktop, like any other X11 from GT. `gtvpn display <host> status`
   shows it and `gtvpn display <host> stop` closes it. It also ends when the
   tunnel drops or the container stops; run it again after `gtvpn connect`.
-  To pick it up in every new terminal, add the matching line to `~/.bashrc`
+  With the terminal profile in
+  [vscode/settings-snippet.jsonc](vscode/settings-snippet.jsonc), every new
+  VS Code terminal on a GT server picks it up by itself (it prints
+  `DISPLAY=...` first). Without it, add the matching line to `~/.bashrc`
   or `~/.cshrc` on the GT server:
 
   ```
@@ -275,7 +278,10 @@ virtuoso &             # or your usual start script
 ```
 
 The number is also in `/tmp/gtvpn-<your uid>/display` on the server while
-the session runs. `gtvpn vnc` writes nothing in your home folder there
+the session runs, and with the terminal profile in
+[vscode/settings-snippet.jsonc](vscode/settings-snippet.jsonc) every new VS
+Code terminal there takes it by itself, so `run.sh` or `virtuoso` starts in
+the session with no `export`. `gtvpn vnc` writes nothing in your home folder there
 except the display's cookie in `~/.Xauthority`, as `ssh -Y` does, and it
 leaves `~/.gtvpn-display` (from `gtvpn display`) alone.
 
@@ -393,7 +399,7 @@ What is checked (details in [docs/DESIGN.md](docs/DESIGN.md#verification-recursi
 | The connect window closed before you could read the error | `gtvpn logs` shows the last sign-in transcript (passwords are never in it) |
 | No windows on Ubuntu | Run `./gtvpn up` from a desktop terminal (it needs `$DISPLAY`); `sudo apt install xauth` |
 | No windows on Windows | `ls /mnt/wslg/.X11-unix` in Ubuntu should show `X0`. If not: `wsl --update`, then `wsl --shutdown`. Then `gtvpn down && gtvpn up` and `gtvpn x11test` |
-| Cadence in a VS Code Remote-SSH terminal: "X Window Display Initialization failure", or `echo $DISPLAY` is empty | Those terminals have no X display. Run `gtvpn display <that server>` on your computer, then `export DISPLAY=$(cat ~/.gtvpn-display)` in the terminal ([Cadence](#cadence-virtuoso--vivado-x11)) |
+| Cadence in a VS Code Remote-SSH terminal: "X Window Display Initialization failure", or `echo $DISPLAY` is empty | Those terminals have no X display. With the terminal profile from `vscode/settings-snippet.jsonc`, open a **new** terminal: it takes the display of your `gtvpn vnc` session, or of `gtvpn display`, by itself (one VS Code revived after a restart was started without it). Without the profile, run `gtvpn display <that server>` on your computer, then `export DISPLAY=$(cat ~/.gtvpn-display)` in the terminal ([Cadence](#cadence-virtuoso--vivado-x11)) |
 | `gtvpn display` worked before, but now Cadence says "Can't open display" | The display closed with the tunnel or the container. Run `gtvpn display <server>` again; the number may change, so re-run the `export` too |
 | `ssh gtvpn` says "Could not resolve hostname" in Git Bash | Git Bash's own ssh can't read the Windows config. Use PowerShell or VS Code, which use Windows' OpenSSH |
 | `gtvpn code` opens a window as root, or VS Code asks which container | Install the Dev Containers extension (`ms-vscode-remote.remote-containers`), open VS Code once, then run `gtvpn setup` again to install the attach config |
