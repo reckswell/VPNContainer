@@ -510,7 +510,11 @@ namespace GtVpn
         void Stats()
         {
             if (Rfb == null) return;
-            var now = DateTime.Now; double dt = (now - lastStat).TotalSeconds; lastStat = now;
+            // The timer and Flush both call this: one right after the other
+            // would give rates over a few milliseconds.
+            var now = DateTime.Now; double dt = (now - lastStat).TotalSeconds;
+            if (dt < 1) return;
+            lastStat = now;
             long f = Rfb.Frames, b = Rfb.Bytes, p = Interlocked.Read(ref paints);
             var cpu = System.Diagnostics.Process.GetCurrentProcess().TotalProcessorTime;
             if (Debug) { Log("tick frames " + f); lock (Rfb.FbLock) mirror.Save(Path.Combine(Path.GetTempPath(), "gtvpn-mirror.png")); }
