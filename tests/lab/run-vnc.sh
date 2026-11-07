@@ -248,6 +248,10 @@ PY
   check "a drop it does announce while a mouse button looks held (as at WSLg's) moves the session's window too" dropped
   srv "DISPLAY=:$NW xdotool search --name '^gtvpn-lab-drag\$' windowmove 420 260"
   check "a program that moves its own window lands it there, here and in the session" at 420 260
+  # Fence pings: the link's delay, which the zlib tuner goes by (level 1 only
+  # when pictures queue on the way).
+  check "it measures the link's round trip with Fence pings while pictures stream" \
+    grep -q 'round trip [0-9]* ms ([0-9]* idle)' "$KEYDIR/gtvpn-viewer.log"
   pkill -f -- "$KEYDIR/fakewm.exe"
   pkill -f -- "$KEYDIR/viewer.exe"; sleep 1
   check "after the viewer, wm (as attach does, for the TigerVNC viewer) brings metacity back" \

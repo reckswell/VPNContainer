@@ -6,8 +6,8 @@
 //
 // --encoding: what Xvnc sends first: zrle (lossless, the default) or tight
 // (JPEG for photo-like areas). --compress: zlib's effort in Xvnc, 0-9, or
-// auto (the default: 0 or 1, whichever gets more picture through as it
-// goes; 0 sends the most bytes for the least CPU there). --quality: Tight's JPEG.
+// auto (the default: 0, the least CPU for Xvnc, and 1 only where the link
+// holds pictures back and 1 gets clearly more through). --quality: Tight's JPEG.
 //
 // The X display cookie comes in the GTVPN_X_COOKIE environment variable (hex),
 // so it never shows on a command line. `gtvpn vnc <host> windows` sets up the
@@ -159,7 +159,7 @@ namespace GtVpn
                     + "; continuous updates " + (rfb.UseContinuous ? "on" : "off") + ", fence " + (rfb.UseFence ? "on" : "off")
                     + (Native.IsWindows ? "" : "; quick ACKs " + (QuickAck.On ? "on" : "off")));
                 v.OnResized(rfb.Width, rfb.Height);
-                if (compress < 0) v.StartTuner(new CompressTuner(rfb));
+                v.StartTuner(compress < 0 ? new CompressTuner(rfb) : null);
                 rfb.RequestDesktopSize(screen.Width, screen.Height);
 
                 var x = new XConn();

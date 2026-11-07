@@ -94,6 +94,71 @@ namespace GtVpn
         int maxBacklog;
         public int Backlog() { return Interlocked.Exchange(ref maxBacklog, 0); }
 
+        // Our own Fence requests (Ping), which Xvnc answers as it reaches
+        // them: the round trip is the link's delay plus whatever waits ahead
+        // of the answer, such as pictures queued on the way when the link is
+        // the limit. Kept for 10 s as they come (RoundTrips), and as the
+        // least per 10 s for 5 minutes (IdleRoundTrip: the link's own delay).
+        public bool FenceSeen;               // the server sent a Fence: it has the extension
+        readonly long[] pingSent = new long[16];
+        int pingSeq;
+        readonly object rttLock = new object();
+        readonly List<KeyValuePair<long, double>> rtts = new List<KeyValuePair<long, double>>();
+        readonly double[] rttMin = new double[30];
+        readonly long[] rttMinAt = new long[30];
+
+        public void Ping()
+        {
+            if (!UseFence || !FenceSeen) return;
+            int s = Interlocked.Increment(ref pingSeq);
+            pingSent[s & 15] = Stopwatch.GetTimestamp();
+            try { Write(new byte[] { 248, 0, 0, 0, 0x80, 0, 0, 0, 5, (byte)'g', (byte)(s >> 24), (byte)(s >> 16), (byte)(s >> 8), (byte)s }); }
+            catch (IOException) { } catch (ObjectDisposedException) { } catch (InvalidOperationException) { }
+        }
+
+        void Pong(byte[] p)
+        {
+            int s = (p[1] << 24) | (p[2] << 16) | (p[3] << 8) | p[4], ahead = Thread.VolatileRead(ref pingSeq) - s;
+            if (ahead < 0 || ahead >= 16) return;               // too old to know when it went
+            long now = Stopwatch.GetTimestamp(), bucket = now / Stopwatch.Frequency / 10 + 1;
+            double ms = (now - pingSent[s & 15]) * 1000.0 / Stopwatch.Frequency;
+            lock (rttLock)
+            {
+                rtts.Add(new KeyValuePair<long, double>(now, ms));
+                int old = 0;
+                while (old < rtts.Count && now - rtts[old].Key > 10 * Stopwatch.Frequency) old++;
+                if (old > 0) rtts.RemoveRange(0, old);
+                int i = (int)(bucket % 30);
+                if (rttMinAt[i] != bucket) { rttMinAt[i] = bucket; rttMin[i] = ms; }
+                else if (ms < rttMin[i]) rttMin[i] = ms;
+            }
+        }
+
+        // The round trips answered since a time (Stopwatch ticks), up to 10 s back.
+        public List<double> RoundTrips(long since)
+        {
+            var l = new List<double>();
+            lock (rttLock) foreach (var r in rtts) if (r.Key > since) l.Add(r.Value);
+            return l;
+        }
+
+        // The least round trip of the last 5 minutes, or NaN.
+        public double IdleRoundTrip()
+        {
+            long bucket = Stopwatch.GetTimestamp() / Stopwatch.Frequency / 10 + 1; double m = double.NaN;
+            lock (rttLock)
+                for (int i = 0; i < 30; i++)
+                    if (rttMinAt[i] != 0 && bucket - rttMinAt[i] < 30 && !(rttMin[i] >= m)) m = rttMin[i];
+            return m;
+        }
+
+        public static double Median(List<double> l)
+        {
+            if (l.Count == 0) return double.NaN;
+            l.Sort();
+            return l.Count % 2 == 1 ? l[l.Count / 2] : (l[l.Count / 2 - 1] + l[l.Count / 2]) / 2;
+        }
+
         // FbLock for the receive thread, counting the wait when the UI holds it.
         struct FbHold : IDisposable
         {
@@ -253,7 +318,9 @@ namespace GtVpn
                             Read(3);
                             uint flags = ReadU32();
                             byte[] payload = Read(ReadU8());
+                            FenceSeen = true;
                             if ((flags & 0x80000000u) != 0) Fence(flags & 7u, payload);
+                            else if (payload.Length == 5 && payload[0] == (byte)'g') Pong(payload);
                             break;
                         default: throw new IOException("unknown VNC message " + type);
                     }
@@ -600,57 +667,99 @@ namespace GtVpn
 
     // Chooses zlib's level for what Xvnc sends, 0 or 1, while pictures
     // stream. Level 0 costs Xvnc about half the CPU of level 1 and sends
-    // about twice the bytes (the test PC through the tunnel, 1200x800 at 180
-    // frames a second: 46 changes a second on the screen at level 0, about
-    // 30 at level 1, where Xvnc's zlib took a whole core). Which one gets
-    // more picture through depends on the link and on how much changes, so
-    // while the session is busy the tuner tries the other level for 2 s
-    // and keeps whichever sent more pixels a second. It tries again 20 s
-    // later, and twice as long after each try where the level stays (up to
-    // 160 s), since each such try is 2 s at the worse level.
+    // two to three times the bytes. Level 1 only helps where the link holds
+    // the pictures back, and Xvnc's CPU is also what draws the programs: on
+    // the test PC through the tunnel (1200x800 at 180 frames a second),
+    // level 1 took Xvnc's whole core, the drawing program fell from 151 to
+    // 51 frames a second and the screen from 46 to 35 changes a second,
+    // although more pixels arrived (62 Mpx/s against 44). So the tuner
+    // stays at level 0 unless the link is the limit, which shows as the
+    // answers to its pings (RfbClient.Ping) coming back at least 20 ms
+    // slower than on an idle link: Xvnc's congestion control lets pictures
+    // queue on the way until its own pings take 25-50 ms longer, while an
+    // Xvnc busy compressing delayed them less in the lab (9-19 ms). Then it
+    // tries level 1 for 2 s and keeps it if 15% more pixels arrived a
+    // second while the link still carried most of the bytes it did at level
+    // 0 (80%: still the limit, rather than Xvnc), or 2.5 times the pixels. At
+    // level 1 it tries level 0 the same way. It looks again 20 s later, and
+    // twice as long after each try where the level stays (up to 160 s).
     sealed class CompressTuner
     {
+        struct Sample { public long At; public double Px, Bytes; }
         readonly RfbClient rfb;
-        long lastPx; DateTime last = DateTime.MinValue, nextTry;
-        readonly List<double> seen = new List<double>();
-        int trying = -1, skip, wait = 20; double before;
+        long last, lastPx, lastBytes;
+        DateTime nextTry;
+        readonly List<Sample> seen = new List<Sample>();
+        int trying = -1, skip, wait = 20;
+        Sample before; double beforeRtt;
+        bool toldKeepsUp;
         public int Tries, Changes;
         const double BusyPx = 2e6;           // pixels a second: about 17 changes of 400x300
-        const int Ticks = 4;                 // samples of 500 ms compared
+        const int Ticks = 8;                 // samples of 250 ms compared
+        const double QueuedMs = 20;          // a round trip this much over an idle link's: pictures queue on the way
         public CompressTuner(RfbClient r) { rfb = r; nextTry = DateTime.Now.AddSeconds(3); }
 
-        static double Avg(List<double> l) { double t = 0; foreach (var v in l) t += v; return t / l.Count; }
-        static string Mpx(double p) { return (p / 1e6).ToString("F1") + " Mpx/s"; }
+        static Sample Avg(List<Sample> l)
+        {
+            var a = new Sample { At = l[0].At };
+            foreach (var v in l) { a.Px += v.Px / l.Count; a.Bytes += v.Bytes / l.Count; }
+            return a;
+        }
+        static string Ms(double v) { return double.IsNaN(v) ? "unknown" : v.ToString("F0") + " ms"; }
+        static string Show(int level, Sample s) { return "level " + level + " " + (s.Px / 1e6).ToString("F1") + " Mpx/s at " + (s.Bytes / 1e6).ToString("F1") + " MB/s"; }
 
-        // Every 500 ms (the UI thread); what to log, or null.
+        // Whether level 1 does better than level 0, from 2 s of each and the
+        // round trip at level 0.
+        bool OneWins(Sample one, Sample zero, double zeroRtt, double idle)
+        {
+            return zeroRtt >= idle + QueuedMs && one.Px > zero.Px * 1.15 && (one.Bytes >= zero.Bytes * 0.8 || one.Px >= zero.Px * 2.5);
+        }
+
+        // Every 250 ms (the UI thread); what to log, or null.
         public string Tick()
         {
-            var now = DateTime.Now; long px = Interlocked.Read(ref rfb.Pixels);
-            double dt = (now - last).TotalSeconds;
-            if (last == DateTime.MinValue || dt <= 0) { last = now; lastPx = px; return null; }
-            double p = (px - lastPx) / dt; last = now; lastPx = px;
-            bool busy = p >= BusyPx;
+            long now = Stopwatch.GetTimestamp(), px = Interlocked.Read(ref rfb.Pixels), by = Interlocked.Read(ref rfb.Bytes);
+            double dt = (double)(now - last) / Stopwatch.Frequency;
+            if (last == 0 || dt <= 0) { last = now; lastPx = px; lastBytes = by; return null; }
+            var s = new Sample { At = last, Px = (px - lastPx) / dt, Bytes = (by - lastBytes) / dt };
+            last = now; lastPx = px; lastBytes = by;
+            var t = DateTime.Now;
+            bool busy = s.Px >= BusyPx;
             if (trying < 0)
             {
                 if (!busy) { seen.Clear(); return null; }
-                seen.Add(p); if (seen.Count > Ticks) seen.RemoveAt(0);
-                if (seen.Count < Ticks || now < nextTry) return null;
-                before = Avg(seen); seen.Clear();
-                trying = 1 - rfb.CompressLevel; skip = 1;   // (the first sample after the switch is still the old level's)
+                seen.Add(s); if (seen.Count > Ticks) seen.RemoveAt(0);
+                if (seen.Count < Ticks || t < nextTry) return null;
+                double rtt = RfbClient.Median(rfb.RoundTrips(seen[0].At)), idle = rfb.IdleRoundTrip();
+                if (rfb.CompressLevel == 0 && !(rtt >= idle + QueuedMs))
+                {
+                    // The link carries what Xvnc sends: level 1 would only cost Xvnc's CPU.
+                    seen.Clear(); nextTry = t.AddSeconds(5);
+                    if (toldKeepsUp) return null;
+                    toldKeepsUp = true;
+                    return "zlib level 0 stays: the link keeps up (round trip " + Ms(rtt) + " busy, " + Ms(idle) + " idle)";
+                }
+                before = Avg(seen); beforeRtt = rtt; seen.Clear();
+                trying = 1 - rfb.CompressLevel; skip = 2;   // (the first samples after the switch are still the old level's)
                 rfb.SetCompress(trying); Tries++;
                 return null;
             }
             int from = 1 - trying;
-            if (!busy) { rfb.SetCompress(from); trying = -1; seen.Clear(); nextTry = now.AddSeconds(5); return null; }
+            if (!busy) { rfb.SetCompress(from); trying = -1; seen.Clear(); nextTry = t.AddSeconds(5); return null; }
             if (skip > 0) { skip--; return null; }
-            seen.Add(p);
+            seen.Add(s);
             if (seen.Count < Ticks) return null;
-            double tried = Avg(seen); seen.Clear();
+            var tried = Avg(seen);
+            double triedRtt = RfbClient.Median(rfb.RoundTrips(seen[0].At)), idleNow = rfb.IdleRoundTrip();
+            seen.Clear();
             int to = trying; trying = -1;
-            if (tried > before * 1.15) { Changes++; wait = 20; nextTry = now.AddSeconds(wait); return "zlib level " + to + " now: " + Mpx(tried) + " against " + Mpx(before) + " at level " + from; }
+            bool one = to == 1 ? OneWins(tried, before, beforeRtt, idleNow) : OneWins(before, tried, triedRtt, idleNow);
+            string what = Show(to, tried) + " against " + Show(from, before) + "; round trip at level 0 "
+                + Ms(to == 0 ? triedRtt : beforeRtt) + " (" + Ms(idleNow) + " idle)";
+            if ((one ? 1 : 0) == to) { Changes++; wait = 20; nextTry = t.AddSeconds(wait); return "zlib level " + to + " now: " + what; }
             rfb.SetCompress(from);
-            nextTry = now.AddSeconds(wait); wait = Math.Min(160, wait * 2);
-            return Tries <= 3 ? "zlib level " + from + " stays: " + Mpx(before) + " against " + Mpx(tried) + " at level " + to : null;
+            nextTry = t.AddSeconds(wait); wait = Math.Min(160, wait * 2);
+            return Tries <= 3 ? "zlib level " + from + " stays: " + what : null;
         }
     }
 }

@@ -764,7 +764,7 @@ namespace GtVpn
         // next to nothing, and painting there stays as it was.
         readonly bool skipCovered = !Native.IsWindows;
         readonly TextWriter log;
-        long paints, lastFrames, lastBytes, lastPaints; DateTime lastStat = DateTime.Now; TimeSpan lastCpu;
+        long paints, lastFrames, lastBytes, lastPaints, lastStatTicks; DateTime lastStat = DateTime.Now; TimeSpan lastCpu;
         // What the paints were, and what went to the session's window manager,
         // for the stats line: paint messages (exposes and invalidations),
         // edge fills, and moves and resizes asked of the session.
@@ -779,13 +779,20 @@ namespace GtVpn
         // Ends the hold of a grown window's blank strip.
         readonly System.Windows.Forms.Timer holdTimer = new System.Windows.Forms.Timer { Interval = 25 };
         const int HoldMs = 250, HoldMaxMs = 500;   // Mono: how long a grown strip keeps its edge fill over a blank background
-        // Chooses zlib's level as pictures stream (CompressTuner), unless --compress gives one.
-        readonly System.Windows.Forms.Timer tuneTimer = new System.Windows.Forms.Timer { Interval = 500 };
+        // Pings the VNC server (the link's delay, for the log and the tuner)
+        // and chooses zlib's level as pictures stream (CompressTuner), unless
+        // --compress gives one (t null).
+        readonly System.Windows.Forms.Timer tuneTimer = new System.Windows.Forms.Timer { Interval = 250 };
         CompressTuner tuner;
         public void StartTuner(CompressTuner t)
         {
             tuner = t;
-            tuneTimer.Tick += delegate { var s = tuner.Tick(); if (s != null) Log(s); };
+            tuneTimer.Tick += delegate
+            {
+                Rfb.Ping();
+                var s = tuner == null ? null : tuner.Tick();
+                if (s != null) Log(s);
+            };
             tuneTimer.Start();
         }
         // Mono: looks for moves no one announced (CheckPlaces).
@@ -845,9 +852,14 @@ namespace GtVpn
             // its time is decoding).
             var rx = new[] { Rfb.ReadTicks, Rfb.FbWaitTicks, Rfb.CallTicks, Rfb.WriteTicks };
             double ms = 1000.0 / System.Diagnostics.Stopwatch.Frequency / dt;
+            // Round trips of the pings: the link's delay and what queued ahead of them.
+            long nowTicks = System.Diagnostics.Stopwatch.GetTimestamp();
+            double rtt = RfbClient.Median(Rfb.RoundTrips(lastStatTicks)), idle = Rfb.IdleRoundTrip();
+            lastStatTicks = nowTicks;
             if (f != lastFrames)
-                Log(string.Format("receive: socket wait {0:F0} ms/s, framebuffer lock {1:F1} ms/s, handing to the UI {2:F1} ms/s, writes {3:F1} ms/s, unread up to {4} kB",
-                    (rx[0] - lastRx[0]) * ms, (rx[1] - lastRx[1]) * ms, (rx[2] - lastRx[2]) * ms, (rx[3] - lastRx[3]) * ms, Rfb.Backlog() / 1024));
+                Log(string.Format("receive: socket wait {0:F0} ms/s, framebuffer lock {1:F1} ms/s, handing to the UI {2:F1} ms/s, writes {3:F1} ms/s, unread up to {4} kB{5}",
+                    (rx[0] - lastRx[0]) * ms, (rx[1] - lastRx[1]) * ms, (rx[2] - lastRx[2]) * ms, (rx[3] - lastRx[3]) * ms, Rfb.Backlog() / 1024,
+                    double.IsNaN(rtt) ? "" : string.Format(", round trip {0:F0} ms ({1:F0} idle)", rtt, idle)));
             lastRx = rx;
             lastFrames = f; lastBytes = b; lastPaints = p; lastCpu = cpu; lastMore = more;
             tray.Text = ("gtvpn viewer: " + Label).Substring(0, Math.Min(63, ("gtvpn viewer: " + Label).Length));
