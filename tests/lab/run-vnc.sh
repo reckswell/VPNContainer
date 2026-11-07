@@ -71,6 +71,11 @@ check "starting again reuses the same session" bash -c "dev 'gtvpn-vnc cadence s
 off(){ [[ $(srv "DISPLAY=:$N vncconfig -get SendPrimary") =~ ^(0|false|off)$ ]]; }
 export -f off
 check "selecting text in it does not replace your computer's clipboard (SendPrimary off)" off
+# FrameRate, CompareFB, Log (and ZlibLevel before 1.14) can be changed in the
+# running session, for tuning and tracing without ending it.
+tune(){ srv "DISPLAY=:$N vncconfig -set FrameRate=120 && DISPLAY=:$N vncconfig -set CompareFB=0" && [[ $(srv "DISPLAY=:$N vncconfig -get FrameRate") == 120 ]] \
+  && srv "DISPLAY=:$N vncconfig -set FrameRate=180 && DISPLAY=:$N vncconfig -set CompareFB=2"; }
+check "vncconfig can change the frame rate and update comparing in the running session (AllowOverride)" tune
 check "a session started before that change gets it when it is reused" \
   bash -c "srv 'DISPLAY=:$N vncconfig -set SendPrimary=1' && dev 'gtvpn-vnc cadence start' >/dev/null && off"
 check "another session on the server (like VS Code's terminal) draws on it" srv "DISPLAY=:$N xdpyinfo >/dev/null"
@@ -235,6 +240,12 @@ PY
     desk xprop -root -f _FAKEWM_MOVE 32c -set _FAKEWM_MOVE "$((id)), $((x + 150)), $((y + 100))"
     at $((x + 150)) $((y + 100)); }
   check "a drag the window manager does not tell the window about (WSLg's local move) moves the session's window too" dragged
+  # At WSLg's drop a mouse button can still look held, and Mono then takes the
+  # move for the start of a drag (ResizeBegin) that only a later move ends.
+  dropped(){ local id x y; read -r id x y <<<"$(dgeom)"
+    desk sh -c "xdotool mousemove $((x + 40)) $((y - 15)) mousedown 1; xprop -root -f _FAKEWM_MOVE 32c -set _FAKEWM_MOVE '$((id)), $((x - 120)), $((y + 40)), 1'; sleep 0.3; xdotool mouseup 1"
+    at $((x - 120)) $((y + 40)); }
+  check "a drop it does announce while a mouse button looks held (as at WSLg's) moves the session's window too" dropped
   srv "DISPLAY=:$NW xdotool search --name '^gtvpn-lab-drag\$' windowmove 420 260"
   check "a program that moves its own window lands it there, here and in the session" at 420 260
   pkill -f -- "$KEYDIR/fakewm.exe"

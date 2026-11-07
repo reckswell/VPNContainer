@@ -6,9 +6,11 @@
 //  - takes a window's own move (ConfigureRequest x,y) as the frame's place,
 //    and answers it with a synthetic ConfigureNotify;
 //  - after a drag that Windows showed by itself (WSLg's "local move"), moves
-//    the frame and tells the window nothing: no ConfigureNotify at all.
+//    the frame and tells the window nothing: no ConfigureNotify at all; or,
+//    with a fourth value of 1, a synthetic ConfigureNotify as at a drop
+//    (which Mono, with a button still down, takes for the start of a drag).
 // That last one is asked for through the root window's _FAKEWM_MOVE
-// property (CARDINAL: client window, x, y of its client area):
+// property (CARDINAL: client window, x, y of its client area[, notify]):
 //   xprop -root -f _FAKEWM_MOVE 32c -set _FAKEWM_MOVE "<window>, <x>, <y>"
 //
 //   mcs -out:fakewm.exe tests/lab/fakewm.cs && DISPLAY=:N mono fakewm.exe
@@ -138,13 +140,18 @@ static class FakeWm
         XMoveWindow(dpy, f, fx, fy);
         XResizeWindow(dpy, f, cw + L + R, chh + T + B);
         XResizeWindow(dpy, w, cw, chh);
-        // The synthetic ConfigureNotify weston's xwm sends (the client area's place).
+        Notify(w, fx + L, fy + T, (int)cw, (int)chh);
+    }
+
+    // The synthetic ConfigureNotify weston's xwm sends (the client area's place).
+    static void Notify(IntPtr w, int x, int y, int cw, int ch)
+    {
         var n = Marshal.AllocHGlobal(192);
         for (int i = 0; i < 192; i += 8) Marshal.WriteInt64(n, i, 0);
         Marshal.WriteInt32(n, 0, 22);
         Marshal.WriteIntPtr(n, 32, w); Marshal.WriteIntPtr(n, 40, w);
-        Marshal.WriteInt32(n, 48, fx + L); Marshal.WriteInt32(n, 52, fy + T);
-        Marshal.WriteInt32(n, 56, (int)cw); Marshal.WriteInt32(n, 60, (int)chh);
+        Marshal.WriteInt32(n, 48, x); Marshal.WriteInt32(n, 52, y);
+        Marshal.WriteInt32(n, 56, cw); Marshal.WriteInt32(n, 60, ch);
         XSendEvent(dpy, w, false, new IntPtr(1 << 17), n);
         Marshal.FreeHGlobal(n);
     }
@@ -152,15 +159,26 @@ static class FakeWm
     static void LocalMove(IntPtr move)
     {
         IntPtr type, n, after, data; int format;
-        if (XGetWindowProperty(dpy, root, move, IntPtr.Zero, new IntPtr(3), false, IntPtr.Zero, out type, out format, out n, out after, out data) != 0) return;
+        if (XGetWindowProperty(dpy, root, move, IntPtr.Zero, new IntPtr(4), false, IntPtr.Zero, out type, out format, out n, out after, out data) != 0) return;
         if (data == IntPtr.Zero) return;
         // Format 32 comes as longs.
-        if (format == 32 && n.ToInt64() == 3)
+        long count = n.ToInt64();
+        if (format == 32 && (count == 3 || count == 4))
         {
             IntPtr f, w = new IntPtr(Marshal.ReadInt64(data, 0));
             int x = (int)Marshal.ReadInt64(data, 8), y = (int)Marshal.ReadInt64(data, 16);
-            if (frameOf.TryGetValue(w, out f)) XMoveWindow(dpy, f, x - L, y - T);
-            Console.Error.WriteLine("fakewm: local move of 0x" + w.ToInt64().ToString("x") + " to +" + x + "+" + y + (f == IntPtr.Zero ? " (not framed)" : ""));
+            bool notify = count == 4 && Marshal.ReadInt64(data, 24) != 0;
+            if (frameOf.TryGetValue(w, out f))
+            {
+                XMoveWindow(dpy, f, x - L, y - T);
+                if (notify)
+                {
+                    IntPtr r; int cx, cy; uint cw, ch, bw, depth;
+                    XGetGeometry(dpy, w, out r, out cx, out cy, out cw, out ch, out bw, out depth);
+                    Notify(w, x, y, (int)cw, (int)ch);
+                }
+            }
+            Console.Error.WriteLine("fakewm: local move of 0x" + w.ToInt64().ToString("x") + " to +" + x + "+" + y + (notify ? ", announced" : "") + (f == IntPtr.Zero ? " (not framed)" : ""));
         }
         XFree(data);
     }

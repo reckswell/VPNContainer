@@ -213,6 +213,9 @@ above predates that.
   `GTVPN_VIEWER_IMAGE` runs a given viewer image under mono as it is.
   Xvnc before 1.14 ignored the client's level for ZRLE (zlib's default
   halves the frame rate), so `gtvpn vnc` starts those with `-ZlibLevel=1`.
+  A session also lets `vncconfig` change `FrameRate`, `CompareFB`, `Log`
+  (and `ZlibLevel`) while it runs (`-AllowOverride`), so it can be tuned
+  and traced without ending it, e.g. `DISPLAY=:N vncconfig -set FrameRate=120`.
 - **Viewer, desktop (`attach`):** TigerVNC's viewer on your computer, which `gtvpn vnc` starts
   with `-AutoSelect=1` (it measures the line and picks the encoding and
   picture quality) and `-RemoteResize=1`. Add

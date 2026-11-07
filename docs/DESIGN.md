@@ -442,8 +442,8 @@ the same session twice:
   server's expose. Once the session's window has the new size, the session
   first clears it to its background (all of it for a window without bit
   gravity, the new strip for one with it) and only then does the program
-  draw. So from the moment it asks for the new size, for up to 150 ms
-  (400 ms in a long drag), the viewer keeps changes there that are all one
+  draw. So from the moment it asks for the new size, for up to 250 ms
+  (500 ms in a long drag), the viewer keeps changes there that are all one
   colour out of its picture, and shows the old picture and the edge until
   the program's own pixels arrive (lab, a window drawing 80 ms after each
   expose: the new strip was black in 18-24% of the samples, now 1-4%).
@@ -475,7 +475,13 @@ the same session twice:
   each window's client area is every 100 ms (one XTranslateCoordinates
   each), moves the session's window when it moved, and sends Mono's
   window the ConfigureNotify the window manager left out, so Mono knows
-  its place for the next move. A move a program makes itself goes to
+  its place for the next move. Mono itself also takes a ConfigureNotify
+  that moves a window while a mouse button looks held (XQueryPointer) for
+  the start of a drag (ResizeBegin) and ends it only at a later one with
+  the buttons up; at WSLg's drop there is none, so moves were held back as
+  if inside Windows' move loop. Under mono that loop is not waited for, and
+  a window that stays apart from the session's for 500 ms has its move sent
+  again. A move a program makes itself goes to
   WSLg's window manager as the frame's place, so the viewer allows for
   the frame it measured; it used to read the window's place right after
   asking, before the window manager had moved it, and moved the window

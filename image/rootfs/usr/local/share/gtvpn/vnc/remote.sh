@@ -126,11 +126,18 @@ start)
     # Before TigerVNC 1.14 the ZRLE encoding (what gtvpn's viewer asks for)
     # ignored the viewer's compression level and used zlib's default, which
     # halves the frame rate; ZlibLevel=1 is the level the viewer asks for.
-    zl=; Xvnc -help 2>&1 | grep -q 'ZlibLevel *- Zlib' && zl=-ZlibLevel=1
+    help=$(Xvnc -help 2>&1)
+    zl=; printf '%s\n' "$help" | grep -q 'ZlibLevel *- Zlib' && zl=-ZlibLevel=1
+    # What vncconfig may change in the running session (AllowOverride):
+    # TigerVNC's own list, and the settings worth tuning or tracing without
+    # ending the session (the frame rate, comparing updates, zlib's level,
+    # the log). They stay yours: vncconfig needs the display's cookie.
+    ao=; printf '%s\n' "$help" | grep -q 'AllowOverride' \
+      && ao=-AllowOverride=desktop,AcceptPointerEvents,SendCutText,AcceptCutText,SendPrimary,SetPrimary,FrameRate,CompareFB,Log${zl:+,ZlibLevel}
     XDG_CACHE_HOME="$D/cache" XDG_CONFIG_HOME="$D/config" XDG_DATA_HOME="$D/data" \
       setsid nohup Xvnc ":$n" -auth "$XA" -nolisten tcp \
       -rfbunixpath "$SOCK" -rfbunixmode 0600 -rfbport -1 -localhost -interface 127.0.0.1 -SecurityTypes None \
-      -geometry 1920x1080 -depth 24 -dpi 96 -FrameRate 180 -AlwaysShared -AcceptSetDesktopSize=1 -UseBlacklist=0 -SendPrimary=0 $zl \
+      -geometry 1920x1080 -depth 24 -dpi 96 -FrameRate 180 -AlwaysShared -AcceptSetDesktopSize=1 -UseBlacklist=0 -SendPrimary=0 $zl $ao \
       >"$D/xvnc.log" 2>&1 </dev/null &
     say "$n" > "$D/display"
     i=0; until [ -S "$SOCK" ] && DISPLAY=":$n" xdpyinfo >/dev/null 2>&1; do

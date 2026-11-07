@@ -558,6 +558,7 @@ namespace GtVpn
         public DateTime ShownAt;
         public DateTime LastSent;
         public Point Seen;                   // Mono: where its client area was when last looked at (screen coordinates)
+        public DateTime ApartSince, LastRetry;  // Mono: since when it and the session's window disagree; the last time that was sent again
         public bool InSizeMove;              // inside Windows' move/size loop (dragging the title bar or a border)
         // A move of the session's window whose pixels are still on their way:
         // until then this window shows a local copy (Mirror.Move), and the
@@ -720,8 +721,13 @@ namespace GtVpn
             v.NativeMoved(this, false);
         }
         // WM_ENTERSIZEMOVE / WM_EXITSIZEMOVE: a drag by the title bar or a
-        // border, or the keyboard's Move and Size.
-        protected override void OnResizeBegin(EventArgs e) { base.OnResizeBegin(e); InSizeMove = true; }
+        // border, or the keyboard's Move and Size. Mono raises ResizeBegin
+        // itself when a ConfigureNotify moves or resizes the window while a
+        // mouse button looks held (XQueryPointer), and ResizeEnd only at a
+        // later one with the buttons up. At WSLg's drop after a local move
+        // there is no later one, so the window stayed "in a drag" and every
+        // move after it was dropped. Mono has no move/size loop to wait for.
+        protected override void OnResizeBegin(EventArgs e) { base.OnResizeBegin(e); if (Native.IsWindows) InSizeMove = true; else v.MonoResizeBegin(); }
         protected override void OnResizeEnd(EventArgs e) { base.OnResizeEnd(e); InSizeMove = false; if (Ready) v.NativeMoved(this, true); }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -771,10 +777,17 @@ namespace GtVpn
         const int GuardMs = 300;             // the longest a moved window waits for its pixels
         // Ends the hold of a grown window's blank strip.
         readonly System.Windows.Forms.Timer holdTimer = new System.Windows.Forms.Timer { Interval = 25 };
-        const int HoldMs = 150, HoldMaxMs = 400;   // Mono: how long a grown strip keeps its edge fill over a blank background
+        const int HoldMs = 250, HoldMaxMs = 500;   // Mono: how long a grown strip keeps its edge fill over a blank background
         // Mono: looks for moves no one announced (CheckPlaces).
         readonly System.Windows.Forms.Timer placeTimer = new System.Windows.Forms.Timer { Interval = 100 };
-        bool unannounced;
+        bool unannounced, monoResizeBegin, retried;
+
+        public void MonoResizeBegin()
+        {
+            if (monoResizeBegin) return;
+            monoResizeBegin = true;
+            Log("Mono took a move with a mouse button down for the start of a drag (ResizeBegin): moves still go to the session");
+        }
 
         public Viewer(TextWriter log)
         {
@@ -1354,10 +1367,22 @@ namespace GtVpn
                         f.MeasureFrame = false;
                         if (Wm.FrameX != 0 || Wm.FrameY != 0) { Wm.SaveFrame(0, 0); Log("window manager's frame: none here (a window stayed where it was put)"); }
                         NativeMoved(f, false);
+                        continue;
                     }
+                    // It and the session's window disagree and nothing is on
+                    // its way: the move is sent again (at most every 2 s), so
+                    // no report dropped on the way leaves them apart.
+                    var now = DateTime.Now;
+                    if (c.X - OriginX == f.Win.X && c.Y - OriginY == f.Win.Y) { f.ApartSince = DateTime.MinValue; continue; }
+                    if (f.ApartSince == DateTime.MinValue) { f.ApartSince = now; continue; }
+                    if ((now - f.ApartSince).TotalMilliseconds < 500 || (now - f.LastRetry).TotalSeconds < 2 || (now - f.ShownAt).TotalSeconds < 2
+                        || f.ResizeSent != Size.Empty || f.ResizeNext != null) continue;
+                    f.LastRetry = now;
+                    if (!retried) { retried = true; Log("window " + f.Win.Id.ToString("x") + " was at +" + (c.X - OriginX) + "+" + (c.Y - OriginY) + " here and +" + f.Win.X + "+" + f.Win.Y + " in the session: sent again"); }
+                    NativeMoved(f, false);
                     continue;
                 }
-                f.Seen = c;
+                f.Seen = c; f.ApartSince = DateTime.MinValue;
                 if (c.X - OriginX == f.Win.X && c.Y - OriginY == f.Win.Y) continue;
                 if (!unannounced) { unannounced = true; Log("a window moved without a word to it (WSLg's local move): the session's window follows, and the viewer looks for such moves every " + placeTimer.Interval + " ms"); }
                 NativeMoved(f, false);
