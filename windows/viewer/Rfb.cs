@@ -100,6 +100,7 @@ namespace GtVpn
         // the limit. Kept for 10 s as they come (RoundTrips), and as the
         // least per 10 s for 5 minutes (IdleRoundTrip: the link's own delay).
         public bool FenceSeen;               // the server sent a Fence: it has the extension
+        public bool UsePing = true;          // --ping off: none (to compare)
         readonly long[] pingSent = new long[16];
         int pingSeq;
         readonly object rttLock = new object();
@@ -109,7 +110,7 @@ namespace GtVpn
 
         public void Ping()
         {
-            if (!UseFence || !FenceSeen) return;
+            if (!UsePing || !UseFence || !FenceSeen) return;
             int s = Interlocked.Increment(ref pingSeq);
             pingSent[s & 15] = Stopwatch.GetTimestamp();
             try { Write(new byte[] { 248, 0, 0, 0, 0x80, 0, 0, 0, 5, (byte)'g', (byte)(s >> 24), (byte)(s >> 16), (byte)(s >> 8), (byte)s }); }

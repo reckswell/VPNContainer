@@ -779,6 +779,7 @@ namespace GtVpn
         // Ends the hold of a grown window's blank strip.
         readonly System.Windows.Forms.Timer holdTimer = new System.Windows.Forms.Timer { Interval = 25 };
         const int HoldMs = 250, HoldMaxMs = 500;   // Mono: how long a grown strip keeps its edge fill over a blank background
+        public bool HoldColour = true;             // --hold-colour off: no colour rule (to compare)
         // Pings the VNC server (the link's delay, for the log and the tuner)
         // and chooses zlib's level as pictures stream (CompressTuner), unless
         // --compress gives one (t null).
@@ -942,7 +943,7 @@ namespace GtVpn
                         // In the new strip, the first one-colour change is the
                         // session's clear; one of another colour is the
                         // program's own (a plain background, say): shown.
-                        if (solid && strip)
+                        if (HoldColour && solid && strip)
                         {
                             if (f.HeldColour < 0) f.HeldColour = colour;
                             else if (colour != f.HeldColour) solid = false;

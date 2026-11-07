@@ -100,6 +100,7 @@ namespace GtVpn
         static int Main(string[] args)
         {
             string vnc = null, x11 = null, label = "GT session", encoding = "zrle", paint = "x11"; int quality = 8, compress = -1;
+            bool ping = true, holdColour = true;
             for (int i = 0; i + 1 < args.Length; i += 2)
             {
                 if (args[i] == "--vnc") vnc = args[i + 1];
@@ -109,6 +110,8 @@ namespace GtVpn
                 else if (args[i] == "--compress") compress = args[i + 1] == "auto" ? -1 : int.Parse(args[i + 1]);
                 else if (args[i] == "--encoding") encoding = args[i + 1].ToLowerInvariant();
                 else if (args[i] == "--paint") paint = args[i + 1].ToLowerInvariant();   // Mono: x11 (XPutImage) or gdi (System.Drawing)
+                else if (args[i] == "--ping") ping = args[i + 1] != "off";                // to compare: no Fence pings (and so no tries of zlib level 1)
+                else if (args[i] == "--hold-colour") holdColour = args[i + 1] != "off";   // to compare: Mono's resize hold without its colour rule
             }
             string cookie = Environment.GetEnvironmentVariable("GTVPN_X_COOKIE");
             Environment.SetEnvironmentVariable("GTVPN_X_COOKIE", null);
@@ -139,7 +142,9 @@ namespace GtVpn
                     JpegQuality = Math.Max(0, Math.Min(9, quality)),
                     CompressLevel = compress < 0 ? 0 : Math.Min(9, compress),
                     PreferZrle = encoding != "tight",
+                    UsePing = ping,
                 };
+                v.HoldColour = holdColour;
                 v.Rfb = rfb;
                 rfb.Updated += v.OnUpdated;
                 rfb.Resized += v.OnResized;
@@ -157,7 +162,8 @@ namespace GtVpn
                 v.Log("VNC " + rfb.Name + " " + rfb.Width + "x" + rfb.Height + "; asking for " + screen.Width + "x" + screen.Height
                     + "; " + (rfb.PreferZrle ? "zrle" : "tight") + " compress " + (compress < 0 ? "auto (0 to start)" : rfb.CompressLevel.ToString()) + " quality " + rfb.JpegQuality
                     + "; continuous updates " + (rfb.UseContinuous ? "on" : "off") + ", fence " + (rfb.UseFence ? "on" : "off")
-                    + (Native.IsWindows ? "" : "; quick ACKs " + (QuickAck.On ? "on" : "off")));
+                    + (Native.IsWindows ? "" : "; quick ACKs " + (QuickAck.On ? "on" : "off"))
+                    + (ping ? "" : "; pings off") + (holdColour ? "" : "; resize hold's colour rule off"));
                 v.OnResized(rfb.Width, rfb.Height);
                 v.StartTuner(compress < 0 ? new CompressTuner(rfb) : null);
                 rfb.RequestDesktopSize(screen.Width, screen.Height);
