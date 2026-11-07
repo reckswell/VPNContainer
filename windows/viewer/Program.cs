@@ -2,11 +2,12 @@
 // windows, with Windows 11's own frames.
 //
 //   gtvpn-viewer.exe --vnc 127.0.0.1:P --x11 127.0.0.1:Q [--label TEXT]
-//                    [--encoding zrle|tight] [--compress 0-9] [--quality 0-9]
+//                    [--encoding zrle|tight] [--compress auto|0-9] [--quality 0-9]
 //
 // --encoding: what Xvnc sends first: zrle (lossless, the default) or tight
-// (JPEG for photo-like areas). --compress: zlib's effort in Xvnc (default 1;
-// 0 sends the most bytes for the least CPU there). --quality: Tight's JPEG.
+// (JPEG for photo-like areas). --compress: zlib's effort in Xvnc, 0-9, or
+// auto (the default: 0 or 1, whichever gets more picture through as it
+// goes; 0 sends the most bytes for the least CPU there). --quality: Tight's JPEG.
 //
 // The X display cookie comes in the GTVPN_X_COOKIE environment variable (hex),
 // so it never shows on a command line. `gtvpn vnc <host> windows` sets up the
@@ -98,14 +99,14 @@ namespace GtVpn
         [STAThread]
         static int Main(string[] args)
         {
-            string vnc = null, x11 = null, label = "GT session", encoding = "zrle", paint = "x11"; int quality = 8, compress = 1;
+            string vnc = null, x11 = null, label = "GT session", encoding = "zrle", paint = "x11"; int quality = 8, compress = -1;
             for (int i = 0; i + 1 < args.Length; i += 2)
             {
                 if (args[i] == "--vnc") vnc = args[i + 1];
                 else if (args[i] == "--x11") x11 = args[i + 1];
                 else if (args[i] == "--label") label = args[i + 1];
                 else if (args[i] == "--quality") quality = int.Parse(args[i + 1]);
-                else if (args[i] == "--compress") compress = int.Parse(args[i + 1]);
+                else if (args[i] == "--compress") compress = args[i + 1] == "auto" ? -1 : int.Parse(args[i + 1]);
                 else if (args[i] == "--encoding") encoding = args[i + 1].ToLowerInvariant();
                 else if (args[i] == "--paint") paint = args[i + 1].ToLowerInvariant();   // Mono: x11 (XPutImage) or gdi (System.Drawing)
             }
@@ -136,7 +137,7 @@ namespace GtVpn
                 var rfb = new RfbClient
                 {
                     JpegQuality = Math.Max(0, Math.Min(9, quality)),
-                    CompressLevel = Math.Max(0, Math.Min(9, compress)),
+                    CompressLevel = compress < 0 ? 0 : Math.Min(9, compress),
                     PreferZrle = encoding != "tight",
                 };
                 v.Rfb = rfb;
@@ -154,10 +155,11 @@ namespace GtVpn
                 }
                 rfb.Connect(vh, vp);
                 v.Log("VNC " + rfb.Name + " " + rfb.Width + "x" + rfb.Height + "; asking for " + screen.Width + "x" + screen.Height
-                    + "; " + (rfb.PreferZrle ? "zrle" : "tight") + " compress " + rfb.CompressLevel + " quality " + rfb.JpegQuality
+                    + "; " + (rfb.PreferZrle ? "zrle" : "tight") + " compress " + (compress < 0 ? "auto (0 to start)" : rfb.CompressLevel.ToString()) + " quality " + rfb.JpegQuality
                     + "; continuous updates " + (rfb.UseContinuous ? "on" : "off") + ", fence " + (rfb.UseFence ? "on" : "off")
                     + (Native.IsWindows ? "" : "; quick ACKs " + (QuickAck.On ? "on" : "off")));
                 v.OnResized(rfb.Width, rfb.Height);
+                if (compress < 0) v.StartTuner(new CompressTuner(rfb));
                 rfb.RequestDesktopSize(screen.Width, screen.Height);
 
                 var x = new XConn();

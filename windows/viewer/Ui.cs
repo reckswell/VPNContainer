@@ -778,6 +778,15 @@ namespace GtVpn
         // Ends the hold of a grown window's blank strip.
         readonly System.Windows.Forms.Timer holdTimer = new System.Windows.Forms.Timer { Interval = 25 };
         const int HoldMs = 250, HoldMaxMs = 500;   // Mono: how long a grown strip keeps its edge fill over a blank background
+        // Chooses zlib's level as pictures stream (CompressTuner), unless --compress gives one.
+        readonly System.Windows.Forms.Timer tuneTimer = new System.Windows.Forms.Timer { Interval = 500 };
+        CompressTuner tuner;
+        public void StartTuner(CompressTuner t)
+        {
+            tuner = t;
+            tuneTimer.Tick += delegate { var s = tuner.Tick(); if (s != null) Log(s); };
+            tuneTimer.Start();
+        }
         // Mono: looks for moves no one announced (CheckPlaces).
         readonly System.Windows.Forms.Timer placeTimer = new System.Windows.Forms.Timer { Interval = 100 };
         bool unannounced, monoResizeBegin, retried;
@@ -827,10 +836,10 @@ namespace GtVpn
             var cpu = System.Diagnostics.Process.GetCurrentProcess().TotalProcessorTime;
             if (Debug) { Log("tick frames " + f); lock (Rfb.FbLock) mirror.Save(Path.Combine(Path.GetTempPath(), "gtvpn-mirror.png")); }
             if (f != lastFrames || p != lastPaints || more[3] != lastMore[3] || more[4] != lastMore[4])
-                Log(string.Format("updates/s {0:F1}  MB/s {1:F2}  paints/s {2:F1} (messages {5:F1}, edges {6:F1}, held {11:F1})  cpu {3:F0}%  windows {4}  moves/s {7:F1}  resizes/s {8:F1}  session X: requests/s {9:F1} kB/s {10:F1}",
+                Log(string.Format("updates/s {0:F1}  MB/s {1:F2}  zlib {12}  paints/s {2:F1} (messages {5:F1}, edges {6:F1}, held {11:F1})  cpu {3:F0}%  windows {4}  moves/s {7:F1}  resizes/s {8:F1}  session X: requests/s {9:F1} kB/s {10:F1}",
                     (f - lastFrames) / dt, (b - lastBytes) / dt / 1e6, (p - lastPaints) / dt, (cpu - lastCpu).TotalSeconds / dt * 100, forms.Count,
                     (more[0] - lastMore[0]) / dt, (more[1] - lastMore[1]) / dt, (more[2] - lastMore[2]) / dt, (more[3] - lastMore[3]) / dt,
-                    (more[4] - lastMore[4]) / dt, (more[5] - lastMore[5]) / dt / 1e3, (more[6] - lastMore[6]) / dt));
+                    (more[4] - lastMore[4]) / dt, (more[5] - lastMore[5]) / dt / 1e3, (more[6] - lastMore[6]) / dt, Rfb.CompressLevel));
             // The receive thread: what it waited on, per second (the rest of
             // its time is decoding).
             var rx = new[] { Rfb.ReadTicks, Rfb.FbWaitTicks, Rfb.CallTicks, Rfb.WriteTicks };

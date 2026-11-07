@@ -85,6 +85,7 @@ namespace GtVpn
         readonly ZStream zrle = new ZStream();
         byte[] zin = new byte[1 << 16], zout = new byte[1 << 16];
         public long Frames, Bytes;
+        public long Pixels;                  // the area of the rectangles sent as pictures (Raw, Tight, ZRLE), for CompressTuner
         // Where the receive thread's time goes, for the viewer's log (Stopwatch
         // ticks): waiting on the socket, waiting for FbLock, in Updated, and
         // in writes (from either thread); and the most bytes left unread in
@@ -140,6 +141,14 @@ namespace GtVpn
             // ZRLE, Tight, CopyRect, Raw; ExtendedDesktopSize, DesktopSize,
             // LastRect, the cursor shape, Fence and ContinuousUpdates; JPEG
             // quality and zlib level.
+            SendEncodings();
+            RequestUpdate(false);
+            var t = new Thread(Loop) { IsBackground = true, Name = "rfb" };
+            t.Start();
+        }
+
+        void SendEncodings()
+        {
             var enc = new List<int> { 16, 7, 1, 0, -308, -223, -224, -239, -312, -313, -32 + JpegQuality, -256 + CompressLevel };
             if (!PreferZrle) { enc.Remove(16); enc.Insert(1, 16); }
             if (!UseContinuous) enc.Remove(-313);
@@ -148,9 +157,15 @@ namespace GtVpn
             m.WriteByte(2); m.WriteByte(0); PutU16(m, enc.Count);
             foreach (int e in enc) PutU32(m, (uint)e);
             Write(m.ToArray());
-            RequestUpdate(false);
-            var t = new Thread(Loop) { IsBackground = true, Name = "rfb" };
-            t.Start();
+        }
+
+        // A new zlib level for what Xvnc sends from now on (it takes a new
+        // SetEncodings at any time).
+        public void SetCompress(int level)
+        {
+            if (level == CompressLevel) return;
+            CompressLevel = level;
+            try { SendEncodings(); } catch (IOException) { }
         }
 
         // Ask the server to make its desktop this size (ExtendedDesktopSize).
@@ -261,13 +276,13 @@ namespace GtVpn
                 if (enc == -224) break;                              // LastRect
                 switch (enc)
                 {
-                    case 0: Raw(x, y, w, h); dirty.Add(new Rectangle(x, y, w, h)); break;
+                    case 0: Raw(x, y, w, h); dirty.Add(new Rectangle(x, y, w, h)); Pixels += (long)w * h; break;
                     case 1:
                         int sx = ReadU16(), sy = ReadU16();
                         using (new FbHold(this)) CopyRect(sx, sy, x, y, w, h);
                         dirty.Add(new Rectangle(x, y, w, h)); break;
-                    case 7: Tight(x, y, w, h); dirty.Add(new Rectangle(x, y, w, h)); break;
-                    case 16: Zrle(x, y, w, h); dirty.Add(new Rectangle(x, y, w, h)); break;
+                    case 7: Tight(x, y, w, h); dirty.Add(new Rectangle(x, y, w, h)); Pixels += (long)w * h; break;
+                    case 16: Zrle(x, y, w, h); dirty.Add(new Rectangle(x, y, w, h)); Pixels += (long)w * h; break;
                     case -239: CursorShape(x, y, w, h); break;
                     case -223: Resize(w, h); resized = true; break;
                     case -308:
@@ -581,5 +596,61 @@ namespace GtVpn
 
         static void PutU16(Stream m, int v) { m.WriteByte((byte)(v >> 8)); m.WriteByte((byte)v); }
         static void PutU32(Stream m, uint v) { PutU16(m, (int)(v >> 16)); PutU16(m, (int)(v & 0xffff)); }
+    }
+
+    // Chooses zlib's level for what Xvnc sends, 0 or 1, while pictures
+    // stream. Level 0 costs Xvnc about half the CPU of level 1 and sends
+    // about twice the bytes (the test PC through the tunnel, 1200x800 at 180
+    // frames a second: 46 changes a second on the screen at level 0, about
+    // 30 at level 1, where Xvnc's zlib took a whole core). Which one gets
+    // more picture through depends on the link and on how much changes, so
+    // while the session is busy the tuner tries the other level for 2 s
+    // and keeps whichever sent more pixels a second. It tries again 20 s
+    // later, and twice as long after each try where the level stays (up to
+    // 160 s), since each such try is 2 s at the worse level.
+    sealed class CompressTuner
+    {
+        readonly RfbClient rfb;
+        long lastPx; DateTime last = DateTime.MinValue, nextTry;
+        readonly List<double> seen = new List<double>();
+        int trying = -1, skip, wait = 20; double before;
+        public int Tries, Changes;
+        const double BusyPx = 2e6;           // pixels a second: about 17 changes of 400x300
+        const int Ticks = 4;                 // samples of 500 ms compared
+        public CompressTuner(RfbClient r) { rfb = r; nextTry = DateTime.Now.AddSeconds(3); }
+
+        static double Avg(List<double> l) { double t = 0; foreach (var v in l) t += v; return t / l.Count; }
+        static string Mpx(double p) { return (p / 1e6).ToString("F1") + " Mpx/s"; }
+
+        // Every 500 ms (the UI thread); what to log, or null.
+        public string Tick()
+        {
+            var now = DateTime.Now; long px = Interlocked.Read(ref rfb.Pixels);
+            double dt = (now - last).TotalSeconds;
+            if (last == DateTime.MinValue || dt <= 0) { last = now; lastPx = px; return null; }
+            double p = (px - lastPx) / dt; last = now; lastPx = px;
+            bool busy = p >= BusyPx;
+            if (trying < 0)
+            {
+                if (!busy) { seen.Clear(); return null; }
+                seen.Add(p); if (seen.Count > Ticks) seen.RemoveAt(0);
+                if (seen.Count < Ticks || now < nextTry) return null;
+                before = Avg(seen); seen.Clear();
+                trying = 1 - rfb.CompressLevel; skip = 1;   // (the first sample after the switch is still the old level's)
+                rfb.SetCompress(trying); Tries++;
+                return null;
+            }
+            int from = 1 - trying;
+            if (!busy) { rfb.SetCompress(from); trying = -1; seen.Clear(); nextTry = now.AddSeconds(5); return null; }
+            if (skip > 0) { skip--; return null; }
+            seen.Add(p);
+            if (seen.Count < Ticks) return null;
+            double tried = Avg(seen); seen.Clear();
+            int to = trying; trying = -1;
+            if (tried > before * 1.15) { Changes++; wait = 20; nextTry = now.AddSeconds(wait); return "zlib level " + to + " now: " + Mpx(tried) + " against " + Mpx(before) + " at level " + from; }
+            rfb.SetCompress(from);
+            nextTry = now.AddSeconds(wait); wait = Math.Min(160, wait * 2);
+            return Tries <= 3 ? "zlib level " + from + " stays: " + Mpx(before) + " against " + Mpx(tried) + " at level " + to : null;
+        }
     }
 }

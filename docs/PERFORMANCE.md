@@ -177,8 +177,19 @@ control (which counts a frame as delivered when the viewer answers for it)
 also paces frames by round trips, which is why Xvnc is not always busy. A program
 that floods it (xput at 180/s) takes encoder time away and gets fewer
 frames on screen than one drawing at 60/s. The viewer itself never used
-more than a third of one core of the PC. `--compress 0` moves the limit to
-the server's sshd (92% CPU at 19 MB/s) without more frames.
+more than a third of one core of the PC. Before the quick ACKs below,
+`--compress 0` moved the limit to the server's sshd (92% CPU at 19 MB/s)
+without more frames. With them, on the test PC at 1200x800 and 180 frames
+a second, zlib level 1 pinned Xvnc at 94-98% of a core for 27-32 changes
+a second on the screen, and level 0 gave 46 at half of Xvnc's CPU, sending
+twice the bytes (23 MB/s through the tunnel). On a slower link, or for a
+larger area changing, level 1 gets more through. So the viewer picks the
+level as it goes (`--compress auto`, the default): it starts at 0, and
+while pictures stream it tries the other level for 2 s, keeping the one
+that sent more pixels a second (again 20 s later, then twice as long each
+time the level stays, up to 160 s). In the lab with Tight (this Xvnc 1.13
+ignores the level for ZRLE): through a fast link it kept 0 (66 Mpx/s
+against 37 at level 1), through 80 Mbit/s it took 1 (33 against 8).
 
 Part of that pacing was the link's own: ssh's local forward to Xvnc's Unix
 socket leaves Nagle on for its end of the connection to the viewer, so the
@@ -203,11 +214,11 @@ above predates that.
   hours, as for `ssh`).
 - **Viewer, `windows` (Windows):** gtvpn's own (`windows/viewer`), built on
   first use with the .NET Framework 4 C# compiler that is part of Windows.
-  It asks for ZRLE at compression level 1, streams frames (continuous
+  It asks for ZRLE with zlib's level chosen as it goes (0 or 1, above), streams frames (continuous
   updates), draws the cursor locally, and becomes the session's window
   manager over a second forward to the display (`127.0.0.1:Q`, Q = 16300 +
   N). Options via `GTVPN_VIEWER_ARGS` in `.env`: `--encoding tight`,
-  `--compress 0-9`, `--quality 0-9`. Its log is `%TEMP%\gtvpn-viewer.log`.
+  `--compress 0-9` (a fixed level), `--quality 0-9`. Its log is `%TEMP%\gtvpn-viewer.log`.
   To compare, `GTVPN_VIEWER_CU=0` (environment or `.env`) turns continuous
   updates off, so it asks for each update, and `nofence` also drops Fence;
   `GTVPN_VIEWER_IMAGE` runs a given viewer image under mono as it is.
