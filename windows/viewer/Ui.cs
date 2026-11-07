@@ -576,6 +576,11 @@ namespace GtVpn
         public Size ShownSize;
         public long HeldColour = -1;         // the colour of the first one-colour change in the new strip: the session's clear
         public DateTime HoldStart, HoldUntil;
+        // What the session cleared (framebuffer coordinates) and the program
+        // has not drawn again yet; once its first pixels are in, until when
+        // the rest may take (FillMs; MinValue: not waiting).
+        public readonly List<Rectangle> Cleared = new List<Rectangle>();
+        public DateTime FillUntil;
         // Mono: WSLg resizes a window step by step. One resize at a time goes
         // to the session: the size asked for and when (Empty: none), and the
         // newest size from here, which waits until the session confirms.
@@ -779,6 +784,8 @@ namespace GtVpn
         // Ends the hold of a grown window's blank strip.
         readonly System.Windows.Forms.Timer holdTimer = new System.Windows.Forms.Timer { Interval = 25 };
         const int HoldMs = 250, HoldMaxMs = 500;   // Mono: how long a grown strip keeps its edge fill over a blank background
+        const int FillMs = 100;              // Mono: how long the rest of a program's picture may take after its first piece
+        int fills, fillsLate; double fillMaxMs;   // pictures that came in pieces, for the stats
         public bool HoldColour = true;             // --hold-colour off: no colour rule (to compare)
         // Pings the VNC server (the link's delay, for the log and the tuner)
         // and chooses zlib's level for bursts and streams of pictures
@@ -863,6 +870,11 @@ namespace GtVpn
                     (rx[0] - lastRx[0]) * ms, (rx[1] - lastRx[1]) * ms, (rx[2] - lastRx[2]) * ms, (rx[3] - lastRx[3]) * ms, Rfb.Backlog() / 1024,
                     double.IsNaN(rtt) ? "" : string.Format(", round trip {0:F0} ms ({1:F0} idle)", rtt, idle)));
             lastRx = rx;
+            // Resized windows whose program's picture came in pieces.
+            if (fills > 0)
+                Log(string.Format("resizes: {0} new pictures came in pieces, the old one kept up to {1:F0} ms more for the rest{2}",
+                    fills, fillMaxMs, fillsLate > 0 ? string.Format(" ({0} still not whole after {1} ms)", fillsLate, FillMs) : ""));
+            fills = fillsLate = 0; fillMaxMs = 0;
             lastFrames = f; lastBytes = b; lastPaints = p; lastCpu = cpu; lastMore = more;
             tray.Text = ("gtvpn viewer: " + Label).Substring(0, Math.Min(63, ("gtvpn viewer: " + Label).Length));
         }
@@ -930,17 +942,19 @@ namespace GtVpn
                     foreach (var f in forms.Values)
                     {
                         if (!f.Holding || f.Guarded) continue;
-                        long colour = -1; bool solid = true, any = false, strip = false;
+                        long colour = -1; bool solid = true, strip = false;
                         var shown = ShownRect(f);
+                        var ins = new List<Rectangle>();
                         foreach (var r in rs)
                         {
                             var i = Rectangle.Intersect(r, f.XRect);
                             if (i.Width <= 0 || i.Height <= 0) continue;
-                            any = true;
+                            ins.Add(i);
                             if (!shown.Contains(i)) strip = true;
-                            if (!Mirror.Solid(Rfb.Fb, Rfb.Width, Rfb.Height, i, ref colour)) { solid = false; break; }
+                            if (solid && !Mirror.Solid(Rfb.Fb, Rfb.Width, Rfb.Height, i, ref colour)) solid = false;
                         }
-                        if (!any) continue;
+                        if (ins.Count == 0) continue;
+                        bool filling = f.FillUntil != DateTime.MinValue;
                         // In the new strip, the first one-colour change is the
                         // session's clear; one of another colour is the
                         // program's own (a plain background, say): shown.
@@ -949,8 +963,40 @@ namespace GtVpn
                             if (f.HeldColour < 0) f.HeldColour = colour;
                             else if (colour != f.HeldColour) solid = false;
                         }
-                        if (solid) { keep.Add(f.XRect); held++; }
-                        else { f.Holding = false; (released = released ?? new List<XForm>()).Add(f); }
+                        // Once the program's picture is coming, one colour is
+                        // its own too, unless it is the clear's (the next
+                        // step of a drag, cleared before this one is whole).
+                        if (solid && filling && colour != f.HeldColour) solid = false;
+                        if (solid) { keep.Add(f.XRect); held++; f.Cleared.AddRange(ins); continue; }
+                        // A drawing that stays inside the part shown while the
+                        // window has grown beyond it is of an older size, still
+                        // on its way: ending the hold on it let the clear of the
+                        // size after it in (a drag in the lab: the whole window
+                        // black for ~80 ms).
+                        if (!strip && (f.XRect.Width > shown.Width || f.XRect.Height > shown.Height)) { keep.Add(f.XRect); held++; continue; }
+                        // The program's own pixels. Its picture can come in
+                        // pieces a round trip or more apart (one bigger than
+                        // what Xvnc had when it sent the first): what the
+                        // session cleared and the program has not drawn yet
+                        // would show the clear, so the old picture stays until
+                        // the rest is in, or FillMs (in some lab runs, half the
+                        // window black for ~50 ms otherwise).
+                        var left = new List<Rectangle>();
+                        foreach (var c in f.Cleared)
+                        {
+                            var cc = Rectangle.Intersect(c, f.XRect);   // (beyond a window that shrank since: not shown)
+                            if (cc.Width > 0 && cc.Height > 0) left.AddRange(Outside(cc, ins));
+                        }
+                        f.Cleared.Clear(); f.Cleared.AddRange(left);
+                        var now = DateTime.Now;
+                        if (left.Count > 0)
+                        {
+                            if (!filling) { f.FillUntil = now.AddMilliseconds(FillMs); if (f.HoldUntil > f.FillUntil) f.HoldUntil = f.FillUntil; }
+                            if (now < f.FillUntil) { keep.Add(f.XRect); held++; continue; }
+                        }
+                        if (filling) { fills++; fillMaxMs = Math.Max(fillMaxMs, FillMs - (f.FillUntil - now).TotalMilliseconds); }
+                        StopHold(f);
+                        (released = released ?? new List<XForm>()).Add(f);
                     }
                 foreach (var r in rs)
                     foreach (var p in Outside(r, keep)) mirror.Copy(Rfb.Fb, Rfb.Width, Rfb.Height, p);
@@ -1063,6 +1109,7 @@ namespace GtVpn
             if (r == from) return;
             lock (Rfb.FbLock) mirror.Move(from, r.Location);
             f.XRect = r;
+            for (int i = 0; i < f.Cleared.Count; i++) f.Cleared[i] = new Rectangle(f.Cleared[i].X + r.X - from.X, f.Cleared[i].Y + r.Y - from.Y, f.Cleared[i].Width, f.Cleared[i].Height);
             if (!f.Guarded) f.GuardStart = DateTime.Now;
             f.Guarded = true; f.MoveConfirmed = false;
             f.GuardUntil = DateTime.Now.AddMilliseconds(GuardMs);
@@ -1103,17 +1150,20 @@ namespace GtVpn
         void StartHold(XForm f, Rectangle old)
         {
             var now = DateTime.Now;
-            if (!f.Holding) { f.Holding = true; f.HoldStart = now; f.ShownSize = old.Size; f.HeldColour = -1; }
+            if (!f.Holding) { f.Holding = true; f.HoldStart = now; f.ShownSize = old.Size; f.HeldColour = -1; f.Cleared.Clear(); }
             var until = now.AddMilliseconds(HoldMs);
             DateTime start = f.HoldStart, max = start.AddMilliseconds(HoldMaxMs);
+            if (f.FillUntil != DateTime.MinValue && f.FillUntil < max) max = f.FillUntil;   // (the rest of a picture coming: no longer)
             f.HoldUntil = until < max ? until : max;
             holdTimer.Start();
         }
 
+        static void StopHold(XForm f) { f.Holding = false; f.Cleared.Clear(); f.FillUntil = DateTime.MinValue; }
+
         // No pixels from the program in time: the window as the framebuffer has it.
         void EndHold(XForm f)
         {
-            f.Holding = false;
+            StopHold(f);
             lock (Rfb.FbLock) mirror.Copy(Rfb.Fb, Rfb.Width, Rfb.Height, f.XRect);
             var all = new Rectangle(0, 0, f.XRect.Width, f.XRect.Height);
             if (f.XClient != IntPtr.Zero && f.Visible && f.WindowState != FormWindowState.Minimized && mirror.Put(f.XClient, all, f.XRect.X, f.XRect.Y))
@@ -1132,6 +1182,7 @@ namespace GtVpn
             {
                 if (!f.Holding) continue;
                 if (DateTime.Now < f.HoldUntil) { any = true; continue; }
+                if (f.FillUntil != DateTime.MinValue) { fills++; fillsLate++; fillMaxMs = Math.Max(fillMaxMs, FillMs); }
                 EndHold(f);
             }
             if (!any) holdTimer.Stop();

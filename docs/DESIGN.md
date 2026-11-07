@@ -450,6 +450,20 @@ the same session twice:
   In the new strip, a one-colour change in another colour than the first
   one (the session's clear) is the program's own plain background, and is
   shown at once (lab: 108 ms instead of the hold's end at 313 ms).
+  The program's picture can come in pieces a round trip or more apart
+  (Xvnc sends what it has, in bands of up to 65536 pixels), and the first
+  piece used to end the hold, so what the program had not drawn yet showed
+  the session's clear (lab: in 3 of 9 runs, most of the new strip black
+  for ~50 ms). So once the program's pixels start, the old picture stays
+  until the program has drawn over everything the session cleared, or
+  100 ms (lab: 10 of 10 runs clean, two with the pieces 47-49 ms apart).
+  In a drag the program draws sizes already gone, so a drawing that stays
+  inside the part shown while the window has grown beyond it does not end
+  the hold either: it had let the clear of the next size in (lab, slowdraw
+  dragged one step every 30 ms: the whole window black in 13% of the
+  samples before, none more than half black now, 3% of its pixels black on
+  average instead of 15%). The viewer's log counts pictures that came in
+  pieces every 5 s ("came in pieces").
   Holding only from the session's word of the new size was not enough:
   over the X connection that word can come after the cleared background
   has come over VNC (the lab, the X connection 20 ms slower: 18-21%
