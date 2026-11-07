@@ -344,7 +344,9 @@ and the taskbar buttons say "Remote Desktop". `GTVPN_VIEWER` in `.env`
 chooses: `auto` (the default: the container when Smart App Control is on),
 `native` or `container`. In its container the viewer paints straight into its X windows
 (XPutImage) rather than through System.Drawing; `--paint gdi` in
-`GTVPN_VIEWER_ARGS` goes back to System.Drawing. The first time, it also
+`GTVPN_VIEWER_ARGS` goes back to System.Drawing. While you resize a window, it
+keeps the old picture (and the window's edge in the new strip) until Cadence
+has drawn the new size, instead of the session's blank background. The first time, it also
 adds two WSLg settings to `%USERPROFILE%\.wslgconfig`, keeping the rest of
 that file: your monitor's refresh rate (WSLg assumes 60 Hz) and local
 window moves (a dragged window moves on Windows' side at the screen's rate,

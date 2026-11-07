@@ -148,13 +148,15 @@ namespace GtVpn
                 var h = v.Handle;   // the UI thread's window exists before events arrive
                 if (!Native.IsWindows)
                 {
-                    string why = paint == "gdi" ? "--paint gdi" : XDirect.Init();
-                    v.Log("painting " + (why == null ? "straight into the X windows" : "through System.Drawing (" + why + ")"));
+                    string why = XDirect.Init(paint != "gdi");
+                    v.Log("painting " + (why == null ? "straight into the X windows" : "through System.Drawing (" + why + ")")
+                        + (XDirect.Server == null ? "" : "; X server here: " + XDirect.Server));
                 }
                 rfb.Connect(vh, vp);
                 v.Log("VNC " + rfb.Name + " " + rfb.Width + "x" + rfb.Height + "; asking for " + screen.Width + "x" + screen.Height
                     + "; " + (rfb.PreferZrle ? "zrle" : "tight") + " compress " + rfb.CompressLevel + " quality " + rfb.JpegQuality
-                    + "; continuous updates " + (rfb.UseContinuous ? "on" : "off") + ", fence " + (rfb.UseFence ? "on" : "off"));
+                    + "; continuous updates " + (rfb.UseContinuous ? "on" : "off") + ", fence " + (rfb.UseFence ? "on" : "off")
+                    + (Native.IsWindows ? "" : "; quick ACKs " + (QuickAck.On ? "on" : "off")));
                 v.OnResized(rfb.Width, rfb.Height);
                 rfb.RequestDesktopSize(screen.Width, screen.Height);
 
@@ -164,7 +166,7 @@ namespace GtVpn
                 // BadWindow (3): a window closed while a request to it was on its way.
                 x.AsyncError += delegate(XError e, int sq) { if (e.Code != 3) v.Log("X error " + e.Code + " from request " + e.Major); };
                 x.Connect(xh, xp, Hex(cookie));
-                var wm = new Wm(x, v) { OriginX = screen.X, OriginY = screen.Y };
+                var wm = new Wm(x, v) { OriginX = screen.X, OriginY = screen.Y, FrameKey = XDirect.ServerKey };
                 var wa = Screen.PrimaryScreen.WorkingArea;
                 wm.WorkArea = new Rectangle(wa.X - screen.X, wa.Y - screen.Y, wa.Width, wa.Height);
                 v.Wm = wm;

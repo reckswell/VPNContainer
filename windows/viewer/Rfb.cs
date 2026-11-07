@@ -8,6 +8,7 @@
 // under FbLock and then reports the changed rectangles.
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
@@ -18,6 +19,27 @@ using System.Threading;
 
 namespace GtVpn
 {
+    // Linux (Mono): ACK each piece of data at once (TCP_QUICKACK), set
+    // again after every read, since the kernel goes back to delayed ACKs on
+    // its own. ssh's local forward to the session's Unix socket leaves Nagle
+    // on for its end of the connection to this viewer, so the last small
+    // piece of an update waited for the ACK of the piece before, which Linux
+    // delays up to 40 ms when nothing goes back: Xvnc's round-trip pings came
+    // back late, its congestion control held back, and updates came about 43
+    // a second instead of 170 (lab, the same Nagle setting on that hop).
+    static class QuickAck
+    {
+        [DllImport("libc", SetLastError = true)] static extern int setsockopt(int fd, int level, int name, ref int value, int len);
+        static bool off = Native.IsWindows;
+        public static bool On { get { return !off; } }
+        public static void Arm(Socket s)
+        {
+            if (off) return;
+            try { int one = 1; if (setsockopt(s.Handle.ToInt32(), 6 /* IPPROTO_TCP */, 12 /* TCP_QUICKACK */, ref one, 4) != 0) off = true; }
+            catch (Exception) { off = true; }
+        }
+    }
+
     sealed class CursorShape
     {
         public int HotX, HotY, W, H;
@@ -63,6 +85,30 @@ namespace GtVpn
         readonly ZStream zrle = new ZStream();
         byte[] zin = new byte[1 << 16], zout = new byte[1 << 16];
         public long Frames, Bytes;
+        // Where the receive thread's time goes, for the viewer's log (Stopwatch
+        // ticks): waiting on the socket, waiting for FbLock, in Updated, and
+        // in writes (from either thread); and the most bytes left unread in
+        // the socket after a read since the last look (Backlog()).
+        public long ReadTicks, FbWaitTicks, CallTicks, WriteTicks;
+        int maxBacklog;
+        public int Backlog() { return Interlocked.Exchange(ref maxBacklog, 0); }
+
+        // FbLock for the receive thread, counting the wait when the UI holds it.
+        struct FbHold : IDisposable
+        {
+            readonly RfbClient c;
+            public FbHold(RfbClient c)
+            {
+                this.c = c;
+                if (!Monitor.TryEnter(c.FbLock))
+                {
+                    long t = Stopwatch.GetTimestamp();
+                    Monitor.Enter(c.FbLock);
+                    c.FbWaitTicks += Stopwatch.GetTimestamp() - t;
+                }
+            }
+            public void Dispose() { Monitor.Exit(c.FbLock); }
+        }
 
         public void Connect(string host, int port)
         {
@@ -70,6 +116,7 @@ namespace GtVpn
             tcp.NoDelay = true;
             tcp.ReceiveBufferSize = 4 << 20;
             tcp.Connect(host, port);
+            QuickAck.Arm(tcp.Client);
             ns = tcp.GetStream();
             string ver = Encoding.ASCII.GetString(Read(12));
             if (!ver.StartsWith("RFB 003.")) throw new IOException("not a VNC server: " + ver.Trim());
@@ -217,7 +264,7 @@ namespace GtVpn
                     case 0: Raw(x, y, w, h); dirty.Add(new Rectangle(x, y, w, h)); break;
                     case 1:
                         int sx = ReadU16(), sy = ReadU16();
-                        lock (FbLock) CopyRect(sx, sy, x, y, w, h);
+                        using (new FbHold(this)) CopyRect(sx, sy, x, y, w, h);
                         dirty.Add(new Rectangle(x, y, w, h)); break;
                     case 7: Tight(x, y, w, h); dirty.Add(new Rectangle(x, y, w, h)); break;
                     case 16: Zrle(x, y, w, h); dirty.Add(new Rectangle(x, y, w, h)); break;
@@ -246,12 +293,13 @@ namespace GtVpn
                 RequestUpdate(false);
             }
             else if (!continuous) RequestUpdate(true);
-            var u = Updated; if (u != null && dirty.Count > 0) u(dirty);
+            var u = Updated;
+            if (u != null && dirty.Count > 0) { long t = Stopwatch.GetTimestamp(); u(dirty); CallTicks += Stopwatch.GetTimestamp() - t; }
         }
 
         void Resize(int w, int h)
         {
-            lock (FbLock) { Width = w; Height = h; Fb = new int[w * h]; }
+            using (new FbHold(this)) { Width = w; Height = h; Fb = new int[w * h]; }
         }
 
         void Raw(int x, int y, int w, int h)
@@ -260,7 +308,7 @@ namespace GtVpn
             for (int r = 0; r < h; r++)
             {
                 ReadInto(row, 0, row.Length);
-                lock (FbLock) Buffer.BlockCopy(row, 0, Fb, ((y + r) * Width + x) * 4, row.Length);
+                using (new FbHold(this)) Buffer.BlockCopy(row, 0, Fb, ((y + r) * Width + x) * 4, row.Length);
             }
         }
 
@@ -302,7 +350,7 @@ namespace GtVpn
             {
                 byte[] p = Read(3);
                 int c = (p[0] << 16) | (p[1] << 8) | p[2];
-                lock (FbLock)
+                using (new FbHold(this))
                     for (int r = 0; r < h; r++)
                     {
                         int o = (y + r) * Width + x;
@@ -335,7 +383,7 @@ namespace GtVpn
                 ReadInto(zin, 0, clen);
                 zs[stream].Inflate(zin, 0, clen, zout, 0, size);
             }
-            lock (FbLock)
+            using (new FbHold(this))
             {
                 if (palette != null)
                 {
@@ -392,7 +440,7 @@ namespace GtVpn
                 var bd = bmp.LockBits(new Rectangle(0, 0, Math.Min(w, bmp.Width), Math.Min(h, bmp.Height)), ImageLockMode.ReadOnly, PixelFormat.Format32bppRgb);
                 try
                 {
-                    lock (FbLock)
+                    using (new FbHold(this))
                         for (int r = 0; r < bd.Height; r++)
                             Marshal.Copy(new IntPtr(bd.Scan0.ToInt64() + (long)r * bd.Stride), Fb, (y + r) * Width + x, bd.Width);
                 }
@@ -416,7 +464,7 @@ namespace GtVpn
             byte[] b = zr;
             var pal = new int[128];
             int p = 0;
-            lock (FbLock)
+            using (new FbHold(this))
             {
                 int[] fb = Fb; int stride = Width;
                 for (int ty = y; ty < y + h; ty += 64)
@@ -494,14 +542,24 @@ namespace GtVpn
         }
 
         // ---- I/O ------------------------------------------------------------
-        void Write(byte[] b) { lock (wlock) ns.Write(b, 0, b.Length); }
+        void Write(byte[] b)
+        {
+            long t = Stopwatch.GetTimestamp();
+            lock (wlock) ns.Write(b, 0, b.Length);
+            Interlocked.Add(ref WriteTicks, Stopwatch.GetTimestamp() - t);
+        }
 
         void Fill()
         {
             if (rpos == rlen) { rpos = 0; rlen = 0; }
+            long t = Stopwatch.GetTimestamp();
             int n = ns.Read(rbuf, rlen, rbuf.Length - rlen);
+            ReadTicks += Stopwatch.GetTimestamp() - t;
             if (n <= 0) throw new IOException("the VNC connection closed");
+            QuickAck.Arm(tcp.Client);
             rlen += n; Bytes += n;
+            int left = tcp.Available;
+            if (left > maxBacklog) maxBacklog = left;
         }
 
         void ReadInto(byte[] dst, int off, int n)

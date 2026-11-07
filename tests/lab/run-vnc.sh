@@ -153,6 +153,9 @@ if command -v mono >/dev/null && command -v mcs >/dev/null; then
   mcs -langversion:5 -optimize+ -target:winexe -out:"$KEYDIR/viewer.exe" -r:System.Windows.Forms.dll -r:System.Drawing.dll windows/viewer/*.cs >/dev/null \
     || bad "the viewer builds"
   sleep 1
+  # A frame kept without a key (by a viewer before the keys, under WSLg) is
+  # not this X server's: the windows must still land exactly (pixels below).
+  srv "xprop -display :$NW -root -f _GTVPN_FRAME 32c -set _GTVPN_FRAME '6, 27'"
   GTVPN_X_COOKIE=$CK DISPLAY=$D XAUTHORITY=$XA TMPDIR=$KEYDIR setsid -f mono "$KEYDIR/viewer.exe" \
     --vnc "127.0.0.1:$PW" --x11 "127.0.0.1:$QW" --label lab >/dev/null 2>&1 </dev/null
   srv "DISPLAY=:$NW nohup xlogo -geometry 400x300 -title gtvpn-lab-xlogo >/dev/null 2>&1 &"
@@ -187,6 +190,9 @@ print(same, 'of', len(pts), 'sample points match'); sys.exit(0 if same >= 90 els
 PY
   check "under Mono it paints straight into its X windows (XPutImage, not System.Drawing)" \
     grep -q 'painting straight into the X windows' "$KEYDIR/gtvpn-viewer.log"
+  # ssh's forward to the session's Unix socket leaves Nagle on towards the
+  # viewer; without quick ACKs, updates came about 40 a second instead of 170.
+  check "under Linux it ACKs the session's data at once (TCP_QUICKACK)" grep -q 'quick ACKs on' "$KEYDIR/gtvpn-viewer.log"
   # Mono's WinForms timers only tick once the main form has loaded; a
   # viewer that never shows its main form spun its message loop at 100%.
   idle(){ local p a b; p=$(pgrep -f -- "$KEYDIR/viewer.exe" | head -1); [[ -n $p ]] || return 1
@@ -200,6 +206,38 @@ PY
   keys(){ srv 'cat /tmp/gtvpn-lab-xev.log' | awk '/^KeyPress/{k=1} /^KeyRelease/{k=0} k && /keysym/{match($0, /keysym 0x[0-9a-f]+, [^)]*/); t=substr($0, RSTART, RLENGTH); sub(/.*, /, "", t); printf "%s", t; k=0}'; }
   typed(){ for _ in $(seq 10); do [[ $(keys) == *gtvpn*parenleft1*parenright* ]] && return 0; sleep 0.5; done; echo "keys seen: $(keys); clicks: $(srv 'grep -c ButtonPress /tmp/gtvpn-lab-xev.log')"; return 1; }
   check "clicks and typing (with shifted characters) reach the program in the session" typed
+  # Resizing: the session clears a resized window to its background before
+  # the program draws (slowdraw.py: black, 80 ms later). The viewer keeps the
+  # old picture and the edge until then, so the new strip is not black.
+  xauth -f "$KEYDIR/xa-s" add "127.0.0.1:$((QW - 6000))" MIT-MAGIC-COOKIE-1 "$CK" 2>/dev/null
+  DISPLAY=127.0.0.1:$((QW - 6000)) XAUTHORITY=$KEYDIR/xa-s setsid -f python3 tests/perf/slowdraw.py 80 400x300+200+150 gtvpn-lab-slow >/dev/null 2>&1
+  resized(){ local id out; shown gtvpn-lab-slow || return 1; sleep 1
+    id=$(desk xwininfo -root -tree | grep '"gtvpn-lab-slow"' | head -1 | awk '{print $1}')
+    out=$(DISPLAY=$D XAUTHORITY=$XA python3 tests/perf/stripwatch.py "$id" 200 500); echo "$out"
+    (( $(sed -n 's/.*(\([0-9]*\)%).*/\1/p' <<<"$out") < 10 )); }
+  check "while a window is resized, its new strip shows the window's edge, not the session's cleared background" resized
+  pkill -f 'tests/perf/slowdraw.py'
+  # Dragging, as under WSLg: its window manager (fakewm.cs stands in for it)
+  # frames each window, and after a drag that Windows showed by itself (a
+  # "local move") moves the frame without a word to the window. The
+  # session's window must follow; and a program that moves its own window
+  # (a dialog re-centring) must land it where it asked, here and there.
+  mcs -out:"$KEYDIR/fakewm.exe" tests/lab/fakewm.cs >/dev/null || bad "the stand-in window manager builds"
+  DISPLAY=$D XAUTHORITY=$XA setsid -f mono "$KEYDIR/fakewm.exe" >"$KEYDIR/fakewm.log" 2>&1 </dev/null
+  sleep 1
+  srv "DISPLAY=:$NW nohup xlogo -geometry 300x200+500+400 -title gtvpn-lab-drag >/dev/null 2>&1 &"
+  dgeom(){ desk xwininfo -name gtvpn-lab-drag 2>/dev/null | awk '/Window id/{id=$4} /Absolute upper-left X/{x=$NF} /Absolute upper-left Y/{y=$NF} END{print id, x, y}'; }
+  sgeom(){ srv "xwininfo -display :$NW -name gtvpn-lab-drag" | awk '/Absolute upper-left X/{x=$NF} /Absolute upper-left Y/{y=$NF} END{print x, y}'; }
+  # Until the session's window and the one here are both at $1 $2.
+  at(){ local s d; for _ in $(seq 20); do s=$(sgeom); d=$(dgeom); [[ $s == "$1 $2" && ${d#* } == "$1 $2" ]] && return 0; sleep 0.25; done
+    echo "in the session at $s, here at ${d#* }, asked for $1 $2"; return 1; }
+  dragged(){ local id x y; shown gtvpn-lab-drag || return 1; sleep 1; read -r id x y <<<"$(dgeom)"
+    desk xprop -root -f _FAKEWM_MOVE 32c -set _FAKEWM_MOVE "$((id)), $((x + 150)), $((y + 100))"
+    at $((x + 150)) $((y + 100)); }
+  check "a drag the window manager does not tell the window about (WSLg's local move) moves the session's window too" dragged
+  srv "DISPLAY=:$NW xdotool search --name '^gtvpn-lab-drag\$' windowmove 420 260"
+  check "a program that moves its own window lands it there, here and in the session" at 420 260
+  pkill -f -- "$KEYDIR/fakewm.exe"
   pkill -f -- "$KEYDIR/viewer.exe"; sleep 1
   check "after the viewer, wm (as attach does, for the TigerVNC viewer) brings metacity back" \
     bash -c "dev 'gtvpn-vnc cadence wm' | grep -q 'window manager restarted' && on_srv 'pgrep -u gtuser -x metacity' >/dev/null"

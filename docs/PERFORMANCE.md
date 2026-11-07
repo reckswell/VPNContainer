@@ -180,6 +180,17 @@ frames on screen than one drawing at 60/s. The viewer itself never used
 more than a third of one core of the PC. `--compress 0` moves the limit to
 the server's sshd (92% CPU at 19 MB/s) without more frames.
 
+Part of that pacing was the link's own: ssh's local forward to Xvnc's Unix
+socket leaves Nagle on for its end of the connection to the viewer, so the
+last small piece of each update, and Xvnc's one-byte round-trip ping after
+it, waited for an ACK that Linux delays up to 40 ms while the viewer has
+nothing to send. Xvnc's congestion control took that for a slow link and
+sent fewer frames (on the PC, 400x300 at 180/s flipped between about 40 and
+about 180 updates a second from run to run). Through a real OpenSSH
+forward in the lab it was 42 a second; the viewer now ACKs at once
+(TCP_QUICKACK after every read, under Linux) and gets 163-176. The table
+above predates that.
+
 ## How `gtvpn vnc` is built
 
 - **Server:** `Xvnc` (TigerVNC, from the server's own packages) on a

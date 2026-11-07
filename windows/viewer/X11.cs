@@ -164,7 +164,13 @@ namespace GtVpn
         byte[] ReadN(int n)
         {
             var b = new byte[n]; int o = 0;
-            while (o < n) { int k = s.Read(b, o, n - o); if (k <= 0) throw new IOException("the session's X connection closed"); o += k; }
+            while (o < n)
+            {
+                int k = s.Read(b, o, n - o);
+                if (k <= 0) throw new IOException("the session's X connection closed");
+                o += k;
+                QuickAck.Arm(tcp.Client);   // (the same forward, the same Nagle: replies waited too)
+            }
             BytesIn += n;
             return b;
         }
@@ -255,12 +261,21 @@ namespace GtVpn
         // puts a new window's frame at the place it asks for: how far in from
         // the frame its client area is (-1: not measured yet). It is kept on
         // the session's root window (_GTVPN_FRAME), so a viewer started
-        // again places windows exactly at once.
+        // again places windows exactly at once: one entry (key, x, y) per X
+        // server on this side (FrameKey, from its vendor and release), since
+        // the session can be shown by another one (WSLg's, MobaXterm's)
+        // whose window manager frames windows differently or not at all.
         public int FrameX = -1, FrameY = -1;
+        public uint FrameKey;
+        readonly List<uint> frames = new List<uint>();
         public void SaveFrame(int fx, int fy)
         {
             FrameX = fx; FrameY = fy;
-            SetCardinals(x.Root, A_GTVPN_FRAME, CARDINAL, (uint)fx, (uint)fy);
+            for (int i = 0; i + 2 < frames.Count; i += 3)
+                if (frames[i] == FrameKey) { frames.RemoveRange(i, 3); break; }
+            frames.InsertRange(0, new[] { FrameKey, (uint)fx, (uint)fy });
+            if (frames.Count > 12) frames.RemoveRange(12, frames.Count - 12);   // the 4 newest
+            SetCardinals(x.Root, A_GTVPN_FRAME, CARDINAL, frames.ToArray());
         }
 
         uint Atom(string name)
@@ -290,8 +305,15 @@ namespace GtVpn
             A_NET_WM_WINDOW_TYPE_DIALOG = a[k++]; A_NET_CLIENT_LIST = a[k++]; A_NET_MOVERESIZE_WINDOW = a[k++]; A_NET_CLOSE_WINDOW = a[k++]; A_WM_S0 = a[k++];
             A_MOTIF_WM_HINTS = a[k++]; A_NET_WM_WINDOW_TYPE_SPLASH = a[k++]; A_NET_WM_ICON = a[k++]; A_GTVPN_FRAME = a[k++];
             // The frame of this computer's window manager, as an earlier viewer measured it.
+            // (A pair without a key is from a viewer before the keys: unknown.)
             uint[] fr = PropU32(x.Call(GetProp(x.Root, A_GTVPN_FRAME, CARDINAL)));
-            if (fr.Length == 2 && fr[0] <= 64 && fr[1] <= 96) { FrameX = (int)fr[0]; FrameY = (int)fr[1]; }
+            if (fr.Length % 3 == 0)
+                for (int i = 0; i < fr.Length; i += 3)
+                {
+                    if (fr[i + 1] > 64 || fr[i + 2] > 96) continue;
+                    frames.AddRange(new[] { fr[i], fr[i + 1], fr[i + 2] });
+                    if (fr[i] == FrameKey && FrameX < 0) { FrameX = (int)fr[i + 1]; FrameY = (int)fr[i + 2]; }
+                }
 
             // Our own (invisible) window: the WM_S0 owner and EWMH check window.
             me = x.NewId();

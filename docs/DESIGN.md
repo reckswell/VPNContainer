@@ -395,7 +395,12 @@ the same session twice:
   when it creates it, frame first: the viewer places windows before they
   exist, learns the frame's size from the first one that lands and keeps
   it on the session's root (`_GTVPN_FRAME`), so client areas land on the
-  session's coordinates and a restarted viewer moves nothing. Popups are
+  session's coordinates and a restarted viewer moves nothing. The frame is
+  kept per X server on this side (a key from its vendor and release), since
+  another one, such as MobaXterm's, frames windows differently or not at
+  all. A new window that stays where it was put to allow for the kept
+  frame, 2 s after it showed, has none: the session's window follows it,
+  and no frame is kept for that X server from then on. Popups are
   `WS_POPUP` without a caption, which Mono makes override-redirect, so
   menus and tooltips stay where Cadence puts them.
   Every paint there is a picture sent to WSLg's X server, which passes it
@@ -434,15 +439,49 @@ the same session twice:
   new size, the part of the native window beyond it shows the window's
   edge carried outwards (its last column and row) instead of a grey band,
   and a window that grows gets that at once rather than after the X
-  server's expose.
+  server's expose. Once the session's window has the new size, the session
+  first clears it to its background (all of it for a window without bit
+  gravity, the new strip for one with it) and only then does the program
+  draw. So from the moment it asks for the new size, for up to 150 ms
+  (400 ms in a long drag), the viewer keeps changes there that are all one
+  colour out of its picture, and shows the old picture and the edge until
+  the program's own pixels arrive (lab, a window drawing 80 ms after each
+  expose: the new strip was black in 18-24% of the samples, now 1-4%).
+  Holding only from the session's word of the new size was not enough:
+  over the X connection that word can come after the cleared background
+  has come over VNC (the lab, the X connection 20 ms slower: 18-21%
+  black).
+  Under Linux the viewer sets TCP_QUICKACK on its connections again after
+  every read. ssh's local forward to the session's Unix socket does not
+  set TCP_NODELAY on its side of the connection to the viewer, so ssh's
+  writes go out under Nagle: the last small piece of an update (and Xvnc's
+  one-byte round-trip ping after it) waited for the ACK of the piece before,
+  which Linux delays up to 40 ms while the viewer has nothing to send.
+  Xvnc's congestion control saw those late pings as a slow link. Through a
+  real OpenSSH forward in the lab, 400x300 at 180 frames a second came at
+  about 42 updates a second without quick ACKs and 163-176 with them; on
+  the test PC it had flipped between the two from one run to the next.
   `gtvpn vnc <host> windows` also adds two settings to
   `%USERPROFILE%\.wslgconfig` under `[system-distro-env]`, keeping every
   other line and any value set by hand: `WESTON_RDP_MONITOR_REFRESH_RATE`
   (the monitor's rate from `Win32_VideoController`; WSLg assumes 60) and
   `WESTON_RDPRAIL_SHELL_LOCAL_MOVE=true`, with which msrdc moves a dragged
-  window itself, at the screen's rate, and Weston (so the viewer) hears of
-  the move once, at the drop; without it Weston moves the window about 24
-  steps a second. WSLg reads the file when WSL starts, and `wsl
+  window itself, at the screen's rate, and Weston hears of the move once,
+  at the drop; without it Weston moves the window about 24 steps a second.
+  At the drop Weston's window manager moves the window's frame and tells
+  the window nothing: no ConfigureNotify, which ICCCM asks for, so Mono
+  never saw the move and the session's window stayed where the drag
+  began, its menus opening there. So under mono the viewer looks where
+  each window's client area is every 100 ms (one XTranslateCoordinates
+  each), moves the session's window when it moved, and sends Mono's
+  window the ConfigureNotify the window manager left out, so Mono knows
+  its place for the next move. A move a program makes itself goes to
+  WSLg's window manager as the frame's place, so the viewer allows for
+  the frame it measured; it used to read the window's place right after
+  asking, before the window manager had moved it, and moved the window
+  off by the distance. The lab checks both under `tests/lab/fakewm.cs`, a
+  stand-in for WSLg's window manager that frames windows and moves them
+  the same way. WSLg reads the file when WSL starts, and `wsl
   --shutdown` would also stop Docker Desktop and the tunnel, so the CLI
   says so and leaves the restart to the user.
   The frames are WSLg's (Weston's) rather than Windows 11's.
