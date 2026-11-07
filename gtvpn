@@ -715,17 +715,22 @@ VIEWER_IMAGE=gtvpn-viewer:local
 vnc_windows_container() { # cookie viewer-options...
   local c=$1 base x d; shift
   base=${GTVPN_BASE_IMAGE:-$(envget GTVPN_BASE_IMAGE)}; x=$(envget GTVPN_X11_DIR); d=$(envget GTVPN_DISPLAY)
-  engine image inspect "$VIEWER_IMAGE" >/dev/null 2>&1 \
-    || say "building the viewer's container image (once: it downloads mono, about 180 MB)" >&2
-  engine build -q --build-arg BASE_IMAGE="${base:-ubuntu:24.04}" -t "$VIEWER_IMAGE" "$HERE/windows/viewer" >/dev/null \
-    || die "could not build the viewer's container image (windows/viewer/Dockerfile)"
+  local img=${GTVPN_VIEWER_IMAGE:-$VIEWER_IMAGE}
+  # GTVPN_VIEWER_IMAGE in the environment: run that image as it is (to
+  # compare builds), rather than this checkout's.
+  if [[ -z ${GTVPN_VIEWER_IMAGE:-} ]]; then
+    engine image inspect "$VIEWER_IMAGE" >/dev/null 2>&1 \
+      || say "building the viewer's container image (once: it downloads mono, about 180 MB)" >&2
+    engine build -q --build-arg BASE_IMAGE="${base:-ubuntu:24.04}" -t "$VIEWER_IMAGE" "$HERE/windows/viewer" >/dev/null \
+      || die "could not build the viewer's container image (windows/viewer/Dockerfile)"
+  fi
   # One viewer at a time, in a new container each time: it shares the gtvpn
   # container's network as it is now (the forwards are its 127.0.0.1 ports).
   engine rm -f "$NAME-viewer" >/dev/null 2>&1 || true
   local -a o=(--name "$NAME-viewer" --network "container:$NAME" --user "$(id -u):$(id -g)" -e HOME=/tmp
     -e DISPLAY="${d:-:0}" -v "${x:-/tmp/.X11-unix}:/tmp/.X11-unix:ro")
   [[ -s runtime/in/xauth ]] && o+=(-v "$HERE/runtime/in/xauth:/xauth:ro" -e XAUTHORITY=/xauth)
-  engine run -d --rm --init "${o[@]}" "$VIEWER_IMAGE" sleep infinity >/dev/null || die "could not start the viewer's container"
+  engine run -d --rm --init "${o[@]}" "$img" sleep infinity >/dev/null || die "could not start the viewer's container"
   # The cookie goes through stdin: never on a command line or in the container's settings.
   printf '%s\n' "$c" | engine exec -i "$NAME-viewer" sh -c \
     'read -r c; GTVPN_X_COOKIE=$c setsid -f mono /opt/gtvpn/gtvpn-viewer.exe "$@" >/dev/null 2>&1 </dev/null' sh "$@" \

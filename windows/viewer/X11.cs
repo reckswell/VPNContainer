@@ -24,6 +24,7 @@ namespace GtVpn
     sealed class XConn
     {
         TcpClient tcp; Stream s;
+        public long BytesIn, BytesOut, Requests;   // for the viewer's stats line
         readonly object wlock = new object();
         int seq;
         sealed class Pending { public readonly ManualResetEvent Done = new ManualResetEvent(false); public byte[] Reply; public XError Error; }
@@ -78,6 +79,7 @@ namespace GtVpn
                     lock (pending) pending[sq] = p;
                 }
                 s.Write(bytes, 0, bytes.Length);
+                BytesOut += bytes.Length; Requests++;
             }
             return p;
         }
@@ -118,6 +120,7 @@ namespace GtVpn
                 sq = ++seq & 0xffff;
                 lock (pending) pending[sq] = p;
                 s.Write(bytes, 0, bytes.Length);
+                BytesOut += bytes.Length; Requests++;
             }
             Call(new Req(43));
             lock (pending) pending.Remove(sq);
@@ -162,6 +165,7 @@ namespace GtVpn
         {
             var b = new byte[n]; int o = 0;
             while (o < n) { int k = s.Read(b, o, n - o); if (k <= 0) throw new IOException("the session's X connection closed"); o += k; }
+            BytesIn += n;
             return b;
         }
 

@@ -672,7 +672,7 @@ namespace GtVpn
         // for the stats line: paint messages (exposes and invalidations),
         // edge fills, and moves and resizes asked of the session.
         long messages, moves, resizes;
-        long[] lastMore = new long[4];
+        long[] lastMore = new long[6];
         // Ends the guard of a moved window when no update comes to do it.
         readonly System.Windows.Forms.Timer guardTimer = new System.Windows.Forms.Timer { Interval = 50 };
         // Sends a waiting resize when the session has not confirmed the one before in time.
@@ -712,13 +712,14 @@ namespace GtVpn
             if (dt < 1) return;
             lastStat = now;
             long f = Rfb.Frames, b = Rfb.Bytes, p = paints;
-            var more = new[] { messages, mirror.Edges, moves, resizes };
+            var more = new[] { messages, mirror.Edges, moves, resizes, X == null ? 0 : X.Requests, X == null ? 0 : X.BytesIn + X.BytesOut };
             var cpu = System.Diagnostics.Process.GetCurrentProcess().TotalProcessorTime;
             if (Debug) { Log("tick frames " + f); lock (Rfb.FbLock) mirror.Save(Path.Combine(Path.GetTempPath(), "gtvpn-mirror.png")); }
-            if (f != lastFrames || p != lastPaints || more[3] != lastMore[3])
-                Log(string.Format("updates/s {0:F1}  MB/s {1:F2}  paints/s {2:F1} (messages {5:F1}, edges {6:F1})  cpu {3:F0}%  windows {4}  moves/s {7:F1}  resizes/s {8:F1}",
+            if (f != lastFrames || p != lastPaints || more[3] != lastMore[3] || more[4] != lastMore[4])
+                Log(string.Format("updates/s {0:F1}  MB/s {1:F2}  paints/s {2:F1} (messages {5:F1}, edges {6:F1})  cpu {3:F0}%  windows {4}  moves/s {7:F1}  resizes/s {8:F1}  session X: requests/s {9:F1} kB/s {10:F1}",
                     (f - lastFrames) / dt, (b - lastBytes) / dt / 1e6, (p - lastPaints) / dt, (cpu - lastCpu).TotalSeconds / dt * 100, forms.Count,
-                    (more[0] - lastMore[0]) / dt, (more[1] - lastMore[1]) / dt, (more[2] - lastMore[2]) / dt, (more[3] - lastMore[3]) / dt));
+                    (more[0] - lastMore[0]) / dt, (more[1] - lastMore[1]) / dt, (more[2] - lastMore[2]) / dt, (more[3] - lastMore[3]) / dt,
+                    (more[4] - lastMore[4]) / dt, (more[5] - lastMore[5]) / dt / 1e3));
             lastFrames = f; lastBytes = b; lastPaints = p; lastCpu = cpu; lastMore = more;
             tray.Text = ("gtvpn viewer: " + Label).Substring(0, Math.Min(63, ("gtvpn viewer: " + Label).Length));
         }
