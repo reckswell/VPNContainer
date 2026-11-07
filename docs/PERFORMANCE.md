@@ -59,7 +59,7 @@ running).
 |---|---|
 | `ssh -Y` with compression (the default) | Fine for core-X programs (xterm, older Cadence forms), slow for Qt5 canvases: 6 frames/s |
 | Faster ssh cipher (aes128-gcm) | No gain: the link, not encryption, is the limit |
-| WSLg at 144 Hz (`.wslgconfig`) | Raises a ceiling X11 never reaches here; needs `wsl --shutdown`, which also stops Docker Desktop and the tunnel. Not worth it |
+| WSLg at the monitor's rate (`.wslgconfig`) | Over `ssh -Y`, it raises a ceiling X11 never reaches. With the viewer in its container (Smart App Control on), WSLg shows every frame, so `gtvpn vnc <host> windows` adds the monitor's rate and local window moves there; they apply after `wsl --shutdown`, which also stops Docker Desktop and the tunnel, so it says so rather than doing it |
 | VcXsrv, X410 or MobaXterm instead of WSLg | The same X11 protocol over the same tunnel, so the same limits, plus an X server listening on your computer |
 | **TigerVNC** (chosen): the server's own `Xvnc` | X server on the GT server, compressed updates, sessions survive disconnects. TigerVNC's viewer shows one desktop in one window, with Linux-style title bars inside |
 | **gtvpn's own viewer** for that Xvnc (chosen on Windows) | Each Cadence window becomes a native Windows window: the viewer is a VNC client for the pictures and the session's window manager for the window list. Nothing new on the server; built from source with the C# compiler in Windows |

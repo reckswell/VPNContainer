@@ -670,6 +670,47 @@ vnc_viewer_mode() {
   elif command -v mono >/dev/null && command -v mcs >/dev/null; then echo native
   else echo container; fi
 }
+# WSLg (Windows' support for Linux windows, which shows the viewer's windows
+# when it runs in a container) reads %USERPROFILE%\.wslgconfig when WSL
+# starts. Two of its settings matter here: the monitor's refresh rate (WSLg
+# assumes 60 Hz and sends no more frames than that), and local moves (a
+# dragged window then moves on Windows' side, at the screen's rate, rather
+# than one step at a time through WSLg, about 24 a second). wslg_config adds
+# what is missing under [system-distro-env], keeps every other line (and a
+# value set by hand), and prints what it added.
+wslg_config() { # file refresh-Hz (empty or 60 or less: leave the rate alone)
+  local f=$1 hz=${2:-} cr="" kv tmp
+  local -a want=(WESTON_RDPRAIL_SHELL_LOCAL_MOVE=true) add=()
+  [[ $hz =~ ^[0-9]+$ ]] && (( hz > 60 )) && want=("WESTON_RDP_MONITOR_REFRESH_RATE=$hz" "${want[@]}")
+  for kv in "${want[@]}"; do
+    grep -qiE "^[[:space:]]*${kv%%=*}[[:space:]]*=" "$f" 2>/dev/null || add+=("$kv")
+  done
+  (( ${#add[@]} )) || return 0
+  # Windows' line ends, as the file has them (or for a new one).
+  if [[ ! -s $f ]] || grep -q $'\r$' "$f"; then cr=$'\r'; fi
+  tmp=$(mktemp)
+  if grep -qiE '^[[:space:]]*\[system-distro-env\]' "$f" 2>/dev/null; then
+    ADD=$(printf "%s$cr\n" "${add[@]}") awk '
+      { print }
+      !done && tolower($0) ~ /^[ \t]*\[system-distro-env\]/ { printf "%s\n", ENVIRON["ADD"]; done = 1 }' "$f" > "$tmp"
+  else
+    { if [[ -s $f ]]; then cat "$f"; [[ -z $(tail -c1 "$f") ]] || printf '%s\n' "$cr"; fi
+      printf '[system-distro-env]%s\n' "$cr"; printf "%s$cr\n" "${add[@]}"; } > "$tmp"
+  fi
+  if ! cat "$tmp" > "$f"; then rm -f "$tmp"; return 1; fi
+  rm -f "$tmp"
+  printf '%s\n' "${add[@]}"
+}
+wslg_settings() { # Windows: the settings above, in %USERPROFILE%\.wslgconfig
+  local up f hz added
+  up=$(win_env USERPROFILE) || return 0
+  f=$(wslpath -u "$up")/.wslgconfig
+  # The monitor's refresh rate (the highest, with several), unless one is set.
+  grep -qiE '^[[:space:]]*WESTON_RDP_MONITOR_REFRESH_RATE[[:space:]]*=' "$f" 2>/dev/null \
+    || hz=$(powershell.exe -NoProfile -Command '(Get-CimInstance Win32_VideoController | Measure-Object -Property CurrentRefreshRate -Maximum).Maximum' 2>/dev/null | tr -d '\r')
+  added=$(wslg_config "$f" "$hz") || { warn "could not update $up\\.wslgconfig"; return 0; }
+  [[ -z $added ]] || say "set $(echo $added) in $up\\.wslgconfig, for smoother redraws and window drags. WSLg reads it when WSL starts: run wsl --shutdown when convenient (it also stops Docker Desktop and the VPN), then start again"
+}
 VIEWER_IMAGE=gtvpn-viewer:local
 vnc_windows_container() { # cookie viewer-options...
   local c=$1 base x d; shift
@@ -701,6 +742,7 @@ vnc_windows() { # host display: open the viewer on the session
   [[ $extra =~ ^[-a-zA-Z0-9\ ._]*$ ]] || die "GTVPN_VIEWER_ARGS in .env may hold only options such as: --encoding tight"
   [[ -z $extra ]] || args+=" $extra"
   if [[ $mode == container ]]; then
+    ! is_wsl || wslg_settings
     # shellcheck disable=SC2086
     vnc_windows_container "$c" $args
     if is_wsl; then say "viewer opening in a container (Smart App Control is on): WSLg shows each window of the session as a window of its own"

@@ -425,6 +425,26 @@ the same session twice:
   internals or the X visual are not as expected, or with
   `GTVPN_VIEWER_ARGS=--paint gdi`, it paints through System.Drawing as
   before; its log says which.
+  WSLg resizes a window step by step, and under mono each step reaches the
+  viewer as a resize (there is no Windows move/size loop to throttle). One
+  resize at a time goes to the session: the newest size waits until the
+  session confirms the one before, or 100 ms. Asking for every step had
+  Cadence draw sizes already gone (lab, one drag over an 80 ms round trip:
+  20 resizes in the session, now 6). Until the session's window has the
+  new size, the part of the native window beyond it shows the window's
+  edge carried outwards (its last column and row) instead of a grey band,
+  and a window that grows gets that at once rather than after the X
+  server's expose.
+  `gtvpn vnc <host> windows` also adds two settings to
+  `%USERPROFILE%\.wslgconfig` under `[system-distro-env]`, keeping every
+  other line and any value set by hand: `WESTON_RDP_MONITOR_REFRESH_RATE`
+  (the monitor's rate from `Win32_VideoController`; WSLg assumes 60) and
+  `WESTON_RDPRAIL_SHELL_LOCAL_MOVE=true`, with which msrdc moves a dragged
+  window itself, at the screen's rate, and Weston (so the viewer) hears of
+  the move once, at the drop; without it Weston moves the window about 24
+  steps a second. WSLg reads the file when WSL starts, and `wsl
+  --shutdown` would also stop Docker Desktop and the tunnel, so the CLI
+  says so and leaves the restart to the user.
   The frames are WSLg's (Weston's) rather than Windows 11's.
   `GTVPN_VIEWER` overrides the choice; the state comes from
   `HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy`

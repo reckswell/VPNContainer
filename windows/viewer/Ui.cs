@@ -401,6 +401,63 @@ namespace GtVpn
             else if (gb != null) g.DrawImage(gb, dst, new Rectangle(sx, sy, dst.Width, dst.Height), GraphicsUnit.Pixel);
         }
 
+        // Mono: fills the part of clip (client-area coordinates) outside the
+        // session window's size with that window's edge carried outwards: its
+        // last column to the right, its last row below, its corner pixel in
+        // the corner. While a resize catches up, the border being dragged then
+        // shows the window's own edge, not a grey band. xr is the session
+        // window in the framebuffer. False if it cannot, and then nothing is
+        // drawn.
+        public bool PutEdges(IntPtr win, Rectangle xr, Rectangle clip)
+        {
+            if (ximg == IntPtr.Zero || win == IntPtr.Zero || xr.Width <= 0 || xr.Height <= 0) return false;
+            int ex = xr.Right - 1, ey = xr.Bottom - 1;
+            if (xr.X < 0 || xr.Y < 0 || ex >= w || ey >= h) return false;   // its edge is not in the framebuffer
+            const int far = 1 << 20;
+            var right = Rectangle.Intersect(clip, new Rectangle(xr.Width, 0, far, far));
+            var below = Rectangle.Intersect(clip, new Rectangle(0, xr.Height, xr.Width, far));
+            if (right.Width > 0 && right.Height > 0)
+            {
+                var t = Scratch(right.Width * right.Height);
+                for (int y = 0; y < right.Height; y++)
+                {
+                    int c = px[(xr.Y + Math.Min(right.Y + y, xr.Height - 1)) * w + ex];
+                    for (int x = 0, o = y * right.Width; x < right.Width; x++) t[o + x] = c;
+                }
+                PutScratch(win, right);
+            }
+            if (below.Width > 0 && below.Height > 0)
+            {
+                var t = Scratch(below.Width * below.Height);
+                Array.Copy(px, ey * w + xr.X + below.X, t, 0, below.Width);
+                for (int y = 1; y < below.Height; y++) Array.Copy(t, 0, t, y * below.Width, below.Width);
+                PutScratch(win, below);
+            }
+            return true;
+        }
+
+        int[] scratch;
+        GCHandle scratchPin;
+
+        int[] Scratch(int n)
+        {
+            if (scratch == null || scratch.Length < n)
+            {
+                if (scratchPin.IsAllocated) scratchPin.Free();
+                scratch = new int[Math.Max(n, 1 << 16)];
+                scratchPin = GCHandle.Alloc(scratch, GCHandleType.Pinned);
+            }
+            return scratch;
+        }
+
+        void PutScratch(IntPtr win, Rectangle dst)
+        {
+            IntPtr img = XDirect.Image(scratchPin.AddrOfPinnedObject(), dst.Width, dst.Height);
+            if (img == IntPtr.Zero) return;
+            XDirect.Put(win, img, 0, 0, dst.X, dst.Y, dst.Width, dst.Height);
+            XDirect.FreeImage(img);
+        }
+
         // Mono: puts the pixels at (sx, sy) into the X window win at dst
         // (XDirect). False if it cannot, and then nothing is drawn.
         public bool Put(IntPtr win, Rectangle dst, int sx, int sy)
@@ -435,6 +492,13 @@ namespace GtVpn
         public DateTime GuardStart, GuardUntil;
         public readonly List<Point> Requested = new List<Point>();  // moves sent to the session, not yet confirmed
         public IntPtr XClient;               // Mono: the X window of the client area, for XDirect
+        // Mono: WSLg resizes a window step by step. One resize at a time goes
+        // to the session: the size asked for and when (Empty: none), and the
+        // newest size from here, which waits until the session confirms.
+        public Size ResizeSent;
+        public DateTime ResizeSentAt;
+        public Rectangle? ResizeNext;
+        public Size Painted;                 // Mono: the client size last painted (OnResize puts only what is new)
 
         public XForm(Viewer v, XWin w, XForm owner)
         {
@@ -557,6 +621,7 @@ namespace GtVpn
             base.OnResize(e);
             // Not before Ready: while Windows creates a frameless window it
             // briefly gives it a caption at the default size and place.
+            if (WindowState != FormWindowState.Minimized) v.PaintNew(this);
             if (Applying || !Ready) return;
             if (WindowState == FormWindowState.Minimized) { v.Minimized(this); return; }
             v.NativeMoved(this, false);
@@ -602,11 +667,15 @@ namespace GtVpn
         long paints, lastFrames, lastBytes, lastPaints; DateTime lastStat = DateTime.Now; TimeSpan lastCpu;
         // Ends the guard of a moved window when no update comes to do it.
         readonly System.Windows.Forms.Timer guardTimer = new System.Windows.Forms.Timer { Interval = 50 };
+        // Sends a waiting resize when the session has not confirmed the one before in time.
+        readonly System.Windows.Forms.Timer resizeTimer = new System.Windows.Forms.Timer { Interval = 25 };
+        const int ResizeWaitMs = 100;        // Mono: the longest a resize waits for the one before to be confirmed
         const int GuardMs = 300;             // the longest a moved window waits for its pixels
 
         public Viewer(TextWriter log)
         {
             guardTimer.Tick += delegate { CheckGuards(); };
+            resizeTimer.Tick += delegate { CheckResizes(); };
             this.log = log;
             ShowInTaskbar = false; WindowState = FormWindowState.Minimized; FormBorderStyle = FormBorderStyle.FixedToolWindow;
             Opacity = 0; Size = new Size(1, 1);
@@ -722,7 +791,7 @@ namespace GtVpn
                 if (f.Guarded) continue;
                 // Mono: straight into the window (XDirect) while it is on the
                 // screen, rather than a paint message and System.Drawing.
-                bool direct = f.XClient != IntPtr.Zero && f.Visible && f.WindowState != FormWindowState.Minimized;
+                bool direct = f.XClient != IntPtr.Zero && f.Visible && f.WindowState != FormWindowState.Minimized, edge = false;
                 List<Rectangle> over = null;
                 foreach (var r in rs)
                 {
@@ -732,11 +801,20 @@ namespace GtVpn
                     foreach (var p in over == null || over.Count == 0 ? new List<Rectangle> { i } : Outside(i, over))
                     {
                         var local = new Rectangle(p.X - f.XRect.X, p.Y - f.XRect.Y, p.Width, p.Height);
-                        if (direct && mirror.Put(f.XClient, local, p.X, p.Y)) { put = true; Interlocked.Increment(ref paints); }
+                        if (direct && mirror.Put(f.XClient, local, p.X, p.Y))
+                        {
+                            put = true; Interlocked.Increment(ref paints);
+                            if (p.Right == f.XRect.Right || p.Bottom == f.XRect.Bottom) edge = true;
+                        }
                         else f.Invalidate(local);
                         if (Debug) Log((direct ? "put " : "invalidate ") + f.Win.Id.ToString("x") + " " + p);
                     }
                 }
+                // While a resize catches up, the strip beyond the session's
+                // window shows its edge: that follows the edge's new pixels.
+                var cs = f.ClientSize;
+                if (edge && (cs.Width > f.XRect.Width || cs.Height > f.XRect.Height))
+                    mirror.PutEdges(f.XClient, f.XRect, new Rectangle(Point.Empty, cs));
             }
             if (put) XDirect.Flush();
             CheckGuards();
@@ -870,6 +948,8 @@ namespace GtVpn
             // updates go on arriving while a paint takes long.)
             if (inside.Width > 0 && inside.Height > 0 && !mirror.Put(f.XClient, inside, f.XRect.X + inside.X, f.XRect.Y + inside.Y))
                 mirror.Paint(g, inside, f.XRect.X + inside.X, f.XRect.Y + inside.Y);
+            f.Painted = f.ClientSize;
+            if (inside == clip || mirror.PutEdges(f.XClient, f.XRect, clip)) return;
             using (var region = new Region(clip))
             {
                 region.Exclude(inside);
@@ -1050,12 +1130,30 @@ namespace GtVpn
             // content would trail its frame. (Compared with the size last asked
             // for: dragging a maximized window out resizes it first.)
             if (w == f.Win.W && h == f.Win.H && f.InSizeMove && !final) return;
-            bool move = w == f.XRect.Width && h == f.XRect.Height;
             // Resizing by a border sends at most one change per 15 ms.
             var now = DateTime.Now;
             if (!final && f.InSizeMove && (now - f.LastSent).TotalMilliseconds < 15) return;
             f.LastSent = now;
-            if (x == f.Win.X && y == f.Win.Y && w == f.Win.W && h == f.Win.H) return;
+            Send(f, x, y, w, h);
+        }
+
+        // Asks the session to put the window here (client area, session coordinates).
+        void Send(XForm f, int x, int y, int w, int h)
+        {
+            if (x == f.Win.X && y == f.Win.Y && w == f.Win.W && h == f.Win.H) { f.ResizeNext = null; return; }
+            bool move = w == f.XRect.Width && h == f.XRect.Height;
+            // Mono: WSLg's resize steps each come here (Windows' own loop above
+            // has InSizeMove). While the session has not confirmed the size
+            // asked for, the newest one waits (SendNext): asking for every step
+            // had the program draw sizes already gone, and the window's content
+            // trailed its border further behind.
+            if (!move && !Native.IsWindows && f.ResizeSent != Size.Empty && (DateTime.Now - f.ResizeSentAt).TotalMilliseconds < ResizeWaitMs)
+            {
+                f.ResizeNext = new Rectangle(x, y, w, h);
+                resizeTimer.Start();
+                return;
+            }
+            f.ResizeNext = null;
             f.Win.X = x; f.Win.Y = y; f.Win.W = w; f.Win.H = h;
             if (move)
             {
@@ -1066,8 +1164,58 @@ namespace GtVpn
                 if (f.Requested.Count > 16) f.Requested.RemoveAt(0);
                 Wm.Move(f.Win.Id, x, y);
             }
-            else Wm.Configure(f.Win.Id, x, y, w, h);
+            else
+            {
+                Wm.Configure(f.Win.Id, x, y, w, h);
+                if (!Native.IsWindows) { f.ResizeSent = new Size(w, h); f.ResizeSentAt = DateTime.Now; resizeTimer.Start(); }
+            }
             Wm.SetMaximized(f.Win.Id, f.WindowState == FormWindowState.Maximized);
+        }
+
+        // Mono: the waiting resize, once the one before is confirmed or late.
+        void SendNext(XForm f)
+        {
+            var next = f.ResizeNext;
+            if (next == null) return;
+            var n = next.Value;
+            f.ResizeNext = null;
+            Send(f, n.X, n.Y, n.Width, n.Height);
+        }
+
+        void CheckResizes()
+        {
+            bool any = false;
+            foreach (var f in forms.Values)
+            {
+                if (f.ResizeSent == Size.Empty) continue;
+                if ((DateTime.Now - f.ResizeSentAt).TotalMilliseconds < ResizeWaitMs) { any = true; continue; }
+                f.ResizeSent = Size.Empty;           // not confirmed in time (the program may keep another size)
+                SendNext(f);
+                if (f.ResizeSent != Size.Empty) any = true;
+            }
+            if (!any) resizeTimer.Stop();
+        }
+
+        // Mono: right after the window grows, its new part gets the picture
+        // (and the edge beyond the session's window) at once, before the X
+        // server's expose comes back through the message loop.
+        public void PaintNew(XForm f)
+        {
+            if (f.XClient == IntPtr.Zero || !f.Visible) return;
+            var cs = f.ClientSize; var old = f.Painted;
+            f.Painted = cs;
+            if (cs.Width <= old.Width && cs.Height <= old.Height) return;
+            var news = new List<Rectangle>();
+            if (cs.Width > old.Width) news.Add(new Rectangle(old.Width, 0, cs.Width - old.Width, cs.Height));
+            if (cs.Height > old.Height) news.Add(new Rectangle(0, old.Height, Math.Min(old.Width, cs.Width), cs.Height - old.Height));
+            var xr = new Rectangle(0, 0, f.XRect.Width, f.XRect.Height);
+            foreach (var r in news)              // (the mirror is the UI thread's own, as in PaintForm)
+            {
+                var inside = Rectangle.Intersect(r, xr);
+                if (inside.Width > 0 && inside.Height > 0) mirror.Put(f.XClient, inside, f.XRect.X + inside.X, f.XRect.Y + inside.Y);
+                if (inside != r) mirror.PutEdges(f.XClient, f.XRect, r);
+            }
+            XDirect.Flush();
         }
 
         // ---- the window manager's side (WM thread) ------------------------------
@@ -1168,23 +1316,31 @@ namespace GtVpn
                 XForm f;
                 if (!forms.TryGetValue(id, out f)) return;
                 var r = new Rectangle(x, y, w, h);
-                // The session confirms a move made from here: the latest one
-                // lets the window take the framebuffer's pixels again once they
-                // show it there (CheckGuards); an older one, which arrives while
-                // the window has moved on, changes nothing.
-                int k = r.Size == f.XRect.Size ? f.Requested.IndexOf(r.Location) : -1;
-                if (k >= 0)
-                {
-                    if (k == f.Requested.Count - 1) f.MoveConfirmed = true;
-                    f.Requested.RemoveRange(0, k + 1);
-                    return;
-                }
-                if (r == f.XRect) return;
-                // The program moved its own window: its pixels follow the same way.
-                if (r.Size == f.XRect.Size) { ShiftXRect(f, r); f.MoveConfirmed = true; return; }
-                f.XRect = r;
-                f.Invalidate();
+                bool confirmed = f.ResizeSent != Size.Empty && r.Size == f.ResizeSent;
+                Geometry(f, r);
+                // The session has the size asked for: the newest one goes next.
+                if (confirmed) { f.ResizeSent = Size.Empty; SendNext(f); }
             });
+        }
+
+        void Geometry(XForm f, Rectangle r)
+        {
+            // The session confirms a move made from here: the latest one
+            // lets the window take the framebuffer's pixels again once they
+            // show it there (CheckGuards); an older one, which arrives while
+            // the window has moved on, changes nothing.
+            int k = r.Size == f.XRect.Size ? f.Requested.IndexOf(r.Location) : -1;
+            if (k >= 0)
+            {
+                if (k == f.Requested.Count - 1) f.MoveConfirmed = true;
+                f.Requested.RemoveRange(0, k + 1);
+                return;
+            }
+            if (r == f.XRect) return;
+            // The program moved its own window: its pixels follow the same way.
+            if (r.Size == f.XRect.Size) { ShiftXRect(f, r); f.MoveConfirmed = true; return; }
+            f.XRect = r;
+            f.Invalidate();
         }
 
         public void Activate(uint id) { Ui(delegate { XForm f; if (forms.TryGetValue(id, out f)) { f.Activate(); } }); }

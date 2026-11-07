@@ -275,6 +275,15 @@ if [[ ! -e .env ]]; then
 fi
 check "gtvpn vnc stop ends it" bash -c "cli vnc cadence stop | grep -q 'stopped session :$NC'"
 check "attach without a session says so" bash -c "cli vnc cadence attach | grep -q 'no session on cadence'"
+# On Windows, the container route adds WSLg's refresh rate and local moves
+# to %USERPROFILE%\.wslgconfig (wslg_config), keeping what is there.
+wslgcfg(){ local d r=0; d=$(mktemp -d)
+  printf '[system-distro-env]\r\nWESTON_RDP_MONITOR_REFRESH_RATE=144\r\n\r\n[other]\r\nfoo=bar\r\n' > "$d/had"
+  bash -c 'source ./gtvpn; wslg_config "$1/had" 179 >/dev/null; wslg_config "$1/new" 179 >/dev/null; wslg_config "$1/had" 179; wslg_config "$1/new" 179' _ "$d" | grep -q . && r=1
+  printf '[system-distro-env]\r\nWESTON_RDPRAIL_SHELL_LOCAL_MOVE=true\r\nWESTON_RDP_MONITOR_REFRESH_RATE=144\r\n\r\n[other]\r\nfoo=bar\r\n' | cmp -s - "$d/had" || r=1
+  printf '[system-distro-env]\r\nWESTON_RDP_MONITOR_REFRESH_RATE=179\r\nWESTON_RDPRAIL_SHELL_LOCAL_MOVE=true\r\n' | cmp -s - "$d/new" || r=1
+  (( r == 0 )) || { cat -A "$d/had" "$d/new"; }; rm -rf "$d"; return $r; }
+check "on Windows it adds WSLg's refresh rate and local moves to .wslgconfig once, keeping its other lines" wslgcfg
 check "a bad host name is refused" bash -c "cli vnc 'a;b' | grep -q 'usage: gtvpn vnc'"
 check "an unknown action is refused" bash -c "cli vnc cadence bogus | grep -q 'usage: gtvpn vnc'"
 docker exec gtvpn mv /usr/local/bin/gtvpn-vnc /usr/local/bin/gtvpn-vnc.away

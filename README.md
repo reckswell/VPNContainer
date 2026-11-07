@@ -344,7 +344,13 @@ and the taskbar buttons say "Remote Desktop". `GTVPN_VIEWER` in `.env`
 chooses: `auto` (the default: the container when Smart App Control is on),
 `native` or `container`. In its container the viewer paints straight into its X windows
 (XPutImage) rather than through System.Drawing; `--paint gdi` in
-`GTVPN_VIEWER_ARGS` goes back to System.Drawing. That viewer has no notification-area icon: `gtvpn
+`GTVPN_VIEWER_ARGS` goes back to System.Drawing. The first time, it also
+adds two WSLg settings to `%USERPROFILE%\.wslgconfig`, keeping the rest of
+that file: your monitor's refresh rate (WSLg assumes 60 Hz) and local
+window moves (a dragged window moves on Windows' side at the screen's rate,
+not about 24 steps a second through WSLg). WSLg reads them when WSL starts,
+so they apply after `wsl --shutdown`, which also stops Docker Desktop and
+the VPN: it tells you, and leaves the restart to you. That viewer has no notification-area icon: `gtvpn
 vnc <host> attach` closes it (and opens TigerVNC), and its log is `docker
 exec gtvpn-viewer cat /tmp/gtvpn-viewer.log`.
 
