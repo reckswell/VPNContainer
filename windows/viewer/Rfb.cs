@@ -677,6 +677,9 @@ namespace GtVpn
     // at the median and 82-140 ms at the 90th percentile at level 1, but at
     // level 0 every grow began with a 117-526 ms wait (p90 152-526 ms).
     //
+    // So do a window's redraws while it is resized from here, however long
+    // a slow drag of its border goes on.
+    //
     // Pictures that keep streaming for 2 s (a long pan, a program drawing
     // at full rate) go at level 0, because Xvnc's one thread also
     // draws the programs: on the test PC at 1200x800 and 180 frames a
@@ -684,11 +687,12 @@ namespace GtVpn
     // 151 to 51 frames a second and the screen from 46 to 35 changes a
     // second, though more pixels arrived (62 Mpx/s against 44). Unless the
     // link is the limit: that shows as the answers to the viewer's pings
-    // (RfbClient.Ping) coming back at least 25 ms slower than on an idle
+    // (RfbClient.Ping) coming back at least 30 ms slower than on an idle
     // link, since Xvnc's congestion control lets pictures queue until its
-    // own pings take 25-50 ms longer (an Xvnc busy compressing delayed them
-    // less in the lab, 9-19 ms). Then the tuner tries level 1 for 2 s of
-    // streaming and keeps it if 15% more pixels arrived a second while the
+    // own pings take 25-50 ms longer. An Xvnc busy compressing delayed
+    // them less: 9-19 ms in the lab, 20-24 ms on the test PC streaming
+    // 1200x800 at level 0; through an 80 Mbit/s link in the lab, 50-117 ms.
+    // Then the tuner tries level 1 for 2 s of streaming and keeps it if 15% more pixels arrived a second while the
     // link still carried most of the bytes it did at level 0 (80%: still
     // the limit, rather than Xvnc), or 2.5 times the pixels. At level 1 it
     // tries level 0 the same way. It looks again 20 s later, and twice as
@@ -707,7 +711,7 @@ namespace GtVpn
         public int Tries, Changes, Bursts;
         const double BusyPx = 2e6;           // pixels a second: about 17 changes of 400x300
         const int Ticks = 8;                 // samples of 250 ms compared
-        const double QueuedMs = 25;          // a round trip this much over an idle link's: pictures queue on the way
+        const double QueuedMs = 30;          // a round trip this much over an idle link's: pictures queue on the way
         const double IdleMs = 60;            // no new pixels this long: a pause (Xvnc's own reset is at 100 ms)
         const double StreamMs = 2000;        // pixels without a pause this long, at BusyPx or more: streaming
         public CompressTuner(RfbClient r) { rfb = r; nextTry = DateTime.Now.AddSeconds(3); }
@@ -727,6 +731,15 @@ namespace GtVpn
         bool OneWins(Sample one, Sample zero, double zeroRtt, double idle)
         {
             return zeroRtt >= idle + QueuedMs && one.Px > zero.Px * 1.15 && (one.Bytes >= zero.Bytes * 0.8 || one.Px >= zero.Px * 2.5);
+        }
+
+        // A window resized from here (the UI thread): its redraws are bursts,
+        // and the stream starts again.
+        public void Resizing()
+        {
+            runStart = 0;
+            if (trying >= 0) { trying = -1; seen.Clear(); nextTry = DateTime.Now.AddSeconds(5); }
+            if (rfb.CompressLevel != 1) rfb.SetCompress(1);
         }
 
         // Every 50 ms (the UI thread); what to log, or null.

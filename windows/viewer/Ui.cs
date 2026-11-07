@@ -1457,6 +1457,7 @@ namespace GtVpn
                 // that blank background can come in before the session's word
                 // of the new size (XGeometry, which holds it too): held from here.
                 if (!Native.IsWindows && f.XClient != IntPtr.Zero && x == f.XRect.X && y == f.XRect.Y) StartHold(f, f.XRect);
+                if (tuner != null) tuner.Resizing();   // its redraws go at zlib level 1
                 Wm.Configure(f.Win.Id, x, y, w, h); resizes++;
                 if (!Native.IsWindows) { f.ResizeSent = new Size(w, h); f.ResizeSentAt = DateTime.Now; resizeTimer.Start(); }
             }

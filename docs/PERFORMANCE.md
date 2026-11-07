@@ -193,14 +193,17 @@ level as it goes (`--compress auto`, the default), by what is being sent:
   level 0, every grow began with a 117-526 ms wait before its contents
   caught up with the edge (p90 152-526 ms over 7 films). At level 1 they
   caught up in 23-35 ms at the median and 82-140 ms at the 90th percentile.
+  A window's redraws while it is resized from here count as a burst too,
+  however long a slow drag of its border goes on.
 - **Pictures that stream for 2 s** (a long pan, a program drawing at full
   rate) go at level 0. Counting pixels alone chose wrong here: level 1 got
   more pixels through (62 Mpx/s against 44), yet Xvnc, busy compressing,
   ran xput at 51 frames a second instead of 151, and the screen changed 35
   times a second instead of 46. Xvnc's CPU is also what draws Cadence.
 - **Unless the link holds pictures back.** The viewer pings Xvnc four times
-  a second (Fence). Only when streaming pings take at least 25 ms longer
-  than on the idle link (pictures queued on the way) does it try level 1 for
+  a second (Fence). Only when streaming pings take at least 30 ms longer
+  than on the idle link (pictures queued on the way; 20-24 ms on the PC
+  with Xvnc merely busy at 1200x800) does it try level 1 for
   2 s. It keeps level 1 if 15% more pixels arrive a second while the link
   still carries 80% of level 0's bytes (still the limit, rather than Xvnc),
   or 2.5 times the pixels. It looks again 20 s later, then twice as long
