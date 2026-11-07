@@ -738,7 +738,8 @@ vnc_windows() { # host display: open the viewer on the session
   c=$({ engine exec -u dev "$NAME" gtvpn-vnc "$host" cookie 2>/dev/null || true; } | tr -d '\r' | sed -n 's/^cookie=//p')
   [[ $c =~ ^[0-9a-f]{32}$ ]] || die "could not read the session's cookie from $host"
   local args="--vnc 127.0.0.1:$p --x11 127.0.0.1:$q --label $host:$n" extra
-  extra=$(envget GTVPN_VIEWER_ARGS)
+  # GTVPN_VIEWER_ARGS in the environment, for one start, goes before .env's.
+  extra=${GTVPN_VIEWER_ARGS-$(envget GTVPN_VIEWER_ARGS)}
   [[ $extra =~ ^[-a-zA-Z0-9\ ._]*$ ]] || die "GTVPN_VIEWER_ARGS in .env may hold only options such as: --encoding tight"
   [[ -z $extra ]] || args+=" $extra"
   if [[ $mode == container ]]; then

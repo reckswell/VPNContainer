@@ -408,11 +408,14 @@ namespace GtVpn
         // shows the window's own edge, not a grey band. xr is the session
         // window in the framebuffer. False if it cannot, and then nothing is
         // drawn.
+        public long Edges;                   // edge fills drawn, for the stats
+
         public bool PutEdges(IntPtr win, Rectangle xr, Rectangle clip)
         {
             if (ximg == IntPtr.Zero || win == IntPtr.Zero || xr.Width <= 0 || xr.Height <= 0) return false;
             int ex = xr.Right - 1, ey = xr.Bottom - 1;
             if (xr.X < 0 || xr.Y < 0 || ex >= w || ey >= h) return false;   // its edge is not in the framebuffer
+            Edges++;
             const int far = 1 << 20;
             var right = Rectangle.Intersect(clip, new Rectangle(xr.Width, 0, far, far));
             var below = Rectangle.Intersect(clip, new Rectangle(0, xr.Height, xr.Width, far));
@@ -665,6 +668,11 @@ namespace GtVpn
         readonly bool skipCovered = !Native.IsWindows;
         readonly TextWriter log;
         long paints, lastFrames, lastBytes, lastPaints; DateTime lastStat = DateTime.Now; TimeSpan lastCpu;
+        // What the paints were, and what went to the session's window manager,
+        // for the stats line: paint messages (exposes and invalidations),
+        // edge fills, and moves and resizes asked of the session.
+        long messages, moves, resizes;
+        long[] lastMore = new long[4];
         // Ends the guard of a moved window when no update comes to do it.
         readonly System.Windows.Forms.Timer guardTimer = new System.Windows.Forms.Timer { Interval = 50 };
         // Sends a waiting resize when the session has not confirmed the one before in time.
@@ -703,13 +711,15 @@ namespace GtVpn
             var now = DateTime.Now; double dt = (now - lastStat).TotalSeconds;
             if (dt < 1) return;
             lastStat = now;
-            long f = Rfb.Frames, b = Rfb.Bytes, p = Interlocked.Read(ref paints);
+            long f = Rfb.Frames, b = Rfb.Bytes, p = paints;
+            var more = new[] { messages, mirror.Edges, moves, resizes };
             var cpu = System.Diagnostics.Process.GetCurrentProcess().TotalProcessorTime;
             if (Debug) { Log("tick frames " + f); lock (Rfb.FbLock) mirror.Save(Path.Combine(Path.GetTempPath(), "gtvpn-mirror.png")); }
-            if (f != lastFrames)
-                Log(string.Format("updates/s {0:F1}  MB/s {1:F2}  paints/s {2:F1}  cpu {3:F0}%  windows {4}", (f - lastFrames) / dt, (b - lastBytes) / dt / 1e6,
-                    (p - lastPaints) / dt, (cpu - lastCpu).TotalSeconds / dt * 100, forms.Count));
-            lastFrames = f; lastBytes = b; lastPaints = p; lastCpu = cpu;
+            if (f != lastFrames || p != lastPaints || more[3] != lastMore[3])
+                Log(string.Format("updates/s {0:F1}  MB/s {1:F2}  paints/s {2:F1} (messages {5:F1}, edges {6:F1})  cpu {3:F0}%  windows {4}  moves/s {7:F1}  resizes/s {8:F1}",
+                    (f - lastFrames) / dt, (b - lastBytes) / dt / 1e6, (p - lastPaints) / dt, (cpu - lastCpu).TotalSeconds / dt * 100, forms.Count,
+                    (more[0] - lastMore[0]) / dt, (more[1] - lastMore[1]) / dt, (more[2] - lastMore[2]) / dt, (more[3] - lastMore[3]) / dt));
+            lastFrames = f; lastBytes = b; lastPaints = p; lastCpu = cpu; lastMore = more;
             tray.Text = ("gtvpn viewer: " + Label).Substring(0, Math.Min(63, ("gtvpn viewer: " + Label).Length));
         }
 
@@ -803,7 +813,7 @@ namespace GtVpn
                         var local = new Rectangle(p.X - f.XRect.X, p.Y - f.XRect.Y, p.Width, p.Height);
                         if (direct && mirror.Put(f.XClient, local, p.X, p.Y))
                         {
-                            put = true; Interlocked.Increment(ref paints);
+                            put = true; paints++;
                             if (p.Right == f.XRect.Right || p.Bottom == f.XRect.Bottom) edge = true;
                         }
                         else f.Invalidate(local);
@@ -939,7 +949,7 @@ namespace GtVpn
 
         public void PaintForm(XForm f, Graphics g, Rectangle clip)
         {
-            Interlocked.Increment(ref paints);
+            paints++; messages++;
             if (Debug) Log("paint " + f.Win.Id.ToString("x") + " " + clip + " xrect " + f.XRect);
             // The part of the client area that the session's window covers comes
             // from the framebuffer; the rest (while a resize catches up) is blank.
@@ -1162,11 +1172,11 @@ namespace GtVpn
                 ShiftXRect(f, new Rectangle(x, y, w, h));
                 f.Requested.Add(new Point(x, y));
                 if (f.Requested.Count > 16) f.Requested.RemoveAt(0);
-                Wm.Move(f.Win.Id, x, y);
+                Wm.Move(f.Win.Id, x, y); moves++;
             }
             else
             {
-                Wm.Configure(f.Win.Id, x, y, w, h);
+                Wm.Configure(f.Win.Id, x, y, w, h); resizes++;
                 if (!Native.IsWindows) { f.ResizeSent = new Size(w, h); f.ResizeSentAt = DateTime.Now; resizeTimer.Start(); }
             }
             Wm.SetMaximized(f.Win.Id, f.WindowState == FormWindowState.Maximized);
