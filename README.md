@@ -225,13 +225,126 @@ Two ways to start Cadence:
   your desktop, like any other X11 from GT. `gtvpn display <host> status`
   shows it and `gtvpn display <host> stop` closes it. It also ends when the
   tunnel drops or the container stops; run it again after `gtvpn connect`.
-  To pick it up in every new terminal, add the matching line to `~/.bashrc`
+  With the terminal profile in
+  [vscode/settings-snippet.jsonc](vscode/settings-snippet.jsonc), every new
+  VS Code terminal on a GT server picks it up by itself (it prints
+  `DISPLAY=...` first). Without it, add the matching line to `~/.bashrc`
   or `~/.cshrc` on the GT server:
 
   ```
   [ -z "$DISPLAY" ] && [ -r ~/.gtvpn-display ] && export DISPLAY=$(cat ~/.gtvpn-display)   # ~/.bashrc
   if (! $?DISPLAY && -r ~/.gtvpn-display) setenv DISPLAY "`cat ~/.gtvpn-display`"          # ~/.cshrc
   ```
+
+### Smoother Cadence: `gtvpn vnc`
+
+`ssh -Y` sends every redraw of Virtuoso's windows across the tunnel as an
+uncompressed picture, so panning a layout runs at about 6 frames per second
+([why, and the measurements](docs/PERFORMANCE.md)). With `gtvpn vnc`,
+Virtuoso draws on the GT server itself, in a VNC session there, and only
+compressed pictures of what changed travel, through the container like
+everything else. The session uses the server's own TigerVNC and window
+manager, so **nothing is installed on the GT server**. It keeps running when
+VS Code, the viewer or the tunnel disconnect, and so does Virtuoso: reopen
+the viewer and carry on.
+
+With TigerVNC's viewer the session is one desktop, shown in one viewer
+window on your computer, and Cadence's windows inside it have the server's
+title bars (metacity), not Windows ones. Full screen (F8, then "Full
+screen") makes it feel like sitting at a lab machine. On Windows,
+`gtvpn vnc <host> windows` instead shows every Cadence window as a native
+Windows window ([below](#each-cadence-window-as-a-window-of-its-own-windows)).
+
+On Windows, the first `gtvpn vnc` offers to download TigerVNC's viewer
+(`vncviewer64-1.15.0.exe`, one 24 MB file from TigerVNC's releases) into
+`%LOCALAPPDATA%\Programs\TigerVNC`, no admin rights needed, checked against
+a pinned SHA-256. On Ubuntu: `sudo apt install tigervnc-viewer`.
+
+On your computer:
+
+```
+gtvpn vnc ece-linlab19.ece.gatech.edu
+```
+
+This starts the session on that server (or finds the running one), opens
+the viewer, and prints the session's display, `:N`. It stays the same from
+one session to the next unless someone else on the server has that number.
+In a terminal there (VS Code's, or `gtvpn ssh`), start Cadence on it:
+
+```
+export DISPLAY=:N      # bash (with the number gtvpn vnc printed)
+setenv DISPLAY :N      # tcsh
+virtuoso &             # or your usual start script
+```
+
+The number is also in `/tmp/gtvpn-<your uid>/display` on the server while
+the session runs, and with the terminal profile in
+[vscode/settings-snippet.jsonc](vscode/settings-snippet.jsonc) every new VS
+Code terminal there takes it by itself, so `run.sh` or `virtuoso` starts in
+the session with no `export`. `gtvpn vnc` writes nothing in your home folder there
+except the display's cookie in `~/.Xauthority`, as `ssh -Y` does, and it
+leaves `~/.gtvpn-display` (from `gtvpn display`) alone.
+
+| | |
+|---|---|
+| `gtvpn vnc <host> windows` | the session's windows as windows of their own here (Windows) |
+| `gtvpn vnc <host> attach` | reopen the viewer, e.g. after closing it or after the tunnel came back |
+| `gtvpn vnc <host> status` | the session and the programs in it |
+| `gtvpn vnc <host> stop` | end the session (refuses while programs have windows open; `--force` closes them without saving) |
+
+Closing the viewer window only closes the view; everything keeps running on
+the server.
+
+#### Each Cadence window as a window of its own (Windows)
+
+```
+gtvpn vnc ece-linlab19.ece.gatech.edu windows
+```
+
+uses the same session, but instead of one desktop in a viewer window, every
+window of the session (the CIW, the Library Manager, layout and schematic
+windows, their dialogs) appears on your desktop as a window of its own, with
+Windows 11's own title bar and frame, snapping, the taskbar and Alt+Tab.
+Each program in the session (Virtuoso, an xterm) gets a taskbar button of
+its own, with its own icon.
+Menus, tooltips and pop-ups appear where Cadence draws them. It is gtvpn's
+own small viewer (`windows/viewer`, C#), built on first use with the C#
+compiler that comes with Windows into `%LOCALAPPDATA%\gtvpn`; nothing is
+downloaded. It talks to the session twice through the container: as a VNC
+client for the pictures (streamed, without a round trip per frame) and as
+the session's window manager (in place of metacity) to learn where each
+window is. Text you copy (Ctrl+C, Edit > Copy) goes both ways between
+Windows and the session; text you only select with the mouse stays in the
+session (middle-click pastes it there), so it never replaces what you copied
+in Windows. A window that opens while you are in another program flashes
+its taskbar button, as Windows programs do.
+
+On the test PC this shows a panning layout-like view at 20-33 full
+redraws per second, pixel-exact (6 with `ssh -Y`); the pointer and moving
+or resizing windows run at the monitor's refresh rate, since Windows draws
+them, and a window's content stays on its frame while you drag it. The pictures are lossless (ZRLE). To trade exactness in photo-like
+areas for JPEG, or to tune compression, set `GTVPN_VIEWER_ARGS` in `.env`
+(for example `--encoding tight`; details in
+[PERFORMANCE.md](docs/PERFORMANCE.md#on-the-real-setup)).
+
+To switch back to the desktop view, close the viewer (its icon in the
+notification area, "Quit") and run `gtvpn vnc <host> attach`: metacity comes
+back. Its log is `%TEMP%\gtvpn-viewer.log`.
+
+**With Smart App Control on** (Windows 11), Windows blocks programs that are
+not signed and that it has not seen before, and the viewer built on your PC
+is one of them. `gtvpn vnc <host> windows` then runs the same viewer in a
+container of its own instead (`windows/viewer/Dockerfile`, built on first
+use, which downloads mono, about 180 MB), and WSLg, Windows' own support for
+Linux windows, shows each Cadence window on your desktop. Nothing new runs
+as a Windows program. On the test PC this redrew 57 times a second, and
+dragging and snapping behave as with the native viewer. What differs is the
+frame: WSLg draws its own light title bar and adds " (Ubuntu)" to the title,
+and the taskbar buttons say "Remote Desktop". `GTVPN_VIEWER` in `.env`
+chooses: `auto` (the default: the container when Smart App Control is on),
+`native` or `container`. That viewer has no notification-area icon: `gtvpn
+vnc <host> attach` closes it (and opens TigerVNC), and its log is `docker
+exec gtvpn-viewer cat /tmp/gtvpn-viewer.log`.
 
 ### Claude Code for future projects
 
@@ -286,15 +399,19 @@ What is checked (details in [docs/DESIGN.md](docs/DESIGN.md#verification-recursi
 | The connect window closed before you could read the error | `gtvpn logs` shows the last sign-in transcript (passwords are never in it) |
 | No windows on Ubuntu | Run `./gtvpn up` from a desktop terminal (it needs `$DISPLAY`); `sudo apt install xauth` |
 | No windows on Windows | `ls /mnt/wslg/.X11-unix` in Ubuntu should show `X0`. If not: `wsl --update`, then `wsl --shutdown`. Then `gtvpn down && gtvpn up` and `gtvpn x11test` |
-| Cadence in a VS Code Remote-SSH terminal: "X Window Display Initialization failure", or `echo $DISPLAY` is empty | Those terminals have no X display. Run `gtvpn display <that server>` on your computer, then `export DISPLAY=$(cat ~/.gtvpn-display)` in the terminal ([Cadence](#cadence-virtuoso--vivado-x11)) |
+| Cadence in a VS Code Remote-SSH terminal: "X Window Display Initialization failure", or `echo $DISPLAY` is empty | Those terminals have no X display. With the terminal profile from `vscode/settings-snippet.jsonc`, open a **new** terminal: it takes the display of your `gtvpn vnc` session, or of `gtvpn display`, by itself (one VS Code revived after a restart was started without it). Without the profile, run `gtvpn display <that server>` on your computer, then `export DISPLAY=$(cat ~/.gtvpn-display)` in the terminal ([Cadence](#cadence-virtuoso--vivado-x11)) |
 | `gtvpn display` worked before, but now Cadence says "Can't open display" | The display closed with the tunnel or the container. Run `gtvpn display <server>` again; the number may change, so re-run the `export` too |
 | `ssh gtvpn` says "Could not resolve hostname" in Git Bash | Git Bash's own ssh can't read the Windows config. Use PowerShell or VS Code, which use Windows' OpenSSH |
 | `gtvpn code` opens a window as root, or VS Code asks which container | Install the Dev Containers extension (`ms-vscode-remote.remote-containers`), open VS Code once, then run `gtvpn setup` again to install the attach config |
-| VS Code hangs installing the server | Add `"remote.SSH.localServerDownload": "always"` |
+| VS Code hangs at "Opening Remote..." on a GT server; its Remote - SSH log ends with "Copying file to remote" and "subsystem request failed" | Set `"remote.SSH.localServerDownload": "auto"` (not `"always"`): some GT servers, like ece-linlab19, have SFTP turned off, so VS Code cannot copy its server in; with `auto` they download it themselves. Then reload the window |
 | A host is missing from VS Code's list | Run `gtvpn hosts`, then reopen the Remote-SSH list. Only plain names on `Host` lines become entries (`Host *.example` is a pattern, not a host) |
 | A dev tool can't download something | Add its exact hostname to `GTVPN_DIRECT_ALLOW`, then `./gtvpn down && ./gtvpn up` |
 | `git@github.com` (port 22) fails | Use HTTPS remotes; the direct path is HTTPS-only |
-| Virtuoso is sluggish | Expected for X11 over a VPN. Compression is on; for heavy layout work use GT's remote desktop through the container |
+| Virtuoso is sluggish (panning, zooming, opening forms) | Use `gtvpn vnc <server>` instead of `ssh -Y` ([Smoother Cadence](#smoother-cadence-gtvpn-vnc)) |
+| `gtvpn vnc` says "no open connection" | The container's connection to that server closed (tunnel drop, 8 h limit). Run `gtvpn vnc <server>` again in a terminal: it signs in once and reopens the viewer; the session and Virtuoso are still there |
+| The viewer shows the desktop but not Virtuoso | `gtvpn vnc <server> status` lists the programs in the session. If Virtuoso is not among them, it was started on another display: check `echo $DISPLAY` in that terminal against the display `gtvpn vnc` printed |
+| The viewer says the connection was refused or closed | Run `gtvpn vnc <server> attach` again; it reopens the forwards. If it still fails, `gtvpn vnc <server>` checks the session itself |
+| `gtvpn vnc <server> windows` shows nothing, and Windows says "An Application Control policy has blocked this file" (or Event Viewer has Code Integrity events 3033/3077) | Smart App Control blocked the viewer built on your PC (it is not signed). gtvpn runs the viewer in a container instead when Smart App Control is on; if Windows still blocks it, set `GTVPN_VIEWER=container` in `.env` ([with Smart App Control on](#each-cadence-window-as-a-window-of-its-own-windows)). `gtvpn vnc <server> attach` (TigerVNC, which is signed) always works |
 
 ## Layout
 
@@ -310,9 +427,11 @@ image/                        Dockerfile + in-container scripts
 host/verify-host.sh           host-side checks
 windows/Setup-GtVpn.ps1       Windows setup
 windows/Start-GtVpn.ps1       what Start-GtVpn.cmd runs
+windows/viewer/               gtvpn vnc <host> windows: the viewer (C#, built on first use; its Dockerfile for the container route)
 vscode/                       VS Code settings + Dev Containers attach config
 tests/lab/                    end-to-end lab with a real tunnel (see below)
 docs/DESIGN.md                design, threat model, alternatives
+docs/PERFORMANCE.md           Cadence display performance: measurements, options, gtvpn vnc
 ```
 
 ## Tests
@@ -326,6 +445,8 @@ tests/lab/run-lab.sh   # split + full tunnel: leaks, crash, tampering, SSH jump,
 tests/lab/run-x11.sh   # remote X app → ssh over tunnel → container → host display
 tests/lab/run-cli.sh   # the real ./gtvpn flow incl. SSO hand-off via the link handler
 tests/lab/run-perms.sh # image built from a Windows-drive checkout (all files 0777) is still safe
+tests/lab/run-vnc.sh   # gtvpn vnc: session with the server's own Xvnc, viewer through the container,
+                       # gtvpn's own viewer (with mono, if installed), cleanup
 ```
 
 The one piece the lab cannot do is GT's real portal and Duo. The first

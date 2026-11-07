@@ -3,10 +3,13 @@
   // The container cannot reach VS Code's download servers (it is sealed),
   // so VS Code downloads its server and extensions on your machine and copies
   // them in. Dev Containers always does that for the server; the first line
-  // does it for extensions (any remote), the second for Remote-SSH servers
-  // (`gtvpn` and GT hosts reached via gt-<alias>).
+  // does it for extensions (any remote). For Remote-SSH, "auto" lets GT
+  // servers download VS Code's server themselves (they can, and some, like
+  // ece-linlab19, have SFTP turned off, so copying it in hangs at "Opening
+  // Remote..."), while into `gtvpn` the download fails at once and VS Code
+  // falls back to downloading it here and copying it in. Not "always".
   "remote.downloadExtensionsLocally": true,
-  "remote.SSH.localServerDownload": "always",
+  "remote.SSH.localServerDownload": "auto",
   // Windows only: use the built-in OpenSSH client.
   // "remote.SSH.path": "C:\\Windows\\System32\\OpenSSH\\ssh.exe",
   "remote.SSH.remotePlatform": { "gtvpn": "linux" },
@@ -14,5 +17,21 @@
   // your computer's git and Docker credentials to containers. These are
   // user-wide, so they also apply to any other dev containers you use.
   "dev.containers.gitCredentialHelperConfigLocation": "none",
-  "dev.containers.dockerCredentialHelper": false
+  "dev.containers.dockerCredentialHelper": false,
+  // Terminals on a GT server get an X display by themselves, so Cadence
+  // starts without "X Window Display Initialization failure": the running
+  // `gtvpn vnc` session's (/tmp/gtvpn-<uid>/display, if it answers), else
+  // the one `gtvpn display` wrote (~/.gtvpn-display). A terminal that has a
+  // DISPLAY, or a server with neither, just gets its usual shell (without
+  // VS Code's shell integration). It applies to every Linux terminal.
+  "terminal.integrated.profiles.linux": {
+    "gtvpn display": {
+      "path": "/bin/sh",
+      "args": ["-c", "if [ -z \"$DISPLAY\" ]; then n=$(cat /tmp/gtvpn-$(id -u)/display 2>/dev/null); if [ -n \"$n\" ] && timeout 2 xdpyinfo -display :$n >/dev/null 2>&1; then DISPLAY=:$n; export DISPLAY; echo \"DISPLAY=$DISPLAY (gtvpn vnc session)\"; elif [ -s \"$HOME/.gtvpn-display\" ]; then DISPLAY=$(cat \"$HOME/.gtvpn-display\"); export DISPLAY; echo \"DISPLAY=$DISPLAY (gtvpn display)\"; fi; fi; [ -n \"$SHELL\" ] || SHELL=/bin/sh; exec \"$SHELL\""]
+    }
+  },
+  "terminal.integrated.defaultProfile.linux": "gtvpn display",
+  // After VS Code or your computer restarts, open new terminals instead of
+  // reviving old ones, which were started without that display.
+  "terminal.integrated.persistentSessionReviveProcess": "never"
 }
