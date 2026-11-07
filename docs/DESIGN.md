@@ -409,6 +409,22 @@ the same session twice:
   hold the framebuffer's lock, so updates keep arriving while a slow paint
   is in progress. On Windows, painting a hidden area costs next to nothing,
   so the viewer still paints every window there.
+  Under mono the viewer also paints without System.Drawing: there each
+  paint went through libgdiplus and cairo (a pixmap, an upload and a
+  composite in the X server). On the test PC at 400x300 the viewer
+  painted 183 times a second that way, but only about 51 changes a
+  second reached the screen, while a plain XPutImage from another
+  program reached 164-169. So the viewer finds Mono's own X connection
+  and each form's X window (by reflection into Mono's WinForms), wraps
+  its copy of the framebuffer in one XImage, and puts each changed
+  rectangle straight into the window from the update itself, with no
+  paint message (paint messages, after an expose, use the same put).
+  Xvnc sends a large change as bands of at most 65536 pixels, which the
+  viewer joins again, so one change is one XPutImage. In the lab that cut
+  the X server's work by about a third, with the pixels exact. If Mono's
+  internals or the X visual are not as expected, or with
+  `GTVPN_VIEWER_ARGS=--paint gdi`, it paints through System.Drawing as
+  before; its log says which.
   The frames are WSLg's (Weston's) rather than Windows 11's.
   `GTVPN_VIEWER` overrides the choice; the state comes from
   `HKLM\SYSTEM\CurrentControlSet\Control\CI\Policy`

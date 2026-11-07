@@ -342,7 +342,9 @@ dragging and snapping behave as with the native viewer. What differs is the
 frame: WSLg draws its own light title bar and adds " (Ubuntu)" to the title,
 and the taskbar buttons say "Remote Desktop". `GTVPN_VIEWER` in `.env`
 chooses: `auto` (the default: the container when Smart App Control is on),
-`native` or `container`. That viewer has no notification-area icon: `gtvpn
+`native` or `container`. In its container the viewer paints straight into its X windows
+(XPutImage) rather than through System.Drawing; `--paint gdi` in
+`GTVPN_VIEWER_ARGS` goes back to System.Drawing. That viewer has no notification-area icon: `gtvpn
 vnc <host> attach` closes it (and opens TigerVNC), and its log is `docker
 exec gtvpn-viewer cat /tmp/gtvpn-viewer.log`.
 

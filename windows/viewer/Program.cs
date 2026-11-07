@@ -98,7 +98,7 @@ namespace GtVpn
         [STAThread]
         static int Main(string[] args)
         {
-            string vnc = null, x11 = null, label = "GT session", encoding = "zrle"; int quality = 8, compress = 1;
+            string vnc = null, x11 = null, label = "GT session", encoding = "zrle", paint = "x11"; int quality = 8, compress = 1;
             for (int i = 0; i + 1 < args.Length; i += 2)
             {
                 if (args[i] == "--vnc") vnc = args[i + 1];
@@ -107,6 +107,7 @@ namespace GtVpn
                 else if (args[i] == "--quality") quality = int.Parse(args[i + 1]);
                 else if (args[i] == "--compress") compress = int.Parse(args[i + 1]);
                 else if (args[i] == "--encoding") encoding = args[i + 1].ToLowerInvariant();
+                else if (args[i] == "--paint") paint = args[i + 1].ToLowerInvariant();   // Mono: x11 (XPutImage) or gdi (System.Drawing)
             }
             string cookie = Environment.GetEnvironmentVariable("GTVPN_X_COOKIE");
             Environment.SetEnvironmentVariable("GTVPN_X_COOKIE", null);
@@ -145,6 +146,11 @@ namespace GtVpn
                 rfb.CutTextReceived += v.OnCutText;
                 rfb.Closed += delegate(string why) { v.OnClosed("VNC: " + why); };
                 var h = v.Handle;   // the UI thread's window exists before events arrive
+                if (!Native.IsWindows)
+                {
+                    string why = paint == "gdi" ? "--paint gdi" : XDirect.Init();
+                    v.Log("painting " + (why == null ? "straight into the X windows" : "through System.Drawing (" + why + ")"));
+                }
                 rfb.Connect(vh, vp);
                 v.Log("VNC " + rfb.Name + " " + rfb.Width + "x" + rfb.Height + "; asking for " + screen.Width + "x" + screen.Height
                     + "; " + (rfb.PreferZrle ? "zrle" : "tight") + " compress " + rfb.CompressLevel + " quality " + rfb.JpegQuality);

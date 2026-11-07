@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -188,12 +189,107 @@ namespace GtVpn
         }
     }
 
+    // Mono: paints the mirror straight into a window with XPutImage, on
+    // Mono's own X connection. Through System.Drawing each paint goes through
+    // libgdiplus and cairo (a pixmap, an upload and a composite), and under
+    // WSLg that path, not the session, limited how many changes a second
+    // reached the screen. Anything unexpected (another Mono, another X
+    // visual) keeps the System.Drawing path.
+    static class XDirect
+    {
+        const string X = "libX11.so.6";
+        [DllImport(X)] static extern int XDefaultScreen(IntPtr dpy);
+        [DllImport(X)] static extern IntPtr XDefaultVisual(IntPtr dpy, int screen);
+        [DllImport(X)] static extern int XDefaultDepth(IntPtr dpy, int screen);
+        [DllImport(X)] static extern IntPtr XDefaultRootWindow(IntPtr dpy);
+        [DllImport(X)] static extern IntPtr XCreateGC(IntPtr dpy, IntPtr d, UIntPtr mask, IntPtr values);
+        [DllImport(X)] static extern IntPtr XCreateImage(IntPtr dpy, IntPtr visual, uint depth, int format, int offset, IntPtr data, uint w, uint h, int pad, int bpl);
+        [DllImport(X)] static extern int XPutImage(IntPtr dpy, IntPtr d, IntPtr gc, IntPtr img, int sx, int sy, int dx, int dy, uint w, uint h);
+        [DllImport(X)] static extern int XFlush(IntPtr dpy);
+        [DllImport(X)] static extern int XFree(IntPtr p);
+
+        static IntPtr dpy, gc, visual;
+        static object xlock;
+        static MethodInfo fromHandle;
+        static PropertyInfo client;
+        public static bool Ok;
+
+        // Null once it can paint, else why not. Mono's X connection exists
+        // once the first window has been created.
+        public static string Init()
+        {
+            try
+            {
+                if (IntPtr.Size != 8 || !BitConverter.IsLittleEndian) return "not a 64-bit little-endian process";
+                const BindingFlags any = BindingFlags.Static | BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+                var a = typeof(Control).Assembly;
+                var x = a.GetType("System.Windows.Forms.XplatUIX11");
+                var hwnd = a.GetType("System.Windows.Forms.Hwnd");
+                if (x == null || hwnd == null) return "not Mono's X11 WinForms";
+                var df = x.GetField("DisplayHandle", any); var lf = x.GetField("XlibLock", any);
+                fromHandle = hwnd.GetMethod("ObjectFromHandle", any, null, new[] { typeof(IntPtr) }, null);
+                client = hwnd.GetProperty("ClientWindow", any);
+                if (df == null || lf == null || fromHandle == null || client == null) return "Mono's X11 internals have changed";
+                dpy = (IntPtr)df.GetValue(null); xlock = lf.GetValue(null);
+                if (dpy == IntPtr.Zero || xlock == null) return "Mono has no X connection yet";
+                lock (xlock)
+                {
+                    int scr = XDefaultScreen(dpy);
+                    visual = XDefaultVisual(dpy, scr);
+                    // Visual: ext_data, visualid, class, then the colour masks.
+                    long r = Marshal.ReadInt64(visual, 24), g = Marshal.ReadInt64(visual, 32), b = Marshal.ReadInt64(visual, 40);
+                    int depth = XDefaultDepth(dpy, scr);
+                    if (depth != 24 || r != 0xff0000 || g != 0xff00 || b != 0xff)
+                        return "X visual of depth " + depth + ", masks " + r.ToString("x") + " " + g.ToString("x") + " " + b.ToString("x");
+                    gc = XCreateGC(dpy, XDefaultRootWindow(dpy), UIntPtr.Zero, IntPtr.Zero);
+                }
+                Ok = gc != IntPtr.Zero;
+                return Ok ? null : "XCreateGC failed";
+            }
+            catch (Exception e) { return e.GetType().Name + ": " + e.Message; }
+        }
+
+        // An XImage over pixels that stay the caller's (0xXXRRGGBB ints).
+        public static IntPtr Image(IntPtr data, int w, int h)
+        {
+            IntPtr img;
+            lock (xlock) img = XCreateImage(dpy, visual, 24, 2 /* ZPixmap */, 0, data, (uint)w, (uint)h, 32, w * 4);
+            if (img != IntPtr.Zero) Marshal.WriteInt32(img, 24, 0);   // byte_order: LSBFirst, as the ints are; Xlib converts if the server differs
+            return img;
+        }
+
+        public static void FreeImage(IntPtr img)
+        {
+            Marshal.WriteIntPtr(img, 16, IntPtr.Zero);   // XImage.data: the pixels are not Xlib's to free
+            XFree(img);
+        }
+
+        // The X window that holds a control's client area.
+        public static IntPtr Window(Control c)
+        {
+            try
+            {
+                var h = fromHandle.Invoke(null, new object[] { c.Handle });
+                return h == null ? IntPtr.Zero : (IntPtr)client.GetValue(h, null);
+            }
+            catch (Exception) { return IntPtr.Zero; }
+        }
+
+        public static void Put(IntPtr win, IntPtr img, int sx, int sy, int dx, int dy, int w, int h)
+        {
+            lock (xlock) XPutImage(dpy, win, gc, img, sx, sy, dx, dy, (uint)w, (uint)h);
+        }
+
+        public static void Flush() { if (Ok) lock (xlock) XFlush(dpy); }
+    }
+
     // The copy of the framebuffer that is painted: a DIB section on Windows
-    // (BitBlt), a Bitmap elsewhere (Mono, for the lab).
+    // (BitBlt), a Bitmap elsewhere (Mono), which XDirect can also put into
+    // X windows directly.
     sealed class Mirror
     {
         int w, h;
-        IntPtr dc, bmp, bits;
+        IntPtr dc, bmp, bits, ximg;
         Bitmap gb;
         int[] px;
         GCHandle pin;
@@ -213,6 +309,7 @@ namespace GtVpn
                 px = new int[w * h];
                 pin = GCHandle.Alloc(px, GCHandleType.Pinned);
                 gb = new Bitmap(w, h, w * 4, PixelFormat.Format32bppRgb, pin.AddrOfPinnedObject());
+                if (XDirect.Ok) ximg = XDirect.Image(pin.AddrOfPinnedObject(), w, h);
             }
         }
 
@@ -221,6 +318,7 @@ namespace GtVpn
             if (dc != IntPtr.Zero) { Native.DeleteDC(dc); dc = IntPtr.Zero; }
             if (bmp != IntPtr.Zero) { Native.DeleteObject(bmp); bmp = IntPtr.Zero; }
             if (gb != null) { gb.Dispose(); gb = null; }
+            if (ximg != IntPtr.Zero) { XDirect.FreeImage(ximg); ximg = IntPtr.Zero; }
             if (pin.IsAllocated) pin.Free();
             px = null;
         }
@@ -302,6 +400,19 @@ namespace GtVpn
             }
             else if (gb != null) g.DrawImage(gb, dst, new Rectangle(sx, sy, dst.Width, dst.Height), GraphicsUnit.Pixel);
         }
+
+        // Mono: puts the pixels at (sx, sy) into the X window win at dst
+        // (XDirect). False if it cannot, and then nothing is drawn.
+        public bool Put(IntPtr win, Rectangle dst, int sx, int sy)
+        {
+            if (ximg == IntPtr.Zero || win == IntPtr.Zero) return false;
+            // Xlib trims a source rectangle that leaves the image without
+            // moving its destination, so it is trimmed here, on both sides.
+            var s = Rectangle.Intersect(new Rectangle(sx, sy, dst.Width, dst.Height), new Rectangle(0, 0, w, h));
+            if (s.Width > 0 && s.Height > 0)
+                XDirect.Put(win, ximg, s.X, s.Y, dst.X + s.X - sx, dst.Y + s.Y - sy, s.Width, s.Height);
+            return true;
+        }
     }
 
     sealed class XForm : Form
@@ -323,6 +434,7 @@ namespace GtVpn
         public bool Guarded, MoveConfirmed;
         public DateTime GuardStart, GuardUntil;
         public readonly List<Point> Requested = new List<Point>();  // moves sent to the session, not yet confirmed
+        public IntPtr XClient;               // Mono: the X window of the client area, for XDirect
 
         public XForm(Viewer v, XWin w, XForm owner)
         {
@@ -397,10 +509,17 @@ namespace GtVpn
         protected override void OnHandleCreated(EventArgs e)
         {
             base.OnHandleCreated(e);
+            if (XDirect.Ok) XClient = XDirect.Window(this);
             Native.StyleFrame(Handle, Win != null && Win.Popup, false);
             // One taskbar button per program (WM_CLASS), as Windows programs
             // have, rather than every window under the viewer's.
             if (Win != null && !Win.Popup && Win.Class.Length > 0) Native.SetAppId(Handle, Win.Class);
+        }
+
+        protected override void OnHandleDestroyed(EventArgs e)
+        {
+            XClient = IntPtr.Zero;
+            base.OnHandleDestroyed(e);
         }
 
         protected override void OnShown(EventArgs e)
@@ -566,6 +685,7 @@ namespace GtVpn
             List<Rectangle> rs;
             bool resize;
             lock (dirtyLock) { rs = dirty; dirty = new List<Rectangle>(); flushQueued = false; resize = resizeQueued; resizeQueued = false; }
+            rs = Bands(rs);
             if (Debug)
             {
                 var u = Rectangle.Empty; foreach (var r in rs) u = u.IsEmpty ? r : Rectangle.Union(u, r);
@@ -596,9 +716,13 @@ namespace GtVpn
             // messages wait for an empty queue), so the stats come from here too.
             if ((DateTime.Now - lastStat).TotalSeconds >= 5) Stats();
             if (resize) foreach (var f in forms.Values) f.Guarded = false;
+            bool put = false;
             foreach (var f in forms.Values)
             {
                 if (f.Guarded) continue;
+                // Mono: straight into the window (XDirect) while it is on the
+                // screen, rather than a paint message and System.Drawing.
+                bool direct = f.XClient != IntPtr.Zero && f.Visible && f.WindowState != FormWindowState.Minimized;
                 List<Rectangle> over = null;
                 foreach (var r in rs)
                 {
@@ -607,12 +731,38 @@ namespace GtVpn
                     if (skipCovered && over == null && Wm != null) over = Wm.Over(f.Win.Id);
                     foreach (var p in over == null || over.Count == 0 ? new List<Rectangle> { i } : Outside(i, over))
                     {
-                        f.Invalidate(new Rectangle(p.X - f.XRect.X, p.Y - f.XRect.Y, p.Width, p.Height));
-                        if (Debug) Log("invalidate " + f.Win.Id.ToString("x") + " " + p);
+                        var local = new Rectangle(p.X - f.XRect.X, p.Y - f.XRect.Y, p.Width, p.Height);
+                        if (direct && mirror.Put(f.XClient, local, p.X, p.Y)) { put = true; Interlocked.Increment(ref paints); }
+                        else f.Invalidate(local);
+                        if (Debug) Log((direct ? "put " : "invalidate ") + f.Win.Id.ToString("x") + " " + p);
                     }
                 }
             }
+            if (put) XDirect.Flush();
             CheckGuards();
+        }
+
+        // Xvnc sends a large change as bands of at most 65536 pixels each: a
+        // run of bands over the same columns becomes one rectangle again (one
+        // XPutImage under Mono, rather than 15 for a 1200x800 window).
+        static List<Rectangle> Bands(List<Rectangle> rs)
+        {
+            if (rs.Count < 2) return rs;
+            var a = new List<Rectangle>(rs);
+            a.Sort(delegate(Rectangle p, Rectangle q)
+            {
+                return p.X != q.X ? p.X.CompareTo(q.X) : p.Width != q.Width ? p.Width.CompareTo(q.Width) : p.Y.CompareTo(q.Y);
+            });
+            var o = new List<Rectangle>();
+            var cur = a[0];
+            for (int i = 1; i < a.Count; i++)
+            {
+                var r = a[i];
+                if (r.X == cur.X && r.Width == cur.Width && r.Y <= cur.Bottom) cur = Rectangle.Union(cur, r);
+                else { o.Add(cur); cur = r; }
+            }
+            o.Add(cur);
+            return o;
         }
 
         // The parts of r outside every rectangle in cut.
@@ -718,7 +868,8 @@ namespace GtVpn
             var inside = Rectangle.Intersect(clip, new Rectangle(0, 0, f.XRect.Width, f.XRect.Height));
             // (The mirror is the UI thread's own: painting it takes no lock, so
             // updates go on arriving while a paint takes long.)
-            if (inside.Width > 0 && inside.Height > 0) mirror.Paint(g, inside, f.XRect.X + inside.X, f.XRect.Y + inside.Y);
+            if (inside.Width > 0 && inside.Height > 0 && !mirror.Put(f.XClient, inside, f.XRect.X + inside.X, f.XRect.Y + inside.Y))
+                mirror.Paint(g, inside, f.XRect.X + inside.X, f.XRect.Y + inside.Y);
             using (var region = new Region(clip))
             {
                 region.Exclude(inside);

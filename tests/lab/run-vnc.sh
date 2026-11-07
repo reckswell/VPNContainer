@@ -185,6 +185,8 @@ pts = [(x + 2 + (w - 4) * i // 9, y + 2 + (h - 4) * j // 9) for i in range(10) f
 same = sum(all(abs(a - c) <= 24 for a, c in zip(s(*p), d(*p))) for p in pts)
 print(same, 'of', len(pts), 'sample points match'); sys.exit(0 if same >= 90 else 1)
 PY
+  check "under Mono it paints straight into its X windows (XPutImage, not System.Drawing)" \
+    grep -q 'painting straight into the X windows' "$KEYDIR/gtvpn-viewer.log"
   # Mono's WinForms timers only tick once the main form has loaded; a
   # viewer that never shows its main form spun its message loop at 100%.
   idle(){ local p a b; p=$(pgrep -f -- "$KEYDIR/viewer.exe" | head -1); [[ -n $p ]] || return 1
