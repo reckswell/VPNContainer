@@ -52,7 +52,11 @@ namespace GtVpn
         public bool PreferZrle = true;
         public bool ServerCanResize;
         bool continuous;
-        public bool UseContinuous = Environment.GetEnvironmentVariable("GTVPN_VIEWER_CU") != "0";
+        // GTVPN_VIEWER_CU=0: no ContinuousUpdates (an update request after
+        // each update instead); nofence: no Fence either. To compare.
+        static readonly string cuMode = Environment.GetEnvironmentVariable("GTVPN_VIEWER_CU");
+        public bool UseContinuous = cuMode != "0" && cuMode != "nofence";
+        public bool UseFence = cuMode != "nofence";
         uint screenId;
         int wantW, wantH;
         readonly ZStream[] zs = { new ZStream(), new ZStream(), new ZStream(), new ZStream() };
@@ -92,6 +96,7 @@ namespace GtVpn
             var enc = new List<int> { 16, 7, 1, 0, -308, -223, -224, -239, -312, -313, -32 + JpegQuality, -256 + CompressLevel };
             if (!PreferZrle) { enc.Remove(16); enc.Insert(1, 16); }
             if (!UseContinuous) enc.Remove(-313);
+            if (!UseFence) enc.Remove(-312);
             var m = new MemoryStream();
             m.WriteByte(2); m.WriteByte(0); PutU16(m, enc.Count);
             foreach (int e in enc) PutU32(m, (uint)e);

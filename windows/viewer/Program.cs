@@ -153,7 +153,8 @@ namespace GtVpn
                 }
                 rfb.Connect(vh, vp);
                 v.Log("VNC " + rfb.Name + " " + rfb.Width + "x" + rfb.Height + "; asking for " + screen.Width + "x" + screen.Height
-                    + "; " + (rfb.PreferZrle ? "zrle" : "tight") + " compress " + rfb.CompressLevel + " quality " + rfb.JpegQuality);
+                    + "; " + (rfb.PreferZrle ? "zrle" : "tight") + " compress " + rfb.CompressLevel + " quality " + rfb.JpegQuality
+                    + "; continuous updates " + (rfb.UseContinuous ? "on" : "off") + ", fence " + (rfb.UseFence ? "on" : "off"));
                 v.OnResized(rfb.Width, rfb.Height);
                 rfb.RequestDesktopSize(screen.Width, screen.Height);
 

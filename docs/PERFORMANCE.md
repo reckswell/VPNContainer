@@ -197,6 +197,9 @@ the server's sshd (92% CPU at 19 MB/s) without more frames.
   manager over a second forward to the display (`127.0.0.1:Q`, Q = 16300 +
   N). Options via `GTVPN_VIEWER_ARGS` in `.env`: `--encoding tight`,
   `--compress 0-9`, `--quality 0-9`. Its log is `%TEMP%\gtvpn-viewer.log`.
+  To compare, `GTVPN_VIEWER_CU=0` (environment or `.env`) turns continuous
+  updates off, so it asks for each update, and `nofence` also drops Fence;
+  `GTVPN_VIEWER_IMAGE` runs a given viewer image under mono as it is.
   Xvnc before 1.14 ignored the client's level for ZRLE (zlib's default
   halves the frame rate), so `gtvpn vnc` starts those with `-ZlibLevel=1`.
 - **Viewer, desktop (`attach`):** TigerVNC's viewer on your computer, which `gtvpn vnc` starts

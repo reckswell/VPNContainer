@@ -712,8 +712,8 @@ wslg_settings() { # Windows: the settings above, in %USERPROFILE%\.wslgconfig
   [[ -z $added ]] || say "set $(echo $added) in $up\\.wslgconfig, for smoother redraws and window drags. WSLg reads it when WSL starts: run wsl --shutdown when convenient (it also stops Docker Desktop and the VPN), then start again"
 }
 VIEWER_IMAGE=gtvpn-viewer:local
-vnc_windows_container() { # cookie viewer-options...
-  local c=$1 base x d; shift
+vnc_windows_container() { # cookie continuous-updates viewer-options...
+  local c=$1 cu=$2 base x d; shift 2
   base=${GTVPN_BASE_IMAGE:-$(envget GTVPN_BASE_IMAGE)}; x=$(envget GTVPN_X11_DIR); d=$(envget GTVPN_DISPLAY)
   local img=${GTVPN_VIEWER_IMAGE:-$VIEWER_IMAGE}
   # GTVPN_VIEWER_IMAGE in the environment: run that image as it is (to
@@ -732,7 +732,7 @@ vnc_windows_container() { # cookie viewer-options...
   [[ -s runtime/in/xauth ]] && o+=(-v "$HERE/runtime/in/xauth:/xauth:ro" -e XAUTHORITY=/xauth)
   engine run -d --rm --init "${o[@]}" "$img" sleep infinity >/dev/null || die "could not start the viewer's container"
   # The cookie goes through stdin: never on a command line or in the container's settings.
-  printf '%s\n' "$c" | engine exec -i "$NAME-viewer" sh -c \
+  printf '%s\n' "$c" | engine exec -i -e GTVPN_VIEWER_CU="$cu" "$NAME-viewer" sh -c \
     'read -r c; GTVPN_X_COOKIE=$c setsid -f mono /opt/gtvpn/gtvpn-viewer.exe "$@" >/dev/null 2>&1 </dev/null' sh "$@" \
     || die "could not start the viewer"
 }
@@ -747,10 +747,14 @@ vnc_windows() { # host display: open the viewer on the session
   extra=${GTVPN_VIEWER_ARGS-$(envget GTVPN_VIEWER_ARGS)}
   [[ $extra =~ ^[-a-zA-Z0-9\ ._]*$ ]] || die "GTVPN_VIEWER_ARGS in .env may hold only options such as: --encoding tight"
   [[ -z $extra ]] || args+=" $extra"
+  # GTVPN_VIEWER_CU (environment or .env), to compare: 0 = no continuous
+  # updates, nofence = no Fence either. Unset, the viewer uses both.
+  local cu=${GTVPN_VIEWER_CU-$(envget GTVPN_VIEWER_CU)}
+  [[ $cu =~ ^(0|1|nofence)?$ ]] || die "GTVPN_VIEWER_CU may be 0 (no continuous updates), nofence (no Fence either) or 1"
   if [[ $mode == container ]]; then
     ! is_wsl || wslg_settings
     # shellcheck disable=SC2086
-    vnc_windows_container "$c" $args
+    vnc_windows_container "$c" "$cu" $args
     if is_wsl; then say "viewer opening in a container (Smart App Control is on): WSLg shows each window of the session as a window of its own"
     else say "viewer opening in a container: each window of the session appears here as a window of its own"; fi
     return 0
@@ -760,12 +764,12 @@ vnc_windows() { # host display: open the viewer on the session
   # The cookie goes in the environment, never on a command line.
   if is_wsl; then
     local w; w=$(wslpath -w "$exe")
-    GTVPN_X_COOKIE=$c WSLENV=GTVPN_X_COOKIE powershell.exe -NoProfile -Command \
+    GTVPN_X_COOKIE=$c GTVPN_VIEWER_CU=$cu WSLENV=GTVPN_X_COOKIE:GTVPN_VIEWER_CU powershell.exe -NoProfile -Command \
       "Start-Process -FilePath '${w//\'/\'\'}' -ArgumentList '$args'" >/dev/null 2>&1 \
       || die "could not start the viewer ($w)"
   else
     # shellcheck disable=SC2086
-    GTVPN_X_COOKIE=$c setsid -f mono "$exe" $args >/dev/null 2>&1 < /dev/null || die "could not start the viewer"
+    GTVPN_X_COOKIE=$c GTVPN_VIEWER_CU=$cu setsid -f mono "$exe" $args >/dev/null 2>&1 < /dev/null || die "could not start the viewer"
   fi
   say "viewer opening: each window of the session appears here as a window of its own"
 }

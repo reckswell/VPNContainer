@@ -271,6 +271,15 @@ if [[ ! -e .env ]]; then
     bash -c "grep -q 'viewer opening in a container' <<<\"\$1\" && inwin" _ "$OUT"
   grep -q 'viewer opening in a container' <<<"$OUT" || echo "$OUT"
   check "the cookie is not in that container's settings" bash -c "! docker inspect gtvpn-viewer | grep -q '$(dev "gtvpn-vnc cadence cookie" | sed -n 's/^cookie=//p')'"
+  # GTVPN_VIEWER_CU from the environment reaches the viewer in its container
+  # (continuous updates and Fence off, for comparisons), and windows still come.
+  cuoff(){ local out; docker exec gtvpn-viewer cat /tmp/gtvpn-viewer.log | grep -q 'continuous updates on, fence on' || return 1
+    out=$(GTVPN_VIEWER_CU=nofence GTVPN_BASE_IMAGE=$BASE cli vnc cadence windows)
+    for _ in $(seq 30); do docker exec gtvpn-viewer cat /tmp/gtvpn-viewer.log 2>/dev/null | grep -q 'continuous updates off, fence off' && break; sleep 0.5; done
+    inwin && docker exec gtvpn-viewer cat /tmp/gtvpn-viewer.log | grep -q 'continuous updates off, fence off' \
+      || { echo "$out"; docker exec gtvpn-viewer cat /tmp/gtvpn-viewer.log | tail -5; return 1; }; }
+  check "GTVPN_VIEWER_CU in the environment reaches the viewer in its container (nofence: continuous updates and Fence off)" cuoff
+  check "a bad GTVPN_VIEWER_CU is refused" bash -c "GTVPN_VIEWER_CU='0;x' cli vnc cadence windows | grep -q 'GTVPN_VIEWER_CU may be'"
   cli vnc cadence attach >/dev/null
   check "attach closes the viewer's container and brings metacity back" \
     bash -c "! docker inspect gtvpn-viewer >/dev/null 2>&1 && on_srv 'pgrep -u gtuser -x metacity' >/dev/null"
