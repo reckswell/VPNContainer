@@ -184,23 +184,36 @@ a second, zlib level 1 pinned Xvnc at 94-98% of a core for 27-32 changes
 a second on the screen, and level 0 gave 46 at half of Xvnc's CPU, sending
 twice the bytes (23 MB/s through the tunnel). On a slower link, or for a
 larger area changing, level 1 gets more through. So the viewer picks the
-level as it goes (`--compress auto`, the default). Counting pixels alone
-chose wrong on the PC: level 1 got more pixels through (62 Mpx/s against
-44), yet Xvnc, busy compressing, ran xput at 51 frames a second instead of
-151 and the screen changed 35 times a second instead of 46. Xvnc's CPU is
-also what draws Cadence. So the viewer stays at 0 unless the link holds
-pictures back: it pings Xvnc four times a second (Fence), and only when the
-pings take at least 20 ms longer than on the idle link (pictures queued on
-the way) does it try level 1 for 2 s. It keeps level 1 if 15% more pixels
-arrive a second while the link still carries 80% of level 0's bytes (still
-the limit, rather than Xvnc), or 2.5 times the pixels; it looks again 20 s
-later, then twice as long each time the level stays, up to 160 s. In the
-lab with Tight (this Xvnc 1.13 ignores the level for ZRLE), 1200x800 xput
-at 180/s, a 10 ms link: at 1 Gbit/s it stayed at 0 without a try (pings
-16 ms against 11 idle); at 80 Mbit/s it took 1 (33-36 Mpx/s against 9,
-pings 61-128 ms); at 200 Mbit/s it stays at 0 (25 Mpx/s, 26 updates a
-second, xput at 124/s), where level 1 got 43 Mpx/s at 11 MB/s with xput
-at 42/s (the build before took 1 there).
+level as it goes (`--compress auto`, the default), by what is being sent:
+
+- **A burst after a pause** (a window resized, a menu, a page of text) goes
+  at level 1. After 100 ms without sending, Xvnc's congestion control starts
+  again from a 16 KB window that doubles only every third round trip, so the
+  fewer bytes of level 1 get through sooner. On the PC, resizing the CIW at
+  level 0, every grow began with a 117-526 ms wait before its contents
+  caught up with the edge (p90 152-526 ms over 7 films). At level 1 they
+  caught up in 23-35 ms at the median and 82-140 ms at the 90th percentile.
+- **Pictures that stream for 2 s** (a long pan, a program drawing at full
+  rate) go at level 0. Counting pixels alone chose wrong here: level 1 got
+  more pixels through (62 Mpx/s against 44), yet Xvnc, busy compressing,
+  ran xput at 51 frames a second instead of 151, and the screen changed 35
+  times a second instead of 46. Xvnc's CPU is also what draws Cadence.
+- **Unless the link holds pictures back.** The viewer pings Xvnc four times
+  a second (Fence). Only when streaming pings take at least 25 ms longer
+  than on the idle link (pictures queued on the way) does it try level 1 for
+  2 s. It keeps level 1 if 15% more pixels arrive a second while the link
+  still carries 80% of level 0's bytes (still the limit, rather than Xvnc),
+  or 2.5 times the pixels. It looks again 20 s later, then twice as long
+  each time the level stays, up to 160 s.
+
+In the lab with Tight (this Xvnc 1.13 ignores the level for ZRLE), 1200x800
+xput at 180/s over a 10 ms link:
+
+- At 1 Gbit/s, streaming stayed at 0 without a try (pings 16 ms against 11
+  idle).
+- At 80 Mbit/s, it took 1 (33-36 Mpx/s against 9, pings 61-128 ms).
+- At 200 Mbit/s, it stays at 0 (25 Mpx/s, 26 updates a second, xput at
+  124/s). Level 1 there got 43 Mpx/s at 11 MB/s, with xput at 42/s.
 
 Part of that pacing was the link's own: ssh's local forward to Xvnc's Unix
 socket leaves Nagle on for its end of the connection to the viewer, so the
@@ -225,7 +238,7 @@ above predates that.
   hours, as for `ssh`).
 - **Viewer, `windows` (Windows):** gtvpn's own (`windows/viewer`), built on
   first use with the .NET Framework 4 C# compiler that is part of Windows.
-  It asks for ZRLE with zlib's level chosen as it goes (0, or 1 where the link is the limit, above), streams frames (continuous
+  It asks for ZRLE with zlib's level chosen as it goes (1 for bursts, 0 for streams, above), streams frames (continuous
   updates), draws the cursor locally, and becomes the session's window
   manager over a second forward to the display (`127.0.0.1:Q`, Q = 16300 +
   N). Options via `GTVPN_VIEWER_ARGS` in `.env`: `--encoding tight`,

@@ -6,8 +6,9 @@
 //
 // --encoding: what Xvnc sends first: zrle (lossless, the default) or tight
 // (JPEG for photo-like areas). --compress: zlib's effort in Xvnc, 0-9, or
-// auto (the default: 0, the least CPU for Xvnc, and 1 only where the link
-// holds pictures back and 1 gets clearly more through). --quality: Tight's JPEG.
+// auto (the default: 1 for bursts of pictures after a pause, which then get
+// through sooner, and 0, the least CPU for Xvnc, once pictures stream for 2 s,
+// unless the link holds them back). --quality: Tight's JPEG.
 //
 // The X display cookie comes in the GTVPN_X_COOKIE environment variable (hex),
 // so it never shows on a command line. `gtvpn vnc <host> windows` sets up the
@@ -140,7 +141,7 @@ namespace GtVpn
                 var rfb = new RfbClient
                 {
                     JpegQuality = Math.Max(0, Math.Min(9, quality)),
-                    CompressLevel = compress < 0 ? 0 : Math.Min(9, compress),
+                    CompressLevel = compress < 0 ? 1 : Math.Min(9, compress),
                     PreferZrle = encoding != "tight",
                     UsePing = ping,
                 };
@@ -160,7 +161,7 @@ namespace GtVpn
                 }
                 rfb.Connect(vh, vp);
                 v.Log("VNC " + rfb.Name + " " + rfb.Width + "x" + rfb.Height + "; asking for " + screen.Width + "x" + screen.Height
-                    + "; " + (rfb.PreferZrle ? "zrle" : "tight") + " compress " + (compress < 0 ? "auto (0 to start)" : rfb.CompressLevel.ToString()) + " quality " + rfb.JpegQuality
+                    + "; " + (rfb.PreferZrle ? "zrle" : "tight") + " compress " + (compress < 0 ? "auto (1 for bursts, 0 for streams)" : rfb.CompressLevel.ToString()) + " quality " + rfb.JpegQuality
                     + "; continuous updates " + (rfb.UseContinuous ? "on" : "off") + ", fence " + (rfb.UseFence ? "on" : "off")
                     + (Native.IsWindows ? "" : "; quick ACKs " + (QuickAck.On ? "on" : "off"))
                     + (ping ? "" : "; pings off") + (holdColour ? "" : "; resize hold's colour rule off"));

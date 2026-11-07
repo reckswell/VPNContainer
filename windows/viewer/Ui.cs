@@ -781,16 +781,17 @@ namespace GtVpn
         const int HoldMs = 250, HoldMaxMs = 500;   // Mono: how long a grown strip keeps its edge fill over a blank background
         public bool HoldColour = true;             // --hold-colour off: no colour rule (to compare)
         // Pings the VNC server (the link's delay, for the log and the tuner)
-        // and chooses zlib's level as pictures stream (CompressTuner), unless
-        // --compress gives one (t null).
-        readonly System.Windows.Forms.Timer tuneTimer = new System.Windows.Forms.Timer { Interval = 250 };
+        // and chooses zlib's level for bursts and streams of pictures
+        // (CompressTuner), unless --compress gives one (t null).
+        readonly System.Windows.Forms.Timer tuneTimer = new System.Windows.Forms.Timer { Interval = 50 };
         CompressTuner tuner;
+        int tuneTicks;
         public void StartTuner(CompressTuner t)
         {
             tuner = t;
             tuneTimer.Tick += delegate
             {
-                Rfb.Ping();
+                if (tuneTicks++ % 5 == 0) Rfb.Ping();   // 4 a second
                 var s = tuner == null ? null : tuner.Tick();
                 if (s != null) Log(s);
             };

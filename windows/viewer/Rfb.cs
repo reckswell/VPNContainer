@@ -666,38 +666,50 @@ namespace GtVpn
         static void PutU32(Stream m, uint v) { PutU16(m, (int)(v >> 16)); PutU16(m, (int)(v & 0xffff)); }
     }
 
-    // Chooses zlib's level for what Xvnc sends, 0 or 1, while pictures
-    // stream. Level 0 costs Xvnc about half the CPU of level 1 and sends
-    // two to three times the bytes. Level 1 only helps where the link holds
-    // the pictures back, and Xvnc's CPU is also what draws the programs: on
-    // the test PC through the tunnel (1200x800 at 180 frames a second),
-    // level 1 took Xvnc's whole core, the drawing program fell from 151 to
-    // 51 frames a second and the screen from 46 to 35 changes a second,
-    // although more pixels arrived (62 Mpx/s against 44). So the tuner
-    // stays at level 0 unless the link is the limit, which shows as the
-    // answers to its pings (RfbClient.Ping) coming back at least 20 ms
-    // slower than on an idle link: Xvnc's congestion control lets pictures
-    // queue on the way until its own pings take 25-50 ms longer, while an
-    // Xvnc busy compressing delayed them less in the lab (9-19 ms). Then it
-    // tries level 1 for 2 s and keeps it if 15% more pixels arrived a
-    // second while the link still carried most of the bytes it did at level
-    // 0 (80%: still the limit, rather than Xvnc), or 2.5 times the pixels. At
-    // level 1 it tries level 0 the same way. It looks again 20 s later, and
-    // twice as long after each try where the level stays (up to 160 s).
+    // Chooses zlib's level for what Xvnc sends, 0 or 1. Level 0 costs Xvnc
+    // about half the CPU of level 1 and sends two to three times the bytes.
+    //
+    // A burst of pictures after a pause (a window resized, a menu, a page
+    // of text) goes at level 1: after 100 ms without sending, Xvnc's
+    // congestion control starts again from a 16 KB window that doubles only
+    // every third round trip, so fewer bytes get through sooner. On the test
+    // PC, resizing the CIW, its contents caught up with the edge in 23-35 ms
+    // at the median and 82-140 ms at the 90th percentile at level 1, but at
+    // level 0 every grow began with a 117-526 ms wait (p90 152-526 ms).
+    //
+    // Pictures that keep streaming for 2 s (a long pan, a program drawing
+    // at full rate) go at level 0, because Xvnc's one thread also
+    // draws the programs: on the test PC at 1200x800 and 180 frames a
+    // second, level 1 took Xvnc's whole core, the drawing program fell from
+    // 151 to 51 frames a second and the screen from 46 to 35 changes a
+    // second, though more pixels arrived (62 Mpx/s against 44). Unless the
+    // link is the limit: that shows as the answers to the viewer's pings
+    // (RfbClient.Ping) coming back at least 25 ms slower than on an idle
+    // link, since Xvnc's congestion control lets pictures queue until its
+    // own pings take 25-50 ms longer (an Xvnc busy compressing delayed them
+    // less in the lab, 9-19 ms). Then the tuner tries level 1 for 2 s of
+    // streaming and keeps it if 15% more pixels arrived a second while the
+    // link still carried most of the bytes it did at level 0 (80%: still
+    // the limit, rather than Xvnc), or 2.5 times the pixels. At level 1 it
+    // tries level 0 the same way. It looks again 20 s later, and twice as
+    // long after each try where the level stays (up to 160 s).
     sealed class CompressTuner
     {
         struct Sample { public long At; public double Px, Bytes; }
         readonly RfbClient rfb;
-        long last, lastPx, lastBytes;
+        long last, lastPx, lastBytes, fastPx, lastChange, runStart;
         DateTime nextTry;
         readonly List<Sample> seen = new List<Sample>();
-        int trying = -1, skip, wait = 20;
+        int trying = -1, skip, wait = 20, ticks;
+        int stream;                          // the level for streaming: 0, or 1 where the link is the limit
         Sample before; double beforeRtt;
-        bool toldKeepsUp;
-        public int Tries, Changes;
+        bool toldKeepsUp, toldBursts, toldStream;
+        public int Tries, Changes, Bursts;
         const double BusyPx = 2e6;           // pixels a second: about 17 changes of 400x300
         const int Ticks = 8;                 // samples of 250 ms compared
-        const double QueuedMs = 20;          // a round trip this much over an idle link's: pictures queue on the way
+        const double QueuedMs = 25;          // a round trip this much over an idle link's: pictures queue on the way
+        const double IdleMs = 60;            // no new pixels this long: a pause (Xvnc's own reset is at 100 ms)
+        const double StreamMs = 2000;        // pixels without a pause this long, at BusyPx or more: streaming
         public CompressTuner(RfbClient r) { rfb = r; nextTry = DateTime.Now.AddSeconds(3); }
 
         static Sample Avg(List<Sample> l)
@@ -708,16 +720,38 @@ namespace GtVpn
         }
         static string Ms(double v) { return double.IsNaN(v) ? "unknown" : v.ToString("F0") + " ms"; }
         static string Show(int level, Sample s) { return "level " + level + " " + (s.Px / 1e6).ToString("F1") + " Mpx/s at " + (s.Bytes / 1e6).ToString("F1") + " MB/s"; }
+        static double MsSince(long t) { return (Stopwatch.GetTimestamp() - t) * 1000.0 / Stopwatch.Frequency; }
 
-        // Whether level 1 does better than level 0, from 2 s of each and the
-        // round trip at level 0.
+        // Whether level 1 does better than level 0 for streaming, from 2 s of
+        // each and the round trip at level 0.
         bool OneWins(Sample one, Sample zero, double zeroRtt, double idle)
         {
             return zeroRtt >= idle + QueuedMs && one.Px > zero.Px * 1.15 && (one.Bytes >= zero.Bytes * 0.8 || one.Px >= zero.Px * 2.5);
         }
 
-        // Every 250 ms (the UI thread); what to log, or null.
+        // Every 50 ms (the UI thread); what to log, or null.
         public string Tick()
+        {
+            // A pause: the next burst goes at level 1.
+            long px = Interlocked.Read(ref rfb.Pixels), now = Stopwatch.GetTimestamp();
+            if (px != fastPx) { fastPx = px; lastChange = now; if (runStart == 0) runStart = now; }
+            string said = null;
+            if (lastChange != 0 && MsSince(lastChange) >= IdleMs)
+            {
+                runStart = 0;
+                if (trying >= 0) { trying = -1; seen.Clear(); nextTry = DateTime.Now.AddSeconds(5); }
+                if (rfb.CompressLevel != 1)
+                {
+                    rfb.SetCompress(1); Bursts++;
+                    if (!toldBursts) { toldBursts = true; said = "zlib level 1 for each burst of pictures after a pause, level " + stream + " once they stream for " + (StreamMs / 1000) + " s"; }
+                }
+            }
+            if (++ticks % 5 != 0) return said;
+            return Sampled() ?? said;
+        }
+
+        // Every 250 ms: streaming, and the tries of the other level.
+        string Sampled()
         {
             long now = Stopwatch.GetTimestamp(), px = Interlocked.Read(ref rfb.Pixels), by = Interlocked.Read(ref rfb.Bytes);
             double dt = (double)(now - last) / Stopwatch.Frequency;
@@ -725,28 +759,35 @@ namespace GtVpn
             var s = new Sample { At = last, Px = (px - lastPx) / dt, Bytes = (by - lastBytes) / dt };
             last = now; lastPx = px; lastBytes = by;
             var t = DateTime.Now;
-            bool busy = s.Px >= BusyPx;
+            bool streaming = runStart != 0 && MsSince(runStart) >= StreamMs && s.Px >= BusyPx;
+            if (!streaming) { if (trying < 0) seen.Clear(); return null; }
             if (trying < 0)
             {
-                if (!busy) { seen.Clear(); return null; }
+                if (rfb.CompressLevel != stream)
+                {
+                    rfb.SetCompress(stream); seen.Clear(); skip = 2;
+                    if (toldStream) return null;
+                    toldStream = true;
+                    return "pictures streaming for " + (StreamMs / 1000) + " s: zlib level " + stream;
+                }
+                if (skip > 0) { skip--; return null; }
                 seen.Add(s); if (seen.Count > Ticks) seen.RemoveAt(0);
                 if (seen.Count < Ticks || t < nextTry) return null;
                 double rtt = RfbClient.Median(rfb.RoundTrips(seen[0].At)), idle = rfb.IdleRoundTrip();
-                if (rfb.CompressLevel == 0 && !(rtt >= idle + QueuedMs))
+                if (stream == 0 && !(rtt >= idle + QueuedMs))
                 {
                     // The link carries what Xvnc sends: level 1 would only cost Xvnc's CPU.
                     seen.Clear(); nextTry = t.AddSeconds(5);
                     if (toldKeepsUp) return null;
                     toldKeepsUp = true;
-                    return "zlib level 0 stays: the link keeps up (round trip " + Ms(rtt) + " busy, " + Ms(idle) + " idle)";
+                    return "zlib level 0 stays for streaming: the link keeps up (round trip " + Ms(rtt) + " busy, " + Ms(idle) + " idle)";
                 }
                 before = Avg(seen); beforeRtt = rtt; seen.Clear();
-                trying = 1 - rfb.CompressLevel; skip = 2;   // (the first samples after the switch are still the old level's)
+                trying = 1 - stream; skip = 2;   // (the first samples after the switch are still the old level's)
                 rfb.SetCompress(trying); Tries++;
                 return null;
             }
             int from = 1 - trying;
-            if (!busy) { rfb.SetCompress(from); trying = -1; seen.Clear(); nextTry = t.AddSeconds(5); return null; }
             if (skip > 0) { skip--; return null; }
             seen.Add(s);
             if (seen.Count < Ticks) return null;
@@ -757,10 +798,10 @@ namespace GtVpn
             bool one = to == 1 ? OneWins(tried, before, beforeRtt, idleNow) : OneWins(before, tried, triedRtt, idleNow);
             string what = Show(to, tried) + " against " + Show(from, before) + "; round trip at level 0 "
                 + Ms(to == 0 ? triedRtt : beforeRtt) + " (" + Ms(idleNow) + " idle)";
-            if ((one ? 1 : 0) == to) { Changes++; wait = 20; nextTry = t.AddSeconds(wait); return "zlib level " + to + " now: " + what; }
+            if ((one ? 1 : 0) == to) { stream = to; Changes++; wait = 20; nextTry = t.AddSeconds(wait); return "zlib level " + to + " now for streaming: " + what; }
             rfb.SetCompress(from);
             nextTry = t.AddSeconds(wait); wait = Math.Min(160, wait * 2);
-            return Tries <= 3 ? "zlib level " + from + " stays: " + what : null;
+            return Tries <= 3 ? "zlib level " + from + " stays for streaming: " + what : null;
         }
     }
 }
