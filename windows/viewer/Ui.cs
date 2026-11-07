@@ -574,6 +574,7 @@ namespace GtVpn
         // only ShownSize of it, and the strip keeps the edge carried outwards.
         public bool Holding;
         public Size ShownSize;
+        public long HeldColour = -1;         // the colour of the first one-colour change in the new strip: the session's clear
         public DateTime HoldStart, HoldUntil;
         // Mono: WSLg resizes a window step by step. One resize at a time goes
         // to the session: the size asked for and when (Empty: none), and the
@@ -915,15 +916,25 @@ namespace GtVpn
                     foreach (var f in forms.Values)
                     {
                         if (!f.Holding || f.Guarded) continue;
-                        long colour = -1; bool solid = true, any = false;
+                        long colour = -1; bool solid = true, any = false, strip = false;
+                        var shown = ShownRect(f);
                         foreach (var r in rs)
                         {
                             var i = Rectangle.Intersect(r, f.XRect);
                             if (i.Width <= 0 || i.Height <= 0) continue;
                             any = true;
+                            if (!shown.Contains(i)) strip = true;
                             if (!Mirror.Solid(Rfb.Fb, Rfb.Width, Rfb.Height, i, ref colour)) { solid = false; break; }
                         }
                         if (!any) continue;
+                        // In the new strip, the first one-colour change is the
+                        // session's clear; one of another colour is the
+                        // program's own (a plain background, say): shown.
+                        if (solid && strip)
+                        {
+                            if (f.HeldColour < 0) f.HeldColour = colour;
+                            else if (colour != f.HeldColour) solid = false;
+                        }
                         if (solid) { keep.Add(f.XRect); held++; }
                         else { f.Holding = false; (released = released ?? new List<XForm>()).Add(f); }
                     }
@@ -1078,7 +1089,7 @@ namespace GtVpn
         void StartHold(XForm f, Rectangle old)
         {
             var now = DateTime.Now;
-            if (!f.Holding) { f.Holding = true; f.HoldStart = now; f.ShownSize = old.Size; }
+            if (!f.Holding) { f.Holding = true; f.HoldStart = now; f.ShownSize = old.Size; f.HeldColour = -1; }
             var until = now.AddMilliseconds(HoldMs);
             DateTime start = f.HoldStart, max = start.AddMilliseconds(HoldMaxMs);
             f.HoldUntil = until < max ? until : max;

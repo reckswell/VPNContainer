@@ -447,6 +447,9 @@ the same session twice:
   colour out of its picture, and shows the old picture and the edge until
   the program's own pixels arrive (lab, a window drawing 80 ms after each
   expose: the new strip was black in 18-24% of the samples, now 1-4%).
+  In the new strip, a one-colour change in another colour than the first
+  one (the session's clear) is the program's own plain background, and is
+  shown at once (lab: 108 ms instead of the hold's end at 313 ms).
   Holding only from the session's word of the new size was not enough:
   over the X connection that word can come after the cleared background
   has come over VNC (the lab, the X connection 20 ms slower: 18-21%
